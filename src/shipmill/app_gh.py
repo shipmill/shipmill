@@ -1555,13 +1555,77 @@ def _named_target(args: Sequence[str]) -> tuple[bool, str | None]:
     return False, None
 
 
+# #1372: gh's own command groups that act on one repo, the one -R, GH_REPO, or the checkout
+# names; per group, its value flags and the flags that scope a command to an org, an owner, or
+# the user instead, whose repo can't be placed. Any other first word (an alias, an extension,
+# a group of the user's or the host's) writes where shipmill can't tell
+_SCOPE_FLAGS = frozenset({"--org", "-o", "--owner", "--user", "-u"})
+_REPO_GROUPS: Mapping[str, _Flags | None] = {
+    "issue": None,
+    "pr": None,
+    "repo": None,
+    "release": None,
+    "label": None,
+    "run": None,
+    "workflow": None,
+    "cache": None,
+    "browse": None,
+    "agent-task": None,
+    "ruleset": _Flags(frozenset({"--org", "--repo", "--limit"}), frozenset("oRL")),
+    "secret": _Flags(
+        frozenset({"--app", "--body", "--env", "--env-file", "--org", "--repos", "--repo", "--visibility"}),
+        frozenset("abefoRrv"),
+    ),
+    "variable": _Flags(
+        frozenset({"--body", "--env", "--env-file", "--org", "--repos", "--repo", "--visibility"}),
+        frozenset("befoRrv"),
+    ),
+    "attestation": _Flags(
+        frozenset(
+            {
+                "--owner",
+                "--repo",
+                "--bundle",
+                "--digest-alg",
+                "--hostname",
+                "--limit",
+                "--predicate-type",
+                "--signer-repo",
+                "--signer-workflow",
+                "--cert-identity",
+                "--cert-identity-regex",
+                "--cert-oidc-issuer",
+                "--custom-trusted-root",
+                "--format",
+                "--jq",
+                "--template",
+            }
+        ),
+        frozenset("oRbdLqt"),
+    ),
+}
+
+
+def _unplaced(args: Sequence[str]) -> bool:
+    """#1372: whether a write's repo can't be placed: its first word isn't one of gh's own
+    groups that act on a repo, or a flag scopes it to an org, an owner, or the user"""
+    if args[0] not in _REPO_GROUPS:
+        return True
+    flags = _REPO_GROUPS[args[0]]
+    if flags is None:
+        return False
+    _, given = _scan(args[1:], flags.long, flags.short)
+    return any(name in _SCOPE_FLAGS for name, _ in given)
+
+
 def write_repo(args: Sequence[str], default: str | None) -> str | None:
     """S-081-2, S-081-3: the repo a write goes to, as owner/name: for `gh api`, the endpoint's
     `repos/<owner>/<name>` (its {owner} and {repo} filled from default), and None for any other
     endpoint (graphql, a gist, the user), which names no repo; None for `gh gist`; the repo an
     issue's or a pull request's URL argument names, or `gh repo`'s repo argument; None for `gh
-    project`; else gh's -R/--repo, None when it names a repo off github.com, else default, the
-    repo gh works on. None reads as public"""
+    project`; None for a write whose repo can't be placed (an alias, an extension, an org-,
+    owner- or user-scoped command, #1372); else gh's -R/--repo, None when it names a repo off
+    github.com, else default, the repo gh works on. None reads as public"""
     if not args:
         return default
     if args[0] == "gist":
@@ -1582,6 +1646,8 @@ def write_repo(args: Sequence[str], default: str | None) -> str | None:
     named, target = _named_target(args)
     if named:
         return target
+    if _unplaced(args):
+        return None
     head = args[: list(args).index("--")] if "--" in args else args
     if head and head[-1] in _REPO_FLAGS:
         return None  # -R with no repo: gh refuses it, and nothing is sent

@@ -99,7 +99,10 @@ argument after the subcommand (a title, a `--body`, a label name, a `-f name=val
 and the content of each file the write reads (`--body-file`, `-F`, `--notes-file`, a
 `--input`, an `@file` field value, stdin for `-`), as it stands after the agent marker is
 added. The repo is the one the write goes to: the endpoint's `repos/<owner>/<name>` for
-`gh api`, else `-R`, else the checkout's. `shipmill spec open` and `shipmill review record`
+`gh api`, else `-R`, else the checkout's. The checkout's repo stands only for gh's own
+command groups that act on a repo (`issue`, `pr`, `repo`, `release`, `secret`, `variable`
+and the like); a write whose repo can't be placed (an alias, an extension, an `--org`,
+`--owner` or `--user` form) is checked as public. `shipmill spec open` and `shipmill review record`
 check their `--body-file` the same way before their first write.
 
 A finding exits 2 before `gh` runs, so nothing is sent. stderr names every finding, up to 10,
