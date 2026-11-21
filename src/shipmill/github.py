@@ -499,7 +499,8 @@ class GitHub(Protocol):
 
     def pull_body(self, number: int) -> str:
         """A pull request's body, read through the issues endpoint, which serves it under the
-        `issues` permission (spec 084); an empty body is ''"""
+        `issues` permission (spec 084); an empty body is '', as is an issue's, which no
+        pull request's body is"""
         ...
 
     def deployments(self, environment: str) -> list[Deployment]:
@@ -930,11 +931,14 @@ class GhCli:
 
     def pull_body(self, number: int) -> str:
         """A pull request's body, through `GET /repos/{owner}/{repo}/issues/{N}` (spec 084);
-        a body GitHub gives no text for stops it"""
-        body = self.spec_issue(number).body
-        if body is None:
+        a body GitHub gives no text for stops it. A number that names an issue, which anyone may
+        file, names no pull request: its body is ''"""
+        found = self.spec_issue(number)
+        if not found.pull:
+            return ""
+        if found.body is None:
             raise ReleaseError(f"gh api of #{number} gave no readable body")
-        return body
+        return found.body
 
     def pull_of(self, selector: str | None) -> str:
         """The URL of the pull request gh resolves selector to (a branch; None for the current

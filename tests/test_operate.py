@@ -1243,7 +1243,10 @@ def test_s084_6_a_pull_requests_body_is_read_through_the_issues_endpoint(tmp_pat
     answer.write_text(json.dumps({"number": 7, "body": "Changes answers: items", "pull_request": {}}), encoding="utf-8")
     assert gh.pull_body(7) == "Changes answers: items"
     assert log.read_text(encoding="utf-8").split() == ["api", "-X", "GET", "repos/{owner}/{repo}/issues/7"]
-    answer.write_text(json.dumps({"number": 7, "body": None}), encoding="utf-8")
+    answer.write_text(json.dumps({"number": 7, "body": None, "pull_request": {}}), encoding="utf-8")
+    assert gh.pull_body(7) == ""
+    # a subject's number that names an issue, which anyone may file, names no pull request
+    answer.write_text(json.dumps({"number": 7, "body": "Changes answers: items"}), encoding="utf-8")
     assert gh.pull_body(7) == ""
 
 
