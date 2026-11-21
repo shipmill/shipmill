@@ -14,6 +14,19 @@ from shipmill.version import PATTERN, TAG_PREFIX, Version
 
 REMOTE = "origin"
 WORKFLOWS = ".github/workflows/"  # the CI a run resolves at its own commit, not at the tree it releases
+_SQUASHED = re.compile(r" \(#([1-9][0-9]*)\)$")  # a squash merge's subject ends with its number (D-96)
+_MERGED = re.compile(r"^Merge pull request #([1-9][0-9]*)\b")  # a merge commit's subject (D-96)
+
+
+def pull_numbers(subjects: list[str]) -> list[int]:
+    """The pull requests commit subjects name, each once, in the subjects' order: `<title>
+    (#N)` for a squash, `Merge pull request #N` for a merge commit; any other subject names none"""
+    found: list[int] = []
+    for subject in subjects:
+        named = _SQUASHED.search(subject) or _MERGED.match(subject)
+        if named is not None and int(named[1]) not in found:
+            found.append(int(named[1]))
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +101,11 @@ class Git:
         """The commits in rev and not in since, each with its committer time"""
         out = self.run("log", "--format=%H %cI", rev, f"^{since}")
         return {sha: dt.datetime.fromisoformat(when) for sha, when in (line.split(" ", 1) for line in out.splitlines())}
+
+    def merged_pulls(self, since: str, rev: str) -> list[int]:
+        """The pull requests merged between since and rev: those the subjects of the
+        first-parent commits in rev and not in since name, newest first (D-96)"""
+        return pull_numbers(self.run("log", "--first-parent", "--format=%s", f"{since}..{rev}").splitlines())
 
     def changed_paths(self, since: str, rev: str = "HEAD") -> list[str]:
         return [p for p in self.run("diff", "--name-only", f"{since}..{rev}").splitlines() if p]

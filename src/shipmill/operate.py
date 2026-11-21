@@ -40,7 +40,12 @@ second time. The planner holds the blocker lanes while an incident is open.
 Compare (spec 084): an environment that declares probes has its current deployment's answers
 compared once with the previous release's, at its first passing check, each probe a GET of
 the address the deploy job's `environment: url` recorded. Every counted probe the same writes
-a `shipmill compare:` success status, which is not part of the health history."""
+a `shipmill compare:` success status, which is not part of the health history. A difference
+is explained by a `Changes answers:` line in the body of a pull request merged between the
+two tags, which also writes success; an unexplained one opens the incident at once (its
+hidden line holding `cause=compare`), rolls back as a failed health check does, writes a
+`failure` compare status, and keeps the deployment from promotion and from being a rollback's
+target. A compare incident reads healthy again only once another tag passes its check."""
 
 import datetime as dt
 import http.client
@@ -50,7 +55,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -61,7 +66,7 @@ from shipmill.environments import Environment, Pointer
 from shipmill.environments import Probe as DeclaredProbe
 from shipmill.errors import ReleaseError
 from shipmill.github import Deployment, DeploymentState, DeploymentStatus, GitHub, Issue, WorkflowRun, address
-from shipmill.gitrepo import Tag
+from shipmill.gitrepo import Git, Tag
 from shipmill.policy import Lane, Policy
 from shipmill.propose import find_proposal, upsert
 from shipmill.version import PATTERN, TAG_PREFIX, Version
@@ -74,6 +79,8 @@ BODY_LIMIT = 64 * 1024  # bytes of a health answer read
 PROBE_BODY_LIMIT = 1024 * 1024  # bytes of a probe's answer read
 _DESCRIPTION_LIMIT = 140  # GitHub's limit on a status description
 _EXCERPT_LIMIT = 300  # characters of a failing health body an incident quotes
+_POINTERS_SHOWN = 10  # differing JSON pointers a compare incident names per probe
+_POINTER_LIMIT = 120  # characters of one pointer it shows
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -213,6 +220,12 @@ def _compared(status: DeploymentStatus) -> bool:
     return status.description.startswith(COMPARE_PREFIX)
 
 
+def _differed(statuses: Sequence[DeploymentStatus]) -> bool:
+    """Whether a deployment carries a failure compare status: its answers differ from the
+    previous release's, unexplained, so it is neither promoted nor rolled back to (spec 084)"""
+    return any(_compared(s) and s.state is DeploymentState.FAILURE for s in statuses)
+
+
 @dataclass(frozen=True, slots=True)
 class Observed:
     """One environment as this run found it"""
@@ -285,14 +298,24 @@ class IncidentState(StrEnum):
     HEALTHY = "healthy"  # healthy again, on the bad tag or the rollback's
 
 
+class Cause(StrEnum):
+    """What opened an incident: its hidden line's optional `cause=`"""
+
+    HEALTH = "health"  # failed health checks: a line without cause= reads as one, as lines before spec 084
+    COMPARE = "compare"  # answers that differ from the previous release's (spec 084)
+
+
 _INCIDENT = re.compile(
-    r"<!-- shipmill:incident env=(?P<env>\S+) tag=(?P<tag>\S+) to=(?P<to>\S+) state=(?P<state>\S+) -->"
+    r"<!-- shipmill:incident env=(?P<env>\S+) tag=(?P<tag>\S+) to=(?P<to>\S+) state=(?P<state>\S+)"
+    r"(?: cause=(?P<cause>\S+))? -->"
 )
 
 
-def incident_line(env: str, tag: Version, to: Version | None, state: IncidentState) -> str:
-    """The hidden line that finds an environment's incident again, and keeps its state"""
-    return f"<!-- shipmill:incident env={env} tag={tag.tag} to={to.tag if to else '-'} state={state} -->"
+def incident_line(env: str, tag: Version, to: Version | None, state: IncidentState, cause: Cause = Cause.HEALTH) -> str:
+    """The hidden line that finds an environment's incident again, and keeps its state; a
+    health incident's carries no cause, as before spec 084"""
+    tail = "" if cause is Cause.HEALTH else f" cause={cause}"
+    return f"<!-- shipmill:incident env={env} tag={tag.tag} to={to.tag if to else '-'} state={state}{tail} -->"
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +327,7 @@ class Incident:
     tag: Version
     to: Version | None
     state: IncidentState
+    cause: Cause = Cause.HEALTH
 
     @classmethod
     def read(cls, issue: Issue) -> Incident | None:
@@ -315,16 +339,20 @@ class Incident:
             state = IncidentState(found["state"])
         except ValueError:
             raise ReleaseError(f"incident #{issue.number} has an unknown state {found['state']!r}") from None
+        try:
+            cause = Cause(found["cause"] or Cause.HEALTH)
+        except ValueError:
+            raise ReleaseError(f"incident #{issue.number} has an unknown cause {found['cause']!r}") from None
         to = None if found["to"] == "-" else Version.of_tag(found["to"])
-        return cls(issue, found["env"], Version.of_tag(found["tag"]), to, state)
+        return cls(issue, found["env"], Version.of_tag(found["tag"]), to, state, cause)
 
     @property
     def number(self) -> int:
         return self.issue.number
 
-    def moved(self, state: IncidentState, to: Version | None) -> str:
-        """The issue's body with its hidden line in the new state"""
-        line = incident_line(self.env, self.tag, to, state)
+    def moved(self, state: IncidentState, to: Version | None, cause: Cause | None = None) -> str:
+        """The issue's body with its hidden line in the new state; its cause kept unless given"""
+        line = incident_line(self.env, self.tag, to, state, self.cause if cause is None else cause)
         return _INCIDENT.sub(lambda _: line, self.issue.body, count=1)
 
 
@@ -346,21 +374,30 @@ class Previous:
     statuses: tuple[DeploymentStatus, ...]  # oldest first
 
 
-def _previous(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Previous | None:
-    """The newest deployment before the current one that reached success there, on another
-    tag, whose last health check (if shipmill wrote one) didn't fail"""
+def _earlier(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Iterator[Previous]:
+    """The deployments before the current one that reached success there, on another tag,
+    newest first"""
     assert seen.current is not None and seen.tag is not None  # only a checked deployment has one
     for deployment in seen.deployments:
         tag = tag_of(deployment, tags)
         if deployment.id >= seen.current.id or tag is None or tag == seen.tag:
             continue
         statuses = github.deployment_statuses(deployment.id)
-        ours = [s for s in statuses if _ours(s)]
-        if not any(s.state is DeploymentState.SUCCESS for s in statuses):
-            continue
+        if any(s.state is DeploymentState.SUCCESS for s in statuses):
+            yield Previous(tag, tuple(sorted(statuses, key=lambda s: s.id)))
+
+
+def _previous(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Previous | None:
+    """The newest deployment before the current one that reached success there, on another
+    tag, whose last health check (if shipmill wrote one) didn't fail and whose answers didn't
+    differ from the release before it (spec 084)"""
+    for found in _earlier(github, seen, tags):
+        ours = [s for s in found.statuses if _ours(s)]
         if ours and ours[-1].state is DeploymentState.FAILURE:
             continue
-        return Previous(tag, tuple(sorted(statuses, key=lambda s: s.id)))
+        if _differed(found.statuses):
+            continue
+        return found
     return None
 
 
@@ -481,8 +518,22 @@ def _incident(
     incident = mine[0] if mine else None
     would = "would " if dry_run else ""
     if seen.probe.healthy:
+        if incident is not None and incident.cause is Cause.COMPARE and incident.tag == seen.tag:
+            return None  # its answers differ: passing the health check on the bad tag doesn't end it
         if incident is None or incident.issue.closed or incident.state is IncidentState.HEALTHY:
-            return None
+            # a compare incident ends once the environment runs another tag that passes
+            ended = [
+                i
+                for i in known
+                if i.env == env
+                and i.cause is Cause.COMPARE
+                and i.tag != seen.tag
+                and not i.issue.closed
+                and i.state is not IncidentState.HEALTHY
+            ]
+            if not ended:
+                return None
+            incident = ended[0]
         if not dry_run:
             github.comment_issue(incident.number, f"{env} is healthy again on {seen.tag.tag} ({seen.probe.detail}).")
             healthy = incident.moved(IncidentState.HEALTHY, incident.to)
@@ -568,20 +619,24 @@ def _json(body: str) -> object:
     return _NOT_JSON
 
 
-def _differing(a: object, b: object, at: JsonPath, found: set[JsonPath]) -> None:
+def _differing(
+    a: object, b: object, at: JsonPath, found: set[JsonPath], lengths: dict[JsonPath, tuple[int, int]] | None = None
+) -> None:
     """Add each pointer at which two JSON values differ: a key one side lacks, an array whose
-    length differs, or a scalar of another type or value"""
+    length differs (its two lengths into lengths), or a scalar of another type or value"""
     if isinstance(a, dict) and isinstance(b, dict):
         for key in sorted(a.keys() | b.keys()):
             if key in a and key in b:
-                _differing(a[key], b[key], (*at, key), found)
+                _differing(a[key], b[key], (*at, key), found, lengths)
             else:
                 found.add((*at, key))
     elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
         for i, (x, y) in enumerate(zip(a, b, strict=True)):
-            _differing(x, y, (*at, str(i)), found)
+            _differing(x, y, (*at, str(i)), found, lengths)
     elif type(a) is not type(b) or a != b:
         found.add(at)
+        if lengths is not None and isinstance(a, list) and isinstance(b, list):
+            lengths[at] = (len(a), len(b))
 
 
 def _strip(value: object, ignore: Sequence[Pointer], noise: set[JsonPath], at: JsonPath) -> object:
@@ -597,30 +652,54 @@ def _strip(value: object, ignore: Sequence[Pointer], noise: set[JsonPath], at: J
     return value
 
 
-def _verdict(previous: Sequence[HttpResponse], new: HttpResponse | None, ignore: Sequence[Pointer]) -> Verdict:
+@dataclass(frozen=True, slots=True)
+class Difference:
+    """How a probe's new answer differs from the previous release's, in what a public incident
+    may show: the HTTP statuses, the pointers, an array's lengths, a fixed note; never a value"""
+
+    before: int  # the previous release's HTTP status
+    after: int | None  # the new release's; None: no HTTP answer
+    pointers: tuple[JsonPath, ...] = ()  # where two JSON answers differ, sorted
+    lengths: tuple[tuple[JsonPath, int, int], ...] = ()  # an array's length on each side, by pointer
+    note: str = ""  # shipmill's own words for a difference no pointer names
+
+
+def _verdict(
+    previous: Sequence[HttpResponse], new: HttpResponse | None, ignore: Sequence[Pointer]
+) -> tuple[Verdict, Difference | None]:
     """The new release's answer against the previous release's, the first of them the one
-    compared with, the others telling the previous release's own noise"""
+    compared with, the others telling the previous release's own noise; how it differs, when
+    it does"""
     reference = previous[0]
     if any(p.status != reference.status for p in previous):
-        return Verdict.UNSTABLE
-    if new is None or new.status != reference.status:
-        return Verdict.DIFFERENT
+        return Verdict.UNSTABLE, None
+    if new is None:
+        return Verdict.DIFFERENT, Difference(reference.status, None, note="no HTTP answer")
+    if new.status != reference.status:
+        return Verdict.DIFFERENT, Difference(reference.status, new.status)
     parsed = [_json(p.body) for p in previous]
     if all(v is not _NOT_JSON for v in parsed):
         noise: set[JsonPath] = set()
         for other in parsed[1:]:
             _differing(parsed[0], other, (), noise)
         if () in noise:  # the whole answer changes by itself
-            return Verdict.UNSTABLE
+            return Verdict.UNSTABLE, None
         theirs = _json(new.body)
         if theirs is _NOT_JSON:
-            return Verdict.DIFFERENT
+            return Verdict.DIFFERENT, Difference(reference.status, new.status, note="the answer is no longer JSON")
         found: set[JsonPath] = set()
-        _differing(_strip(parsed[0], ignore, noise, ()), _strip(theirs, ignore, noise, ()), (), found)
-        return Verdict.DIFFERENT if found else Verdict.SAME
+        lengths: dict[JsonPath, tuple[int, int]] = {}
+        _differing(_strip(parsed[0], ignore, noise, ()), _strip(theirs, ignore, noise, ()), (), found, lengths)
+        if not found:
+            return Verdict.SAME, None
+        pointers = tuple(sorted(found))
+        sized = tuple((p, *lengths[p]) for p in pointers if p in lengths)
+        return Verdict.DIFFERENT, Difference(reference.status, new.status, pointers, sized)
     if any(p.body != reference.body for p in previous):
-        return Verdict.UNSTABLE
-    return Verdict.SAME if new.body == reference.body else Verdict.DIFFERENT
+        return Verdict.UNSTABLE, None
+    if new.body == reference.body:
+        return Verdict.SAME, None
+    return Verdict.DIFFERENT, Difference(reference.status, new.status, note="the text differs")
 
 
 def _send(http: Http, url: str) -> HttpResponse | None:
@@ -635,35 +714,71 @@ def _probe_url(address: str, probe: DeclaredProbe) -> str:
     return address.rstrip("/") + probe.path
 
 
-def _compare_probe(http: Http, probe: DeclaredProbe, before: str, after: str) -> Verdict:
+def _compare_probe(http: Http, probe: DeclaredProbe, before: str, after: str) -> tuple[Verdict, Difference | None]:
     """Send the probe twice to the previous release's address and once to the new one's; a
     difference is sent once more to both, and counts only when it holds"""
     old, new = _probe_url(before, probe), _probe_url(after, probe)
     first, second = _send(http, old), _send(http, old)
     answer = _send(http, new)
     if first is None or second is None:
-        return Verdict.UNCHECKED
-    verdict = _verdict((first, second), answer, probe.ignore)
+        return Verdict.UNCHECKED, None
+    verdict, _ = _verdict((first, second), answer, probe.ignore)
     if verdict is not Verdict.DIFFERENT:
-        return verdict
+        return verdict, None
     third = _send(http, old)
     again = _send(http, new)
     if third is None:
-        return Verdict.UNCHECKED
+        return Verdict.UNCHECKED, None
     return _verdict((third, first, second), again, probe.ignore)
 
 
-def _compare_description(previous: Version, probes: int) -> str:
-    return f"{COMPARE_PREFIX} same answers as {previous.tag} on {probes} probes"[:_DESCRIPTION_LIMIT]
+_CHANGES = re.compile(r"^[ \t]*Changes answers:(?P<names>.*)$", re.MULTILINE)
+
+
+def changes_answers(body: str) -> frozenset[str]:
+    """The probes a pull request body's `Changes answers: <name>, <name>` lines name"""
+    named = (n.strip().strip("`").strip() for found in _CHANGES.finditer(body) for n in found["names"].split(","))
+    return frozenset(n for n in named if n)
+
+
+def _explained(git: Git, github: GitHub, previous: Version, new: Version, differ: Sequence[str]) -> dict[str, int]:
+    """The pull request that explains each differing probe its body's `Changes answers:` line
+    names: those merged between the two tags, read newest first until every probe is named"""
+    left = set(differ)
+    by: dict[str, int] = {}
+    for number in git.merged_pulls(previous.tag, new.tag):
+        if not left:
+            break
+        named = changes_answers(github.pull_body(number)) & left
+        by.update(dict.fromkeys(named, number))
+        left -= named
+    return by
+
+
+@dataclass(frozen=True, slots=True)
+class Compared:
+    """What comparing the current deployment found, before anything is written: the status
+    it writes, and the differences no pull request explains"""
+
+    previous: Version
+    state: DeploymentState
+    description: str
+    text: str  # for the summary, without what was written
+    differences: tuple[tuple[DeclaredProbe, Difference], ...] = ()  # the unexplained ones
+
+
+def _status_description(text: str) -> str:
+    return f"{COMPARE_PREFIX} {text}"[:_DESCRIPTION_LIMIT]
 
 
 def _web(address: str) -> bool:
     return urllib.parse.urlsplit(address).scheme in ("http", "https")
 
 
-def _compare(github: GitHub, http: Http, seen: Observed, tags: Sequence[Tag], dry_run: bool) -> str | None:
+def _compare(git: Git, github: GitHub, http: Http, seen: Observed, tags: Sequence[Tag]) -> Compared | str | None:
     """Compare the current deployment's answers with the previous release's, once per
-    deployment (spec 084); what it found, or None when this run doesn't compare"""
+    deployment (spec 084), writing nothing: the status to write, a report of why none is, or
+    None when this run doesn't compare. A failed read of a pull request's body raises"""
     env = seen.env
     if not env.probes or seen.current is None or seen.tag is None:
         return None  # an environment without probes makes no request beyond its health check (D-63)
@@ -671,10 +786,13 @@ def _compare(github: GitHub, http: Http, seen: Observed, tags: Sequence[Tag], dr
         return None
     if any(_compared(s) for s in seen.statuses):
         return None
+    replaced = next(_earlier(github, seen, tags), None)
+    if replaced is not None and replaced.tag >= seen.tag:  # a rollback: never compared with what it replaced
+        return None
     previous = _previous(github, seen, tags)
     if previous is None:
         return "not compared: no previous release"
-    if previous.tag >= seen.tag:  # a rollback: never compared with the release it replaced
+    if previous.tag >= seen.tag:
         return None
     addresses = []
     for tag, statuses in ((seen.tag, seen.statuses), (previous.tag, previous.statuses)):
@@ -685,31 +803,200 @@ def _compare(github: GitHub, http: Http, seen: Observed, tags: Sequence[Tag], dr
             return f"not compared: {tag.tag}'s environment_url {shown_url(found)} is not an http(s) URL"
         addresses.append(found)
     after, before = addresses
-    verdicts = {p.name: _compare_probe(http, p, before, after) for p in env.probes}
+    results = {p.name: (p, *_compare_probe(http, p, before, after)) for p in env.probes}
 
     def named(verdict: Verdict) -> list[str]:
-        return [name for name, v in verdicts.items() if v is verdict]
+        return [name for name, (_, v, _) in results.items() if v is verdict]
 
     unchecked, unstable = named(Verdict.UNCHECKED), named(Verdict.UNSTABLE)
-    if len(unchecked) == len(verdicts):
+    if len(unchecked) == len(results):
         return f"not compared: {previous.tag.tag} at {shown_url(before)} unreachable"
     notes = "".join(
         f" ({label}: {', '.join(names)})"
         for label, names in (("unstable", unstable), ("unchecked", unchecked))
         if names
     )
+    was = previous.tag.tag
     if differ := named(Verdict.DIFFERENT):
-        # a difference writes no status yet: explaining it and acting on it build on this (#1436)
-        return f"compared with {previous.tag.tag}: differs on {', '.join(differ)}{notes}"
+        # the pull requests' bodies are read only now, when a difference holds
+        by = _explained(git, github, previous.tag, seen.tag, differ)
+        explained = [name for name in differ if name in by]
+        unexplained = [name for name in differ if name not in by]
+        pulls = ", ".join(f"#{n}" for n in sorted(set(by.values())))
+        if not unexplained:
+            names = ", ".join(explained)
+            return Compared(
+                previous.tag,
+                DeploymentState.SUCCESS,
+                _status_description(f"differs from {was} on {names}, explained by {pulls}"),
+                f"compared with {was}: differs on {names}, explained by {pulls}{notes}",
+            )
+        names = ", ".join(unexplained)
+        also = f" (explained by {pulls}: {', '.join(explained)})" if explained else ""
+        differences = []
+        for name in unexplained:
+            probe, _, difference = results[name]
+            assert difference is not None  # a difference that holds says how
+            differences.append((probe, difference))
+        return Compared(
+            previous.tag,
+            DeploymentState.FAILURE,
+            _status_description(f"answers differ from {was} on {names}"),
+            f"compared with {was}: differs on {names}{also}{notes}",
+            tuple(differences),
+        )
     same = named(Verdict.SAME)
     if not same:
-        return f"not compared: no probe answered steadily on {previous.tag.tag}{notes}"
-    if not dry_run:
-        github.create_deployment_status(
-            seen.current.id, DeploymentState.SUCCESS, _compare_description(previous.tag, len(same))
+        return f"not compared: no probe answered steadily on {was}{notes}"
+    return Compared(
+        previous.tag,
+        DeploymentState.SUCCESS,
+        _status_description(f"same answers as {was} on {len(same)} probes"),
+        f"compared with {was}: same on {len(same)} probes{notes}",
+    )
+
+
+def _shown_path(path: str) -> str:
+    """A probe's path as an incident shows it: without its query or fragment, which may carry
+    a token, and with no backtick to break a code span"""
+    return path.split("?", 1)[0].split("#", 1)[0].replace("`", "'")
+
+
+def _shown_pointer(path: JsonPath) -> str:
+    """A JSON pointer as an incident shows it: escaped as RFC 6901 writes it, on one line,
+    capped, in a code span; the answer's keys and indices only, never a value"""
+    if not path:
+        return "the whole answer"
+    text = "".join("/" + s.replace("~", "~0").replace("/", "~1") for s in path)
+    text = "".join(c if c.isprintable() and c != "`" else "?" for c in text)
+    if len(text) > _POINTER_LIMIT:
+        text = text[: _POINTER_LIMIT - 3] + "..."
+    return f"`{text}`"
+
+
+def _difference_lines(compared: Compared, tag: Version) -> list[str]:
+    """One line per probe whose answers differ, unexplained: its name, its path without the
+    query, both statuses, at most ten differing pointers, and an array's lengths"""
+    lines = []
+    for probe, diff in compared.differences:
+        after = "no HTTP answer" if diff.after is None else f"HTTP {diff.after}"
+        line = (
+            f"- `{probe.name}` (`{_shown_path(probe.path)}`): HTTP {diff.before} on {compared.previous.tag},"
+            f" {after} on {tag.tag}"
         )
+        if diff.pointers:
+            sized = {p: (a, b) for p, a, b in diff.lengths}
+            shown = []
+            for pointer in diff.pointers[:_POINTERS_SHOWN]:
+                lengths = f": {sized[pointer][0]} vs {sized[pointer][1]} items" if pointer in sized else ""
+                shown.append(_shown_pointer(pointer) + lengths)
+            more = len(diff.pointers) - _POINTERS_SHOWN
+            line += f"; differs at {', '.join(shown)}" + (f", and {more} more" if more > 0 else "")
+        elif diff.note and diff.after is not None:
+            line += f"; {diff.note}"
+        lines.append(line)
+    return lines
+
+
+def compare_incident_title(env: str, tag: Version, previous: Version) -> str:
+    return f"Incident: {env} answers differently on {tag.tag} than {previous.tag}"
+
+
+def compare_incident_body(policy: Policy, seen: Observed, compared: Compared, rollback: Rollback) -> str:
+    """A compare incident's body: the probes whose answers differ and how, never a value of
+    either answer, since an incident is an issue anyone with read access sees"""
+    assert seen.tag is not None
+    env = seen.env.name
+    lanes = ", ".join(str(lane) for lane in Lane if lane in policy.blocker_lanes)
+    lines = [
+        incident_line(env, seen.tag, rollback.to, rollback.state, Cause.COMPARE),
+        f"**{env}** answers differently on **{seen.tag.tag}** than on **{compared.previous.tag}**, the release"
+        " before it, and no pull request merged between them names these probes on a `Changes answers:` line.",
+        "",
+        *_difference_lines(compared, seen.tag),
+        "",
+        f"**Rollback**: {rollback.text}.",
+    ]
+    if rollback.how:
+        lines += ["", *rollback.how]
+    lines += [
+        "",
+        f"While this issue is open, the {lanes} lanes don't release: the `{policy.operate.incident_label}`"
+        " label holds them like the blocker label. Close it once resolved, by hand or with a hotfix pull"
+        f' request\'s "Fixes #N". shipmill comments here once {env} runs a tag other than {seen.tag.tag} that'
+        " passes its health check, and doesn't roll back a second time if the rollback fails its checks too.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _compare_incident(
+    policy: Policy,
+    github: GitHub,
+    seen: Observed,
+    compared: Compared,
+    tags: Sequence[Tag],
+    known: Sequence[Incident],
+    hold: Hold,
+    dry_run: bool,
+) -> str:
+    """Open the environment's incident for answers that differ, at once, and roll back as a
+    failed health check does; comment on the tag's open incident instead of opening another"""
+    assert seen.tag is not None
+    env = seen.env.name
+    would = "would " if dry_run else ""
+    opened = [i for i in known if i.env == env and i.tag == seen.tag and not i.issue.closed]
+    if opened:
+        incident = opened[0]
+        # an incident healthy again is rolled back for this as for a failed check; any other
+        # has its rollback made, proposed, or stopped already
+        rollback = (
+            _rollback(policy, github, seen, tags, hold, dry_run) if incident.state is IncidentState.HEALTHY else None
+        )
+        if not dry_run:
+            text = [f"{env} answers differently on {seen.tag.tag} than {compared.previous.tag}.", ""]
+            text += _difference_lines(compared, seen.tag)
+            if rollback is not None:
+                text += ["", f"**Rollback**: {rollback.text}.", *(("", *rollback.how) if rollback.how else ())]
+            github.comment_issue(incident.number, "\n".join(text))
+            state, to = (rollback.state, rollback.to) if rollback is not None else (incident.state, incident.to)
+            github.update_issue(incident.number, incident.issue.title, incident.moved(state, to, Cause.COMPARE))
+        tail = f"; {rollback.text}" if rollback is not None else ""
+        return f"{would}comment on incident #{incident.number}: answers differently{tail}"
+    rollback = _rollback(policy, github, seen, tags, hold, dry_run)
+    if dry_run:
+        return f"would open an incident; {rollback.text}"
+    fix = f"grant `issues: write` to the job that calls operate.yml in {OPERATE_CALLER}"
+    try:
+        number = github.create_issue(
+            compare_incident_title(env, seen.tag, compared.previous),
+            compare_incident_body(policy, seen, compared, rollback),
+            (policy.operate.incident_label,),
+        )
+    except ReleaseError as exc:
+        raise ReleaseError(f"{exc}; if GitHub refused it (403): {fix}") from exc
+    return f"opened incident #{number}; {rollback.text}"
+
+
+def _mark_compared(
+    policy: Policy,
+    github: GitHub,
+    seen: Observed,
+    compared: Compared,
+    tags: Sequence[Tag],
+    known: Sequence[Incident],
+    hold: Hold,
+    dry_run: bool,
+) -> str:
+    """Write the compare's status, and for a difference no pull request explains, its incident
+    first: if opening it fails, the next run compares again and tries again"""
+    assert seen.current is not None
     mark = "would mark" if dry_run else "marked"
-    return f"compared with {previous.tag.tag}: same on {len(same)} probes{notes}, {mark} {DeploymentState.SUCCESS}"
+    done = [f"{compared.text}, {mark} {compared.state}"]
+    if compared.state is DeploymentState.FAILURE:
+        done.append(_compare_incident(policy, github, seen, compared, tags, known, hold, dry_run))
+    if not dry_run:
+        github.create_deployment_status(seen.current.id, compared.state, compared.description)
+    return "; ".join(done)
 
 
 # -- one run ---------------------------------------------------------------------------------
@@ -790,8 +1077,15 @@ def _lane_versions(lane: Lane, tags: Sequence[Tag]) -> list[Tag] | None:
     return None
 
 
-def _wanted(seen: Observed, observed: Mapping[str, Observed], tags: Sequence[Tag], now: dt.datetime) -> Wanted | str:
-    """The deploy this environment waits for, or why none"""
+def _wanted(
+    seen: Observed,
+    observed: Mapping[str, Observed],
+    tags: Sequence[Tag],
+    now: dt.datetime,
+    differing: frozenset[str],
+) -> Wanted | str:
+    """The deploy this environment waits for, or why none; differing names the environments
+    whose current deployment answers differently from its previous release (spec 084)"""
     env = seen.env
     if env.source is not None:
         source = observed[env.source]
@@ -801,6 +1095,8 @@ def _wanted(seen: Observed, observed: Mapping[str, Observed], tags: Sequence[Tag
             return f"{env.source}'s deployment ref {source.current.ref!r} names no release tag"
         if seen.tag is not None and seen.tag >= source.tag:
             return f"on {seen.tag.tag}" if seen.tag == source.tag else f"ahead of {env.source} ({source.tag.tag})"
+        if env.source in differing:
+            return f"{env.source} answers differently on {source.tag.tag}"
         healthy = source.healthy_for(now)
         if healthy is None:
             return f"{env.source} is unhealthy on {source.tag.tag}"
@@ -921,15 +1217,24 @@ def _act(
     return f"proposal #{number} {outcome}: {wanted.tag.tag} ({cause})"
 
 
-def operate(
-    policy: Policy, tags: Sequence[Tag], github: GitHub, http: Http, now: dt.datetime, dry_run: bool
-) -> list[Report]:
+def operate(policy: Policy, git: Git, github: GitHub, http: Http, now: dt.datetime, dry_run: bool) -> list[Report]:
+    """One run over every environment; git is operate's checkout, which holds the release tags"""
     environments = policy.environments
+    tags = git.tags()
     hold = Hold.read(github) if environments else Hold()
     observed = {name: observe(github, http, env, tags, now) for name, env in environments.items()}
     rollback_after = policy.operate.rollback_after
+    # every compare before any write: a failed read of a pull request's body stops the run
+    # with nothing written for its environment, and a promotion sees a difference found now
+    compares = {name: _compare(git, github, http, seen, tags) for name, seen in observed.items()}
+    failed = {
+        name
+        for name, found in compares.items()
+        if isinstance(found, Compared) and found.state is DeploymentState.FAILURE
+    }
+    differing = frozenset(failed | {name for name, seen in observed.items() if _differed(seen.statuses)})
     checked = any(seen.probe is not None for seen in observed.values())
-    known = incidents(policy, github) if checked else []
+    known = incidents(policy, github) if checked or failed else []
     reports = []
     for name, seen in observed.items():
         target = _bake_target(seen.env, environments)
@@ -946,9 +1251,12 @@ def operate(
         if incident is not None:
             actions.append(incident)
         # after the health status: the compare follows a check this run passed
-        if (compared := _compare(github, http, seen, tags, dry_run)) is not None:
+        compared = compares[name]
+        if isinstance(compared, Compared):
+            actions.append(_mark_compared(policy, github, seen, compared, tags, known, hold, dry_run))
+        elif compared is not None:
             actions.append(compared)
-        wanted = _wanted(seen, observed, tags, now)
+        wanted = _wanted(seen, observed, tags, now, differing)
         waits = False  # a deploy waits: its proposal is updated, not closed
         if isinstance(wanted, str):
             actions.append(wanted)

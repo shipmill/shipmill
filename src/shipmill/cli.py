@@ -1585,7 +1585,7 @@ def main(
         elif args.approve_rollback:
             report = approve_rollback(policy, operated, args.approve_rollback, args.dry_run) + "\n"
         else:
-            reports = operate(policy, git.tags(), operated, http or UrllibHttp(), _now(args.now), args.dry_run)
+            reports = operate(policy, git, operated, http or UrllibHttp(), _now(args.now), args.dry_run)
             report = summary(reports, args.dry_run)
         sys.stdout.write(report)
         if args.step_summary is not None:

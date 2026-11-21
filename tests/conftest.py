@@ -155,6 +155,14 @@ class FakeGitHub:
     shipped_error: str = ""  # when set, reading the shipped pull requests fails with it
     allowed: MergeMethods = MergeMethods(squash=True, merge=True)  # the repo's merge settings (spec 072)
     allowed_error: str = ""  # when set, reading the merge settings fails with it, as gh would
+    bodies: dict[int, str] = field(default_factory=dict)  # pull request bodies by number, as pull_body reads them
+    body_reads: list[int] = field(default_factory=list)  # the number of each pull_body call
+
+    def pull_body(self, number: int) -> str:
+        self.body_reads.append(number)
+        if number not in self.bodies:
+            raise ReleaseError(f"gh api -X GET repos/o/demo/issues/{number} failed: Not Found (HTTP 404)")
+        return self.bodies[number]
 
     def deploy(self, environment: str, ref: str, at: dt.datetime, *states: DeploymentState) -> int:
         """Record a deployment of ref, with its statuses one minute apart from at; its id"""

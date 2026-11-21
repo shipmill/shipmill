@@ -497,6 +497,12 @@ class GitHub(Protocol):
         """The merge methods the repo's settings allow (spec 072), in one read"""
         ...
 
+    def pull_body(self, number: int) -> str:
+        """A pull request's body, read through the issues endpoint, which serves it under the
+        `issues` permission (spec 084); an empty body is '', as is an issue's, which no
+        pull request's body is"""
+        ...
+
     def deployments(self, environment: str) -> list[Deployment]:
         """The environment's deployments, newest first (the newest 100)"""
         ...
@@ -922,6 +928,17 @@ class GhCli:
         """The issue a spec pull request's `Spec for #N` line names: its state, labels, author,
         and body (spec 067); a GET. Missing when GitHub has no such issue"""
         return spec_issue_of(self._api("-X", "GET", f"repos/{{owner}}/{{repo}}/issues/{number}"), number)
+
+    def pull_body(self, number: int) -> str:
+        """A pull request's body, through `GET /repos/{owner}/{repo}/issues/{N}` (spec 084);
+        a body GitHub gives no text for stops it. A number that names an issue, which anyone may
+        file, names no pull request: its body is ''"""
+        found = self.spec_issue(number)
+        if not found.pull:
+            return ""
+        if found.body is None:
+            raise ReleaseError(f"gh api of #{number} gave no readable body")
+        return found.body
 
     def pull_of(self, selector: str | None) -> str:
         """The URL of the pull request gh resolves selector to (a branch; None for the current
