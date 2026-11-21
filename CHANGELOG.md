@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.158.1] - 2026-11-21
+
+### Fixed
+
+- `setup_state.py`'s Identity row no longer stops setup with exit 2 when one sibling's config read fails with anything but 404 (a 5xx, a rate limit, SAML): it names that repo as `owner/name (unread: <reason>)` and the run goes on; the Product row, read with `[agents] app_id`, still exits 2 on such a failure (#1375)
+
 ## [0.158.0] - 2026-11-21
 
 ### Added
@@ -2861,7 +2867,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.158.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.158.1...HEAD
+[0.158.1]: https://github.com/shipmill/shipmill/compare/v0.158.0...v0.158.1
 [0.158.0]: https://github.com/shipmill/shipmill/compare/v0.157.1...v0.158.0
 [0.157.1]: https://github.com/shipmill/shipmill/compare/v0.157.0...v0.157.1
 [0.157.0]: https://github.com/shipmill/shipmill/compare/v0.156.0...v0.157.0
