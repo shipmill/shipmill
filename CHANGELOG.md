@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.158.0] - 2026-11-21
+
+### Added
+
+- A stable release by a lane with `close_milestone = true` closes the open milestone titled its version once tagged and published, first moving its open issues to the open milestone titled the lowest stable version above it; with open issues and no such milestone it writes nothing. A new `milestone` job in `land.yml`, after the land job, does it with `shipmill close-milestone`; it sets no permissions, so it runs with the caller's grant, and a lane without the key calls GitHub for nothing there. The Release run's summary says `milestone 1.5.0 closed; #12, #14 moved to 1.6.0`, and a milestone write that fails fails the `milestone` job after the release, naming the `shipmill gh api` command that does it (spec 068) (#1335)
+
+### Security
+
+- `shipmill gh` checks a write it can't place on a repo (a gh alias, an extension, an `--org`, `--owner` or `--user` form) as public, so a private checkout no longer lets a private term through to it (#1372)
+
 ## [0.157.1] - 2026-11-21
 
 ### Fixed
@@ -2851,7 +2861,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.157.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.158.0...HEAD
+[0.158.0]: https://github.com/shipmill/shipmill/compare/v0.157.1...v0.158.0
 [0.157.1]: https://github.com/shipmill/shipmill/compare/v0.157.0...v0.157.1
 [0.157.0]: https://github.com/shipmill/shipmill/compare/v0.156.0...v0.157.0
 [0.156.0]: https://github.com/shipmill/shipmill/compare/v0.155.0...v0.156.0
