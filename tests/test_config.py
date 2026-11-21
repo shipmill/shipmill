@@ -224,7 +224,7 @@ MESSAGES: dict[str, str] = {
     "version_lines unknown key": "shipmill.toml [[version_lines]][0]: unknown keys ['colour']; allowed: ['file', 'pattern', 'replace']",
     "version_lines pattern": "shipmill.toml [[version_lines]][0].pattern: missing ), unterminated subpattern at position 5",
     "version_lines array of tables": "shipmill.toml: version_lines must be an array of tables, [[version_lines]]",
-    "environments unknown key": "shipmill.toml [environments] [staging]: unknown keys ['region']; allowed: ['bake_minutes', 'from', 'health', 'lane', 'workflow']",
+    "environments unknown key": "shipmill.toml [environments] [staging]: unknown keys ['region']; allowed: ['bake_minutes', 'from', 'health', 'lane', 'probes', 'workflow']",
     "environments a table": "shipmill.toml [environments]: staging must be a table, got 1",
     "environments the section a table": "shipmill.toml: environments must be a table, got 1",
     "operate unknown key": "shipmill.toml [operate]: unknown keys ['rollback']; allowed: ['incident_label', 'rollback_after']",
