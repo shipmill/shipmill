@@ -260,9 +260,10 @@ $CR plan --lane stable --dry-run
 - A workflow for each `dispatch` entry that runs on `workflow_dispatch` with a `tag` input
 - For each environment, a workflow that runs on `workflow_dispatch` with `tag` and
   `environment` inputs, and a job that sets `environment:`
-- When an environment uses `from` or `health`, `.github/workflows/operate.yml` (which
-  `init --operate` writes) granting `deployments: write` and `actions: write`, and
-  `issues: write` once an environment has `health` (for incidents) or a stage proposes
+- When an environment uses `from`, `health`, or probes, `.github/workflows/operate.yml`
+  (which `init --operate` writes) granting `deployments: write` and `actions: write`, and
+  `issues: write` once an environment has `health` or probes (for incidents) or a stage
+  proposes
 - An `[operate]` section with known keys only, `rollback_after` in 1..20 and a non-empty
   `incident_label`
 - No `[tool.uv.sources]` entry taken from a local path, which CI and users don't have

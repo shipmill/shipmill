@@ -577,9 +577,7 @@ incident_label = "incident"       # the label of the incident issue, which holds
   failures; failing again after the close (on either tag) opens a new incident
 - **An open incident holds releases**: the planner treats `incident_label` like
   `blocker_label`, for the lanes in `[gates] blocker_lanes`. Close it by hand, or let a
-  hotfix pull request's "Fixes #N" close it, and releases flow again. A repository with no
-  `health` URL in any environment doesn't read the label, so a compare incident (below)
-  there doesn't hold releases
+  hotfix pull request's "Fixes #N" close it, and releases flow again
 
 **Comparing answers.** An environment with [probes](#environments) compares its current
 deployment with the previous release, the one a rollback would deploy, once: at the first
@@ -641,8 +639,8 @@ rollback it would start), writing nothing.
 
 The operate job needs `deployments: write` (statuses) and `actions: write` (deploys), and
 `issues: write` to open a proposal or an incident; `init --operate` grants them, and
-`doctor` warns when one is missing, only once an environment uses `from` or `health`
-(`issues: write` once one has `health` or a stage proposes).
+`doctor` warns when one is missing, only once an environment uses `from`, `health`, or
+probes (`issues: write` once one has `health` or probes, or a stage proposes).
 
 ## Autonomy and the stop switch
 

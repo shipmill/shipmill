@@ -459,7 +459,7 @@ def doctor(
                 add(ok, key, f"{workflow} ({rule.lane}) runs on workflow_dispatch with a 'tag' input")
     operate_caller = _operate_caller(root)
     for env in policy.environments.values():
-        watched = env.source is not None or bool(env.health)  # D-9: only these need operate
+        watched = env.source is not None or bool(env.health) or bool(env.probes)  # D-9: only these need operate
         checks.append(_deploy(root / ".github" / "workflows" / env.workflow, env.name, operate_caller, watched))
     named = {env.workflow for env in policy.environments.values()}
     checks.extend(Check(status, deploy_runner.ROW, detail) for status, detail in deploy_runner.check(root, named))
@@ -1683,13 +1683,15 @@ _LOCAL_OPERATE = re.compile(rf"^\s+uses:\s*\./\.github/workflows/{re.escape(OPER
 
 
 def _operate(policy: Policy, hold: Hold, root: Path, caller: Path) -> Check | None:
-    """The operate caller (relative to root), only when an environment is promoted or has a
-    health URL (D-9): it runs on a schedule, writes deployment statuses, and starts deploy
-    workflows"""
-    used = [e.name for e in policy.environments.values() if e.source is not None or e.health]
+    """The operate caller (relative to root), only when an environment is promoted, has a
+    health URL, or declares probes (D-9): it runs on a schedule, writes deployment statuses,
+    and starts deploy workflows"""
+    used = [e.name for e in policy.environments.values() if e.source is not None or e.health or e.probes]
     if not used:
         return None
-    why = f"{', '.join(used)} {'uses' if len(used) == 1 else 'use'} from or health"
+    probed = any(e.probes for e in policy.environments.values())
+    keys = "from, health, or probes" if probed else "from or health"
+    why = f"{', '.join(used)} {'uses' if len(used) == 1 else 'use'} {keys}"
     if not (root / caller).is_file():
         detail = f"{why}, but no {caller} runs shipmill operate: `{cli_command()} init --operate` writes it"
         return Check("WARN", "operate", detail)
@@ -1700,7 +1702,7 @@ def _operate(policy: Policy, hold: Hold, root: Path, caller: Path) -> Check | No
     proposes = any(policy.autonomy.configured(s) is Autonomy.PROPOSE for s in policy.autonomy.stages())
     if proposes or hold.on or policy.incident_label:
         # the proposal issue a deploy under propose or the hold opens, and the incident a
-        # failing environment with a health URL opens
+        # failing environment with a health URL, or one whose probes answer differently, opens
         needed.append("issues")
     missing = [f"{name}: write" for name in needed if not _job_grants(text, "operate.yml", name)]
     if missing:
@@ -1708,10 +1710,16 @@ def _operate(policy: Policy, hold: Hold, root: Path, caller: Path) -> Check | No
     detail = f"{caller} runs shipmill operate with {', '.join(needed)}: write"
     if policy.incident_label:
         held = ", ".join(lane for lane in Lane if lane in policy.blocker_lanes)
-        detail += (
-            f"; rolls back after {policy.operate.rollback_after} failed checks in a row and opens an"
-            f" incident labelled {policy.incident_label!r}, which holds {held}"
-        )
+        if any(e.health for e in policy.environments.values()):
+            detail += (
+                f"; rolls back after {policy.operate.rollback_after} failed checks in a row and opens an"
+                f" incident labelled {policy.incident_label!r}, which holds {held}"
+            )
+        else:  # probes and no health URL: only a compare opens one (spec 084)
+            detail += (
+                f"; rolls back and opens an incident labelled {policy.incident_label!r} when an environment"
+                f" answers differently than the previous release, which holds {held}"
+            )
     return Check("PASS", "operate", detail)
 
 

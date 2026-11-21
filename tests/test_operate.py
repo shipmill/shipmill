@@ -1546,3 +1546,68 @@ def test_s084_12_the_summary_names_the_compare_outcome_and_the_unstable_and_unch
     shown = summary(operate(repo.policy, repo.git, repo.github, http, minutes(0), True), True)
     assert "compared with v1.0.0rc1: same on 1 probes (unchecked: home), would mark success" in shown
     assert repo.github.status_writes == [] and repo.github.issues == {}
+
+
+# -- an environment with probes and no health URL (#1453) ------------------------------------
+
+PROBES_ONLY = """
+[environments.staging]
+lane = "rc"
+workflow = "deploy.yml"
+
+[[environments.staging.probes]]
+name = "home"
+path = "/"
+"""
+UNWATCHED = '\n[environments.staging]\nlane = "rc"\nworkflow = "deploy.yml"\n'  # neither health nor probes
+
+
+def test_a_compare_incident_holds_the_blocker_lanes_without_a_health_url(repo: Repo) -> None:
+    """#1453: an environment with probes and no health URL opens compare incidents, so the
+    planner reads the incident label there as it does with a health URL; with neither, an
+    issue labelled incident holds nothing, as before (D-63)"""
+    repo.merge(1, "Added", "Feature A")
+    line = "<!-- shipmill:incident env=staging tag=v1.1.0rc1 to=v1.0.0rc1 state=rolled-back cause=compare -->"
+    title = "Incident: staging answers differently on v1.1.0rc1 than v1.0.0rc1"
+    number = repo.github.create_issue(title, line + "\nbody", ("incident",))
+
+    def plan(environments: str, lane: Lane) -> Decision:
+        repo.write(repo.policy_file, POLICY + environments)
+        repo.git.fetch("+refs/heads/main:refs/remotes/origin/main")
+        repo.git.run("checkout", "-q", "--detach", "origin/main")
+        return Planner(repo.git, repo.policy, repo.github, minutes(40)).plan(Event.MANUAL, lane)
+
+    held = plan(PROBES_ONLY, Lane.RC)
+    assert held.action == "skip"
+    assert f"held, open 'incident' issues: #{number} {title}" in held.reason
+    assert plan(PROBES_ONLY, Lane.DEV).action == "release"  # dev isn't in blocker_lanes
+    repo.github.labels_read.clear()
+    assert plan(UNWATCHED, Lane.RC).action == "release"  # no health, no probes: the label isn't read
+    assert "incident" not in repo.github.labels_read
+    repo.github.close_issue(number, "Fixed by the hotfix")
+    assert plan(PROBES_ONLY, Lane.RC).action == "release"
+
+
+def test_doctor_asks_for_issues_write_for_an_environment_with_probes_and_no_health_url(repo: Repo) -> None:
+    """#1453: operate compares the probes and opens a compare incident, so doctor wants the
+    operate caller with issues: write once an environment declares probes (D-9); with neither
+    health nor probes nor from, no operate row, as before"""
+
+    def operate_check() -> tuple[str, str] | None:
+        found = {c.name: (c.status, c.detail) for c in doctor(repo.root, repo.github)}
+        return found.get("operate")
+
+    repo.write(repo.policy_file, POLICY + UNWATCHED)
+    assert operate_check() is None
+    repo.write(repo.policy_file, POLICY + PROBES_ONLY)
+    status, detail = operate_check() or ("", "")
+    assert status == "WARN" and detail.startswith("staging uses from, health, or probes, but no ")
+    init_operate(repo.root, force=False)
+    assert operate_check() == (
+        "PASS",
+        f"{OPERATE_CALLER} runs shipmill operate with deployments, actions, issues: write; rolls back and opens an"
+        " incident labelled 'incident' when an environment answers differently than the previous release,"
+        " which holds rc, stable",
+    )
+    repo.write(str(OPERATE_CALLER), operate_caller_text().replace("      issues: write", "      issues: read"))
+    assert operate_check() == ("WARN", f"the job in {OPERATE_CALLER} that calls operate.yml lacks issues: write")

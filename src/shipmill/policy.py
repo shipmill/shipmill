@@ -220,9 +220,10 @@ class Policy:
 
     @property
     def incident_label(self) -> str | None:
-        """The label of the incident issues shipmill operate opens; None when no environment
-        has a health URL, so no incident can open"""
-        if not any(e.health for e in self.environments.values()):
+        """The label of the incident issues shipmill operate opens, a health or a compare
+        incident (spec 084); None when no environment has a health URL or declares probes, so
+        no incident can open"""
+        if not any(e.health or e.probes for e in self.environments.values()):
             return None
         return self.operate.incident_label
 
