@@ -354,6 +354,18 @@ def test_doctor_notes_whether_a_deploy_workflow_starts_operate(repo: Repo) -> No
     assert status == "WARN" and "isn't refs/tags/<tag>" in detail and "; and it doesn't start operate.yml" in detail
 
 
+def test_doctor_wants_the_deploy_workflow_to_start_operate_for_an_environment_with_probes(repo: Repo) -> None:
+    """#1453: operate compares an environment's probes after its deploy, so an environment with
+    probes and no health URL is one operate watches (D-9)"""
+    probes = 'lane = "rc"\nworkflow = "deploy.yml"\n\n[[environments.staging.probes]]\nname = "home"\npath = "/"\n'
+    repo.write(repo.policy_file, repo.read(repo.policy_file) + f"\n[environments.staging]\n{probes}")
+    starts = "        run: gh workflow run operate.yml -f dry-run=false\n"
+    no_start = DEPLOY.replace(starts, "        run: echo deployed\n")
+    repo.write(".github/workflows/deploy.yml", no_start)
+    status, detail = next((c.status, c.detail) for c in doctor(repo.root) if c.name == "environment")
+    assert status == "WARN" and "but it doesn't start operate.yml after the deploy" in detail
+
+
 def test_doctor_catches_a_version_line_that_no_longer_matches(repo: Repo) -> None:
     repo.write("README.md", "# demo\n")
     checks = [c for c in doctor(repo.root) if c.name == "version_lines"]
