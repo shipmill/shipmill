@@ -1,3 +1,0 @@
-### Added
-
-- An environment in `[environments]` may declare up to 20 `[[environments.<name>.probes]]` (`name`, `path`, `ignore` JSON pointers); after a deploy passes its health check, `shipmill operate` sends each probe as a plain GET twice to the previous release's address and once to the new one's (each the newest `environment_url` its deployment statuses carry), compares the answers with the ignored pointers and the previous release's own noise removed, sends a difference once more, and writes one `shipmill compare: same answers as <tag> on <n> probes` success status when every counted probe reads the same; an environment without probes makes no request beyond its health check (spec 084) (#1435)

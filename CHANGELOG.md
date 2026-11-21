@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.155.0] - 2026-11-21
+
+### Added
+
+- An environment in `[environments]` may declare up to 20 `[[environments.<name>.probes]]` (`name`, `path`, `ignore` JSON pointers); after a deploy passes its health check, `shipmill operate` sends each probe as a plain GET twice to the previous release's address and once to the new one's (each the newest `environment_url` its deployment statuses carry), compares the answers with the ignored pointers and the previous release's own noise removed, sends a difference once more, and writes one `shipmill compare: same answers as <tag> on <n> probes` success status when every counted probe reads the same; an environment without probes makes no request beyond its health check (spec 084) (#1435)
+
 ## [0.154.1] - 2026-11-20
 
 ### Fixed
@@ -2826,7 +2832,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.154.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.155.0...HEAD
+[0.155.0]: https://github.com/shipmill/shipmill/compare/v0.154.1...v0.155.0
 [0.154.1]: https://github.com/shipmill/shipmill/compare/v0.154.0...v0.154.1
 [0.154.0]: https://github.com/shipmill/shipmill/compare/v0.153.0...v0.154.0
 [0.153.0]: https://github.com/shipmill/shipmill/compare/v0.152.0...v0.153.0
