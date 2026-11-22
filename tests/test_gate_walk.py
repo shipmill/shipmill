@@ -333,7 +333,7 @@ def test_s046_3_the_change_check_is_one_query_and_one_runs_read_per_watched_work
     gh = Gh([graphql_answer(pulls=[pull(3)], incidents=[9])], runs((1, "release.yml", "success")))
     found = check(REPO, NOW, "incident", ("release.yml",), gh.graphql, gh.read, NOW)
     assert len(gh.queries) == 1 and gh.paths == [f"repos/{REPO}/actions/workflows/release.yml/runs?per_page=10"]
-    assert "pullRequests(states: OPEN, first: 100" in gh.queries[0] and "latestRelease" in gh.queries[0]
+    assert "pullRequests(states: OPEN, first: 20" in gh.queries[0] and "latestRelease" in gh.queries[0]
     assert [p["number"] for p in prs_of(found)] == [3]
     assert json.loads(json.dumps(found.known))["runs"][0]["workflow"] == "release.yml"
 
@@ -378,6 +378,86 @@ def test_s046_3_more_than_100_pull_requests_are_paged() -> None:
     found = check(REPO, NOW, "incident", (), gh.graphql, gh.read, NOW)
     assert len(gh.queries) == 2 and 'after: "c1"' in gh.queries[1] and "latestRelease" not in gh.queries[1]
     assert [p["number"] for p in prs_of(found)] == [3, 4]
+
+
+def worst_case_nodes(query: str) -> int:
+    """GitHub's node count for a query: each connection's first or last times the sizes of the
+    connections it sits in, summed; the rate limit charges a query for this worst case"""
+    total, stack, size = 0, [1], None
+    for token in re.finditer(r"\([^()]*\)|\{|\}", query):
+        if token[0] == "}":
+            stack.pop()
+        elif token[0] == "{":
+            nested = stack[-1] * (size or 1)
+            total += nested if size else 0
+            stack.append(nested)
+            size = None
+        else:
+            found = re.search(r"\b(?:first|last): (\d+)", token[0])
+            size = int(found[1]) if found else None
+    return total
+
+
+def test_s046_3_the_change_check_costs_under_100_by_100_nodes() -> None:
+    # #1458: pages of 100 with their nested labels, assignees, and links cost 18,420 nodes, 6
+    # points a tick, even on a repo with 3 open pull requests
+    from shipmill.walk import CONNECTIONS, change_query
+
+    assert worst_case_nodes("a(first: 2) { nodes { b(last: 3) { n } c(first: 4) { n } } }") == 2 + 2 * 3 + 2 * 4
+    assert worst_case_nodes(change_query(tuple(CONNECTIONS))) < 100 * 100
+
+
+def worst_case_points(query: str) -> int:
+    """GitHub's rate-limit points for a query: each connection costs one request per node of
+    the connections it sits in, and the points are the requests over 100, rounded, at least 1"""
+    requests, stack, size = 0, [1], None
+    for token in re.finditer(r"\([^()]*\)|\{|\}", query):
+        if token[0] == "}":
+            stack.pop()
+        elif token[0] == "{":
+            requests += stack[-1] if size else 0
+            stack.append(stack[-1] * (size or 1))
+            size = None
+        else:
+            found = re.search(r"\b(?:first|last): (\d+)", token[0])
+            size = int(found[1]) if found else None
+    return max(1, round(requests / 100))
+
+
+def test_s046_3_the_change_check_costs_1_point() -> None:
+    # #1458: GitHub charges a query by its worst-case requests, not its nodes; a page of 50 is
+    # 9,220 nodes, under 100 x 100, and still 3 points
+    from shipmill.walk import CHANGE_PAGE, CONNECTIONS, change_query
+
+    sample = " ".join(["a(first: 2) { nodes { b(last: 3) { n } c(first: 4) { n } } }"] * 30)
+    assert worst_case_points(sample) == 2  # 30 x (1 + 2 + 2) requests
+    query = change_query(tuple(CONNECTIONS))
+    assert worst_case_points(query) == 1
+    fifty = re.sub(rf"(\b(?:updated|pulls|incidents): \w+\([^()]*first: ){CHANGE_PAGE}\b", r"\g<1>50", query)
+    assert fifty.count("first: 50") == 3 + 3 and worst_case_points(fifty) == 3
+
+
+def test_s046_3_more_than_20_open_pull_requests_are_read_over_pages() -> None:
+    # #1458: the change check's smaller page still reads every open pull request
+    queries: list[str] = []
+
+    def graphql(query: str, variables: Mapping[str, str]) -> dict[str, Any]:
+        queries.append(query)
+        head = re.search(r"pullRequests\([^()]*first: (\d+)[^()]*\)", query)
+        assert head is not None
+        size = int(head[1])
+        after = re.search(r'after: "(\d+)"', head[0])
+        start = 0 if after is None else int(after[1])
+        served = [pull(n) for n in range(start + 1, min(start + size, 45) + 1)]
+        answer = graphql_answer(pulls=served, more=start + size < 45)
+        answer["data"]["repository"]["pulls"]["pageInfo"]["endCursor"] = str(start + size)
+        if after is not None:
+            answer["data"]["repository"] = {"pulls": answer["data"]["repository"]["pulls"]}
+        return answer
+
+    found = check(REPO, NOW, "incident", (), graphql, Gh([], runs()).read, NOW)
+    assert [p["number"] for p in prs_of(found)] == list(range(1, 46))
+    assert len(queries) == 3 and all("latestRelease" not in q and "issues(" not in q for q in queries[1:])
 
 
 # -- the walk

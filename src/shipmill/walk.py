@@ -29,7 +29,11 @@ SWEEP = "sweep.json"  # the last sweep's rows
 HANDED = "handed.json"  # each handed item's fingerprint, its session, and when
 KNOWN = "known.json"  # what the change check read, for watch_state.py --known
 CURSOR_OVERLAP = dt.timedelta(minutes=5)  # an update GitHub indexed late is seen next tick
-PAGE = 100  # the change check's page of open issues, pull requests, and incidents
+PAGE = 100  # issue_updates' subjects per aliased query (S-061-7)
+# #1458: the change check's page of open issues, pull requests, and incidents; GitHub charges a
+# query by its worst-case requests (its nested connections times their pages), so a page of 100
+# cost 6 points a tick and a page of 20 costs 1
+CHANGE_PAGE = 20
 RUNS = 10  # the newest runs of each watched workflow the change check reads
 LANDED = 10  # the default branch's newest commits whose merged pull requests the change check reads (spec 048)
 SEQUENTIAL = 2  # at most this many watched workflows are read one after the other
@@ -568,9 +572,8 @@ CONNECTIONS = {
 def connection(name: str, after: str | None) -> str:
     head, nodes = CONNECTIONS[name]
     cursor = "" if after is None else f", after: {json.dumps(after)}"
-    return (
-        f"{name}: {head.format(page=PAGE, after=cursor)} {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {nodes} }} }}"
-    )
+    page = head.format(page=CHANGE_PAGE, after=cursor)
+    return f"{name}: {page} {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {nodes} }} }}"
 
 
 # the default branch's last LANDED commits, each with the pull request it came in by (spec 048)
@@ -613,7 +616,7 @@ def check(
     rest: RestRead,
     now: dt.datetime,
 ) -> Changes:
-    """The change check: one GraphQL query, paged only past PAGE open issues, pull requests, or
+    """The change check: one GraphQL query, paged only past CHANGE_PAGE open issues, pull requests, or
     incidents, and one read of each watched workflow's newest runs. Without a cursor, every item is new
     and none is read as updated: the tick walks anyway"""
     owner, _, name = repo.partition("/")
