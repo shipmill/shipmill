@@ -118,7 +118,11 @@ For each open issue:
   TRIAGED          triaged, nothing pending (clarify, waiting on the reporter, ...). A
                    goal's plan (labelled goal-plan, spec 028) whose newest triage comment
                    is product intake's own, "Triage: **plan**", reads TRIAGED whatever the
-                   rest of that comment says: the maintainer's answer moves it, not triage
+                   rest of that comment says: the maintainer's answer moves it, not triage.
+                   With --json its line carries "verdict", the bold word of its newest
+                   triage comment when it is one the skills write (opportunity, feature,
+                   clarify, needs a decision, plan, postponed, won't fix, duplicate,
+                   upstream; spec 088), and no "verdict" otherwise
   NEEDS_DECISION   labelled needs-decision and its question has no reply: a headless
                    session asked the user and left it (references/needs-decision.md).
                    The question is the newest comment whose first line is the marker
@@ -871,6 +875,21 @@ ACTION = {
     "STALE_HANDOFF",  # #1313: a person's item whose sub-issue parent closed: close it or say why it waits
     "AGENT_DRAFT",  # D-67 (#914): the App's own draft, nothing open on it: a session resumes it
 }
+# Spec 088: the bold words a triage comment the skills write starts with, past the marker
+# (references/comments.md), as a TRIAGED line's verdict; a word outside them names none, so no
+# comment text reaches a line (D-16). shipmill's status.TRIAGE_VERDICTS keeps the same set
+TRIAGE_VERDICTS = (
+    "opportunity",
+    "feature",
+    "clarify",
+    "needs a decision",
+    "plan",
+    "postponed",
+    "won't fix",
+    "duplicate",
+    "upstream",
+)
+VERDICT_WORD = re.compile(r"\*\*([^*\n]{1,60})\*\*")
 IN_FLIGHT = ("IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD")  # an open PR does its work: in progress under --wip
 CLOSED_STATES = ("CLOSED", "NOT_PLANNED", "MERGED")  # a hold in one of these holds nothing
 HOLD = re.compile(r"\b(?:on hold|blocked|waits? on|waiting on|pending|depends on)\b", re.IGNORECASE)
@@ -2238,6 +2257,20 @@ def first_line(body: str) -> str:
     return body.lstrip().split("\n", 1)[0].strip()
 
 
+def triage_verdict(issue: dict[str, Any], marker: str) -> str | None:
+    """Spec 088: the verdict of the issue's newest triage comment, its bold word right after
+    the marker when it is one of TRIAGE_VERDICTS, or one of them followed by more words (as
+    "postponed to 1.1" reads postponed); None otherwise"""
+    triage = [c["body"].lstrip() for c in issue["comments"]["nodes"] if c["body"].lstrip().startswith(marker)]
+    if not triage:
+        return None
+    found = VERDICT_WORD.match(triage[-1][len(marker) :].lstrip())
+    if found is None:
+        return None
+    word = " ".join(found.group(1).split()).lower().replace("\u2019", "'")
+    return next((v for v in TRIAGE_VERDICTS if word == v or word.startswith(v + " ")), None)
+
+
 def marked(body: str, marker: str = DECISION_MARKER) -> bool:
     """Whether a comment's first line is the marker (by default the needs-decision one); a
     quote of it further down is no question, hand-off, or verification"""
@@ -3006,6 +3039,10 @@ def main() -> int:
             if usual[0] in IN_FLIGHT:
                 busy.add(issue["number"])
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
+        if state == "TRIAGED":  # spec 088: what it was triaged as, for shipmill status
+            verdict = triage_verdict(issue, args.marker)
+            if verdict is not None:
+                row["verdict"] = verdict
         if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
             row["direction"] = True
         linked = spec_files(issue["body"] or "")

@@ -35,7 +35,9 @@
   status          say whether the factory works or is stuck: a verdict, then a short summary with
                   a line per reason and a direct link per item, this host's machinery summed up
                   on one factory line; --rows for github-ship-watch's table, --json for its JSON
-                  lines and an AUTONOMY line with every stage's level
+                  lines and an AUTONOMY line with every stage's level; --item REF (a number or
+                  a GitHub URL) says why one open issue or pull request is not closed: its
+                  bucket and each condition that keeps it open, with who clears it (spec 088)
   factory         read-only: this host's machinery for the repo, one line per check (gate,
                   sessions, github app, shipmill, checkout, worktrees), each run on its own;
                   --json for one JSON object (spec 044)
@@ -164,6 +166,7 @@ from shipmill import (
     evals,
     factory,
     fragments,
+    item_status,
     land_window,
     merge_checks,
     plugin_clean,
@@ -358,6 +361,7 @@ from shipmill.gate import (
     gate,
     head_config,
     host_login,
+    land_window_of,
     load_prune,
     load_tick,
     pruner,
@@ -743,7 +747,18 @@ def _parser() -> argparse.ArgumentParser:
     shown.add_argument(
         "--json",
         action="store_true",
-        help="print github-ship-watch's JSON lines instead, then an AUTONOMY line with every stage's level",
+        help=(
+            "print github-ship-watch's JSON lines instead, then an AUTONOMY line with every stage's level;"
+            " with --item, the item's explanation as one JSON object"
+        ),
+    )
+    p.add_argument(
+        "--item",
+        metavar="REF",
+        help=(
+            "say why one open issue or pull request is not closed: its bucket and every condition that keeps"
+            " it open, with who clears it (spec 088); REF is its number or its GitHub URL"
+        ),
     )
 
     p = sub.add_parser("factory", help="print this host's machinery for the repo, one line per check (spec 044)")
@@ -3421,7 +3436,10 @@ def _status(
             raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo, such as owner/name")
     else:
         check_checkout(Git(top), slug)
-    picture = not (args.rows or args.json)
+    if args.item is not None and args.rows:
+        raise ReleaseError("--item explains one item and can't be combined with --rows; use --item REF [--json]")
+    ref = None if args.item is None else item_status.parse_ref(args.item, slug)  # S-088-2: before any read
+    picture = ref is not None or not (args.rows or args.json)
     resolved = roles.resolve(roles.configured(top), login, gate_maintainer)
     # S-040-10: the picture and --json show the levels; a malformed [autonomy] exits 2 first
     autonomy, environments = status.read_autonomy(top) if not args.rows else (AutonomyPolicy(), ())
@@ -3508,6 +3526,11 @@ def _status(
         environments=environments,
         refused=refused.in_checkout(top),  # S-052-9
     )
+    if ref is not None:  # spec 088: one item's explanation, from the same facts
+        window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
+        why = item_status.explain(facts, ref, lambda n: item_status.read_pull_detail(slug, n, run), window)
+        sys.stdout.write(json.dumps(why.record()) + "\n" if args.json else why.text())
+        return 0
     sys.stdout.write(status.report(facts).text(slug))
     return code  # S-009-14: spec 008's code, whatever the verdict
 

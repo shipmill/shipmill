@@ -193,6 +193,11 @@ ISSUE_LINES = (
 # with what checking it takes (a person's item closed by hand: its ## Check, spec 017)
 CLOSED_LINES = (("suspect close", "SUSPECT_CLOSE", ""), ("verify close", "VERIFY_CLOSED", ": run its ## Check"))
 CLOSED_STATES = {state for _, state, _ in CLOSED_LINES}
+# spec 088: the verdicts triage_state.py names on a TRIAGED line, the bold words the skills'
+# triage comments start with (its TRIAGE_VERDICTS; tests/test_status_item.py keeps them equal)
+TRIAGE_VERDICTS = frozenset(
+    {"opportunity", "feature", "clarify", "needs a decision", "plan", "postponed", "won't fix", "duplicate", "upstream"}
+)
 # spec 053: watch_state.py's ISSUES row for an approved spec nobody split, `SPEC_UNSPLIT S-NNN <title> (<path>): ...`
 SPEC_UNSPLIT = "SPEC_UNSPLIT"
 # a GitHub login, as triage_state.py's WITH_PERSON line names its assignees: watch_state.py's
@@ -265,6 +270,7 @@ class Issue:
     assignees: tuple[str, ...] = ()
     closed: bool = False
     teams: tuple[str, ...] = ()
+    verdict: str | None = None  # spec 088: a TRIAGED line's verdict, one of TRIAGE_VERDICTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,7 +414,11 @@ def parse_issues(text: str) -> list[Issue]:
     issues = []
     for r in found:
         people, teams = person_logins(r)
-        issues.append(Issue(int(r["number"]), str(r["state"]), str(r["note"]), people, r.get("closed") is True, teams))
+        verdict = r.get("verdict")
+        if verdict is not None and (r["state"] != "TRIAGED" or verdict not in TRIAGE_VERDICTS):
+            raise ReleaseError(f"triage_state.py printed a verdict it doesn't write: {r!r}")
+        number, state, note, closed = int(r["number"]), str(r["state"]), str(r["note"]), r.get("closed") is True
+        issues.append(Issue(number, state, note, people, closed, teams, verdict))
     return issues
 
 
@@ -1399,6 +1409,8 @@ def issue_value(repo: str, issue: Issue) -> str:
             remove = f"gh issue edit {issue.number} -R {repo} --remove-label blocked"
             return f"{shown} labelled blocked: {remove} once it can go on"
         return shown
+    if issue.state == "TRIAGED" and issue.verdict is not None:  # S-088-8: what it was triaged as
+        return f"{shown} triaged: {issue.verdict}"
     if issue.state in ("POSTPONED", "TRIAGED"):
         return f"{shown} {issue.state.lower()}"
     if issue.state == "WITH_PERSON":  # the logins and teams it waits on, never the note's text (D-16)
