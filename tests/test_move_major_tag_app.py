@@ -122,7 +122,7 @@ def test_the_app_steps_run_only_when_a_reference_moves() -> None:
     """#1188: a release that isn't the newest stable one moves nothing, so it reads no key and
     sets up no App; the steps gate on the check's output as the push steps do"""
     gated = [s for s in STEPS if "land-environment != ''" in str(s.get("if", ""))]
-    assert len(gated) == 4  # setup-uv, the key, the check, the App's settings
+    assert len(gated) == 5  # setup-uv, the key, PyPI's wait (#1470), the check, the App's settings
     assert all(s["if"] == OPTED_IN for s in gated)
     assert _step(TAG_STEP)["if"] == _step(MARKETPLACE_STEP)["if"] == "steps.check.outputs.newest == 'true'"
 
@@ -326,7 +326,7 @@ def test_the_push_config_clears_the_workflow_token_and_sends_the_apps_credential
 ) -> None:
     key = tmp_path / "shipmill-land-key.pem"
     github_env = _settings(pushable, tmp_path, key)
-    tool = "!uvx --from shipmill==0.67.0 shipmill"
+    tool = "!uvx --refresh-package shipmill --from shipmill==0.67.0 shipmill"  # #1470: past uv's cache
     narrowed = "--permission contents=write"  # D-90: the push writes the marketplace file and nothing else
     helper = f"{tool} app-token shipmill/shipmill {narrowed} --app-id 42 --app-key {key} --git-credential"
     assert _config(github_env) == {
@@ -359,6 +359,8 @@ def test_a_key_path_with_a_space_reaches_the_helper_whole(pushable: Path, tmp_pa
     )
     assert "password=y" in filled.stdout
     assert argv.read_text().splitlines() == [
+        "--refresh-package",
+        "shipmill",
         "--from",
         "shipmill==0.67.0",
         "shipmill",
@@ -418,8 +420,8 @@ def test_the_helper_asks_only_for_contents_write_through_sh(pushable: Path, tmp_
     )
     assert "password=y" in filled.stdout
     argv = argv_file.read_text().splitlines()
-    assert argv[:3] == ["--from", "shipmill==0.67.0", "shipmill"]
-    args = _parser().parse_args(argv[3:])
+    assert argv[:5] == ["--refresh-package", "shipmill", "--from", "shipmill==0.67.0", "shipmill"]
+    args = _parser().parse_args(argv[5:])
     assert (args.command, args.slug, args.permission, args.git_credential) == (
         "app-token",
         "o/r",
