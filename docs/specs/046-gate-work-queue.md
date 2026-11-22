@@ -43,7 +43,8 @@ query and one runs read per watched workflow:
   (`issues(filterBy: {since})`, which counts comments and label changes) with their labels;
   the open pull requests' number, labels, draft state, whether the head is in the repo, head
   SHA, and head commit's check rollup state; and the open issues labelled `[operate]
-  incident_label`. At most 100 of each, paged past that
+  incident_label`. At most 20 of each, paged past that (100 until #1458: GitHub charges a
+  query for its worst case, and a page of 100 with its nested connections cost 6 points a tick)
 - one `gh api repos/<repo>/actions/workflows/<file>/runs?per_page=10` read per watched
   workflow, the policy's release workflow and each `[operate]` workflow: the id, status,
   conclusion, and URL of its 10 newest runs. Read concurrently when there are more than two.
@@ -192,6 +193,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   requests, and one `gh api .../actions/workflows/<file>/runs` read per watched workflow,
   each with `per_page` of at most 10, and no repo-wide `actions/runs` read (revised in #762,
   D-58)
+  - Amended by #1458: the change check's page is 20 (`CHANGE_PAGE`), not 100, so its worst-case node count stays below 100 × 100; it is still one query, paged only past that page, and `issue_updates` keeps its page of 100 (S-061-7)
 - S-046-4: a walk reads the tiers in order and reads no tier below the one where it finds an
   item not handed within `retry_hours`
 - S-046-5: with an untaken item in tier 3, a tick reads no `triage_state.py` and runs no
@@ -271,7 +273,7 @@ Checked on the default branch plus #756's change, by the tests named, all passin
 
 - S-046-1: `test_s046_1_no_change_reads_nothing_more_and_is_quiet`
 - S-046-2: `test_s046_2_each_change_makes_the_tick_walk`, `test_s046_2_each_github_change_moves_the_signature`, `test_s046_2_a_success_after_a_success_and_another_workflow_are_no_change`, `test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_asked`, `test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick`, `test_s046_2_a_run_still_going_is_no_change`, `test_s046_2_a_dead_session_is_one_change_not_one_every_tick`, `test_s046_2_a_release_run_behind_100_newer_ci_runs_is_still_a_change`
-- S-046-3: `test_s046_3_the_change_check_is_one_query_and_one_runs_read_per_watched_workflow`, `test_s046_3_each_watched_workflow_is_read_once_with_at_most_10_runs`, `test_s046_3_a_watched_workflow_github_doesnt_know_fails_the_check`, `test_s046_3_more_than_100_pull_requests_are_paged`, `test_s046_3_a_later_page_declares_only_the_variables_it_uses`
+- S-046-3: `test_s046_3_the_change_check_is_one_query_and_one_runs_read_per_watched_workflow`, `test_s046_3_each_watched_workflow_is_read_once_with_at_most_10_runs`, `test_s046_3_a_watched_workflow_github_doesnt_know_fails_the_check`, `test_s046_3_more_than_100_pull_requests_are_paged`, `test_s046_3_a_later_page_declares_only_the_variables_it_uses`, `test_s046_3_the_change_check_costs_under_100_by_100_nodes`, `test_s046_3_more_than_20_open_pull_requests_are_read_over_pages`
 - S-046-4: `test_s046_4_a_walk_reads_no_tier_below_the_one_with_an_untaken_item`
 - S-046-5: `test_s046_5_an_untaken_item_in_tier_3_reads_no_triage_and_no_notices`
 - S-046-6: `test_s046_6_tiers_1_and_3_get_the_change_checks_data`
