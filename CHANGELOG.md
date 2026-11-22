@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.162.0] - 2026-11-22
+
+### Added
+
+- Status: `shipmill status --item REF` prints the holder's step from the item's newest trusted hand-off (`step:`), every open issue that waits on it across repos with its bucket (`blocks:`), and the issues its open pull requests close (`closes:`), read beside the other reads so it is no slower; `--json` carries them as `step`, `blocks`, `blocks_error`, and `closes` (#1473)
+
 ## [0.161.2] - 2026-11-22
 
 ### Fixed
@@ -2912,7 +2918,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.161.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.162.0...HEAD
+[0.162.0]: https://github.com/shipmill/shipmill/compare/v0.161.2...v0.162.0
 [0.161.2]: https://github.com/shipmill/shipmill/compare/v0.161.1...v0.161.2
 [0.161.1]: https://github.com/shipmill/shipmill/compare/v0.161.0...v0.161.1
 [0.161.0]: https://github.com/shipmill/shipmill/compare/v0.160.1...v0.161.0
