@@ -60,9 +60,60 @@ shipmill/shipmill#1461 (https://github.com/shipmill/shipmill/issues/1461): parke
 - An item the gate takes up as it stands says so as its condition:
   `the gate takes it up on a coming tick, in its tier order`, cleared by an agent
 
+After the conditions come up to three lines (#1473), each only when it has something to say:
+
+```
+  step:    Merge #97; Run its migration on production (handoff, 2026-11-17)
+  blocks:  owner/b#262 (parked: waits on this) -> owner/b#263 (parked: waits on #262) -> owner/c#399 (parked: waits on owner/b#263)
+  closes:  #96, #71 (by #97)
+```
+
 `--json` prints one object: `repo`, `number`, `kind` (`issue` or `pull`), `url`, `bucket`,
 and `conditions`, each with `reason`, `who` (`maintainer`, `agent`, `person`, `event`), and
-`clears`.
+`clears`; then `step` (`text` and `date`, or null), `blocks` (each `ref`, `bucket`, and
+`waits_on`), `blocks_error` (null, or why the walk failed), and `closes` (each `pull` and
+its `issues`).
+
+### The holder's step, what waits on the item, and what it closes
+
+The maintainer accepted these three lines for a direct build on 2026-11-22 (#1473), so an
+agent asked why an item is open sees who holds it, what they do, and what the chain waits on,
+without rebuilding it by hand.
+
+- **`step:`** the newest hand-off comment on the item, a comment whose first line is
+  `<!-- shipmill:handoff -->` by the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR (D-16,
+  as triage_state.py counts a hand-off; anyone else's marker never counts). Its step is the
+  hand-off's first block of `>` lines, the steps it quotes from the issue, with their list
+  marks dropped and joined by `; `; a hand-off without one gives its first line after the
+  marker, its leading mentions dropped. Whitespace is collapsed and the text cut at 200
+  characters with `…`, then the hand-off's date: `(handoff, YYYY-MM-DD)`. An item with no
+  such comment prints no `step:` line
+- **`blocks:`** every open issue that waits on the item, directly or through others, across
+  repos: the same holds spec 086 counts `held` from. They come from `chains.py show --json
+  --trusted-only [--bot-login LOGIN] <the item>`'s walk (spec 017), down through what GitHub
+  records waiting on an issue (`blocking`, `parent`), and from this repo's triage_state.py
+  BLOCKED notes, which carry the `Depends on` lines GitHub records no reverse of. An open
+  issue waits on an item when the item is among its open holds; an UNTRUSTED, UNREADABLE, or
+  closed one waits on nothing here, so an outsider's link adds nobody, and the item itself is
+  never listed, so a cycle adds nothing of its own. Nearest first, then by reference, each as
+  `<ref> (<bucket>: waits on <its open holds>)`: the bucket is the picture's for an issue of
+  this repo, and `parked` (BLOCKED) or `to triage` (CYCLE) for another repo's; the holds name
+  the item as `this`, an item of the waiter's own repo as `#N`, any other as `owner/name#N`.
+  The entries are joined by ` -> ` when each waits on the one before it alone, a single path,
+  and by `, ` otherwise. A pull request starts no walk (GitHub records no relation on one), so
+  its waiters are this repo's BLOCKED notes alone. A walk that fails prints
+  `blocks:  unread: <the last line of its error>` and the command still explains the item
+  (exit 0), as spec 086's watch reads a failed walk as a report-only row. Nothing waiting
+  prints no `blocks:` line
+- **`closes:`** for an issue, each open pull request whose closing keywords name it
+  (`closedByPullRequestsReferences`), with the open issues merging it closes
+  (`closingIssuesReferences`), as `<issues> (by #P)`, several joined by `; `; for a pull
+  request, its own open closing issues. So a merge that also closes an item on another line
+  is visible before it happens. None prints no `closes:` line
+
+These reads cost no step of their own (#1469): the item's comments and closing pull requests
+come in one GraphQL read, and it and the walk start beside triage_state.py's read, once the
+item is known open and the bot's login read.
 
 ### The conditions
 
@@ -122,12 +173,20 @@ repo, or a failed read, as `shipmill status` exits 2.
 - S-088-10: a pull request names each of: draft, needs-decision, merge state BEHIND, DIRTY, or BLOCKED, each failing and each pending check by name, a review decision CHANGES_REQUESTED or REVIEW_REQUIRED, shipmill-ready under land propose, and a closed land window that holds one of its labels with when it opens
 - S-088-11: `--json` prints one object with `repo`, `number`, `kind`, `url`, `bucket`, and `conditions`, each with `reason`, `who`, and `clears`
 - S-088-12: `--item` writes nothing: it runs no `gh` command that writes and no `shipmill gh`
+- S-088-13: `step:` reads the steps quoted in the newest hand-off by the bot or an OWNER, MEMBER, or COLLABORATOR, with its date, or its first line without its mentions when it quotes none, cut at 200 characters; a marker by anyone else or further into a comment never counts, and an item without a hand-off prints no `step:` line
+- S-088-14: `blocks:` lists every open issue a path of open holds leads from to the item, across repos (the walk's) and through this repo's `Depends on` notes, nearest first, each with its bucket and its open holds (`this`, `#N`, `owner/name#N`), joined by ` -> ` for a single path and by `, ` otherwise; an UNTRUSTED, UNREADABLE, or closed issue and the item's own cycle add nothing, a pull request starts no walk, and nothing waiting prints no `blocks:` line
+- S-088-15: `closes:` names each open pull request that closes an issue with the open issues it closes, `(by #P)`, and for a pull request its own open closing issues; a closed or merged pull request and a closed issue are left out, and none prints no `closes:` line
+- S-088-16: the item's read and the walk run beside triage_state.py's read; a failed walk prints `blocks:  unread: <its error>` and exits 0; `--json` carries `step`, `blocks`, `blocks_error`, and `closes`; and the item of #1473's Check prints its three lines
 
 ## Out of scope
 
 - Ranking stuck or blocked work by what it holds back: spec 086's
 - Why a closed item closed: `status` lists suspect and unverified closes already
-- Items of another repo of the product: the command reads one repo
+- Explaining an item of another repo: the command explains one item of the repo it reads;
+  `blocks:` names other repos' items with their walk state alone, and `status --item` in that
+  repo explains each
+- Ranking what waits on the item by weight, or a stalled chain: spec 086's `impact` and
+  `stalled`
 
 ## Decisions relied on
 
@@ -137,6 +196,7 @@ repo, or a failed read, as `shipmill status` exits 2.
 ## Issues
 
 - shipmill/shipmill#1461: S-088-1, S-088-2, S-088-3, S-088-4, S-088-5, S-088-6, S-088-7, S-088-8, S-088-9, S-088-10, S-088-11, S-088-12
+- shipmill/shipmill#1473: S-088-13, S-088-14, S-088-15, S-088-16
 
 ## Verification
 
@@ -154,3 +214,7 @@ Checked on the build's pull request against this repo, by running `shipmill stat
 - S-088-10: draft, needs-decision, behind, conflicts, a failing and two pending checks, changes requested, review required, shipmill-ready under propose, and a closed land window that opens again in `test_s088_10_*`
 - S-088-11: `--json`'s one object, field by field, in `test_s088_11_*`
 - S-088-12: the reads a pull request's explanation makes hold no write and no `shipmill gh` in `test_s088_12_*`
+- S-088-13: the newest trusted hand-off's quoted steps, the bot's own, an outsider's marker and a quoted one refused, the first line without mentions, and the cut, in `test_s088_13_*`
+- S-088-14: a tree of waiters across repos with this repo's buckets, untrusted, unreadable, and closed rows left out, this repo's `Depends on` notes followed transitively, a cycle, nothing waiting, and a pull request that starts no walk, in `test_s088_14_*`
+- S-088-15: an issue's open closing pull requests in order, a merged one and a closed issue left out, and a pull request's own, in `test_s088_15_*` and `test_s088_14_a_pull_request_starts_no_walk`
+- S-088-16: #1473's Check as one cross-repo chain, a walk that starts while triage_state.py is still read, a failed walk in text and `--json`, and an item with none of the three lines, in `test_s088_16_*`; on #1473's pull request, `--item 1431` here printed `blocks:  shipmill/shipmill#1342 (parked: waits on this)`, and `--item 1342` took 12.1 seconds against 12.0 on 0.161.2

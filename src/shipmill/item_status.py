@@ -14,6 +14,7 @@ from shipmill.autonomy import HOLD_LABEL, Autonomy, Source, StageKind, StageLeve
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner
+from shipmill.item_links import ItemRef, Links, Reach, local_holds, merged, waiters
 from shipmill.land_window import LandWindow
 from shipmill.status import (
     CLOSED_STATES,
@@ -144,6 +145,7 @@ class Explanation:
     kind: Kind
     bucket: str
     conditions: tuple[Condition, ...]
+    links: Links | None = None  # #1473: step, blocks, and closes, when read
 
     @property
     def url(self) -> str:
@@ -153,6 +155,8 @@ class Explanation:
         lines = [f"{self.repo}#{self.number} ({self.url}): {self.bucket}"]
         for c in self.conditions:
             lines += [f"  why:  {c.reason}", f"        clears: {c.who.text} ({c.clears})"]
+        if self.links is not None:
+            lines += self.links.lines()
         return "\n".join(lines) + "\n"
 
     def record(self) -> dict[str, object]:
@@ -163,6 +167,7 @@ class Explanation:
             "url": self.url,
             "bucket": self.bucket,
             "conditions": [c.record() for c in self.conditions],
+            **({} if self.links is None else self.links.record()),
         }
 
 
@@ -457,8 +462,10 @@ def explain(
     ref: Ref,
     read_detail: Callable[[int], PullDetail],
     window: LandWindow | None,
+    reach: Reach | None = None,
 ) -> Explanation:
-    """S-088-1 to S-088-11: the item's bucket and conditions; every open item names one (S-088-4)"""
+    """S-088-1 to S-088-11: the item's bucket and conditions; every open item names one (S-088-4);
+    with reach, S-088-13 to S-088-16: its step, what waits on it, and what its pull requests close"""
     kind, issue, pull = _find(facts, ref)
     shown = bucket(facts, ref.number, kind)
     if kind is Kind.PULL:
@@ -479,4 +486,19 @@ def explain(
         conditions.append(
             Condition("no reason read: the gate's next tick reads it again", Who.AGENT, "the next gate tick")
         )
-    return Explanation(facts.repo, ref.number, kind, shown, tuple(dict.fromkeys(conditions)))
+    links = None if reach is None else _links(facts, ItemRef(facts.repo, ref.number), reach)
+    return Explanation(facts.repo, ref.number, kind, shown, tuple(dict.fromkeys(conditions)), links)
+
+
+def _links(facts: Facts, item: ItemRef, reach: Reach) -> Links:
+    """S-088-14: the walk's waiters and this repo's BLOCKED notes together, each of this repo
+    with the picture's bucket"""
+    opened = {i.number for i in facts.issues if i.state not in CLOSED_STATES and not i.closed}
+    notes = [(i.number, i.state, i.note) for i in facts.issues if i.number in opened]
+    holds = merged(reach.chain or {}, local_holds(facts.repo, notes))
+
+    def local(number: int) -> str | None:
+        return bucket(facts, number, Kind.ISSUE) if number in opened else None
+
+    blocks = () if reach.chain_error is not None else waiters(item, holds, local)
+    return Links(item, reach.read.step, blocks, reach.chain_error, reach.read.closes)

@@ -167,6 +167,7 @@ from shipmill import (
     evals,
     factory,
     fragments,
+    item_links,
     item_status,
     land_window,
     merge_checks,
@@ -3560,7 +3561,7 @@ def _status_item(
     it. None of the host's checks is read (the launchd job, the App check, the gate's CLI, its
     prune and tick records, the sessions and shipmill sections, agent-as-person): --item
     prints no factory line (D-55), and the explanation reads none of them"""
-    pool = ThreadPoolExecutor(max_workers=6)
+    pool = ThreadPoolExecutor(max_workers=8)
     try:  # a closed item's exit waits on no read: what hasn't started is cancelled
         login = pool.submit(status.read_login, slug, top, home, platform, bot_login)
         if not item_status.is_open(slug, ref.number, run):
@@ -3577,6 +3578,16 @@ def _status_item(
         detail = pool.submit(own_detail)
         bot = login.result()
         issues = pool.submit(status.read_issues, slug, run, bot, resolved)
+        # #1473: the item's hand-off and closing pull requests, and the walk of what waits on
+        # it, beside the reads above, so they add no step to --item's wait (#1469)
+        item = item_links.ItemRef(slug, ref.number)
+        own = pool.submit(item_links.read_item, item, bot, run)
+
+        def chain() -> tuple[item_links.Holds | None, str | None]:  # no walk starts from a pull request
+            listed = any(p.number == ref.number for p in pulls.result())
+            return (None, None) if listed else item_links.read_chain(item, bot, run)
+
+        walked = pool.submit(chain)
         read = StateRead(bot_login=bot, roles=resolved)
         proc = run(watch_command(slug, top, read, json=True, host=False, item=ref.number))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
@@ -3607,7 +3618,9 @@ def _status_item(
             return found if found is not None else item_status.read_pull_detail(slug, number, run)
 
         window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
-        why = item_status.explain(facts, ref, read_detail, window)
+        holds, chain_error = walked.result()
+        reach = item_links.Reach(own.result(), holds, chain_error)
+        why = item_status.explain(facts, ref, read_detail, window, reach)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     sys.stdout.write(json.dumps(why.record()) + "\n" if as_json else why.text())
