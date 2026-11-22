@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.159.0] - 2026-11-22
+
+### Changed
+
+- Product intake's `intake_state.py` reads its issues 70 to a page, its discussions, open pull requests, and comments 100 to a page, so a run on shipmill/shipmill costs GitHub 5 rate-limit points instead of 8, each query still 1: GitHub charges a query by its worst-case requests, one per connection times the nodes of the connections it sits in, so a smaller page only adds queries; every item, closed discussions and declined opportunities among them, is still read (#1459)
+- `triage_state.py` reads open issues 20 a page instead of 100 on the first page and 50 on later ones, and the first query's closed decided issues 20 instead of 50, so its first query costs GitHub 2 rate-limit points instead of 8 and each later page 1 instead of 3: GitHub charges a query by its worst-case requests, an open issue's six nested connections times the page; every issue is still read, over more pages (#1459)
+
 ## [0.158.1] - 2026-11-21
 
 ### Fixed
@@ -2867,7 +2874,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.158.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.159.0...HEAD
+[0.159.0]: https://github.com/shipmill/shipmill/compare/v0.158.1...v0.159.0
 [0.158.1]: https://github.com/shipmill/shipmill/compare/v0.158.0...v0.158.1
 [0.158.0]: https://github.com/shipmill/shipmill/compare/v0.157.1...v0.158.0
 [0.157.1]: https://github.com/shipmill/shipmill/compare/v0.157.0...v0.157.1
