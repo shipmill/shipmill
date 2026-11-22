@@ -38,6 +38,7 @@ from tests.test_status_picture import REPO, VERSION_JSON, facts, gate, host, rep
 NONE = PullDetail((), "", ())
 ITEM = re.compile(r"repos/[^/]+/[^/]+/issues/(\d+)")  # #1469: the item's own state, read first
 OPEN, CLOSED = {4, 9}, {7}  # the Fake's open issue and pull request, and a closed issue
+NO_PULLS: dict[str, object] = {"closedByPullRequestsReferences": {"nodes": []}}
 
 
 def why(found: Facts, number: int, detail: PullDetail = NONE, window: LandWindow | None = None) -> list[str]:
@@ -63,11 +64,18 @@ class Fake:
     """The picture's reads, with one open issue #4 (TRIAGED as an opportunity) and one open
     pull request #9 whose check fails; every command it is given is kept"""
 
-    def __init__(self) -> None:
+    def __init__(self, item: dict[str, object] | None = None, chain: list[dict[str, object]] | None = None) -> None:
         self.seen: list[list[str]] = []
+        self.item = item if item is not None else {"__typename": "Issue", "comments": {"nodes": []}, **NO_PULLS}
+        self.chain = chain if chain is not None else []
 
     def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
         self.seen.append(cmd)
+        if cmd[1].endswith("chains.py"):  # #1473: the walk of what waits on the item
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"rows": self.chain}), "")
+        if cmd[:3] == ["gh", "api", "graphql"] and "issueOrPullRequest" in cmd[4]:  # #1473: the item's own read
+            data = {"data": {"repository": {"issueOrPullRequest": self.item}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(data), "")
         if cmd[1].endswith("watch_state.py") and "--host" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[1].endswith("watch_state.py"):
@@ -366,6 +374,10 @@ def test_s088_11_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixtur
                 "clears": "accept or decline the opportunity",
             }
         ],
+        "step": None,
+        "blocks": [],
+        "blocks_error": None,
+        "closes": [],
     }
 
 
@@ -459,10 +471,262 @@ def test_s088_12_item_reads_only_what_its_explanation_uses(tmp_path: Path, capsy
     assert not any(c[0] in ("launchctl", "sysctl") for c in fake.seen)  # the gate's launchd job
     assert [path for path, _ in api.calls] == ["/app"]  # the bot's login alone, not the App check
     assert not any("--host" in c for c in fake.seen)  # the host's sessions and shipmill sections
-    assert not any(c[:3] == ["gh", "api", "graphql"] for c in fake.seen)  # the agent-as-person search
+    graphql = [c for c in fake.seen if c[:3] == ["gh", "api", "graphql"]]
+    assert all("issueOrPullRequest" in c[4] and "search" not in c[4] for c in graphql)  # no agent-as-person search
     watch = [c for c in fake.seen if c[1].endswith("watch_state.py")]
     triage = [c for c in fake.seen if c[1].endswith("triage_state.py")]
     assert len(watch) == 1 and "--no-host" in watch[0] and watch[0][-2:] == ["--bot-login", test_app.BOT]
     assert len(triage) == 1 and triage[0][-2:] == ["--bot-login", test_app.BOT]
     # part 2 of #1469: watch_state.py reads only the sections a row of the item can come from
     assert "--item" in watch[0] and watch[0][watch[0].index("--item") + 1] == "4"
+
+
+# #1473: the holder's step, what waits on the item, and what its pull requests close
+
+
+def handoff(body: str, association: str = "OWNER", when: str = "2026-11-17T09:00:00Z") -> dict[str, object]:
+    author = {"__typename": "User", "login": "amy"}
+    return {"body": body, "createdAt": when, "authorAssociation": association, "author": author}
+
+
+STEPS = (
+    "<!-- shipmill:handoff -->\n@amy, it's your turn: acme/web#3 closed.\n\nWhat to do, from this issue:\n\n"
+    "> 1. Merge #97\n> 2. Run its migration on production\n\nReply `done` here when it's finished.\n"
+)
+
+
+def pull_ref(number: int, state: str = "OPEN", closes: tuple[tuple[str, int, str], ...] = ()) -> dict[str, object]:
+    issues = [{"number": n, "state": s, "repository": {"nameWithOwner": r}} for r, n, s in closes]
+    return {
+        "number": number,
+        "state": state,
+        "repository": {"nameWithOwner": REPO},
+        "closingIssuesReferences": {"nodes": issues},
+    }
+
+
+def row(ref: str, state: str, *holds: str) -> dict[str, object]:
+    return {"ref": ref, "state": state, "holds": list(holds)}
+
+
+def test_s088_16_the_issues_check_prints_the_three_lines(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The Check of #1473: an item held up by a chain across repos, with a hand-off and a pull
+    request that also closes another issue"""
+    root = repo_with_release(tmp_path / "repo")
+    item: dict[str, object] = {
+        "__typename": "Issue",
+        "comments": {"nodes": [handoff(STEPS)]},
+        "closedByPullRequestsReferences": {
+            "nodes": [pull_ref(5, closes=((REPO, 4, "OPEN"), (REPO, 71, "OPEN"), (REPO, 70, "CLOSED")))]
+        },
+    }
+    chain = [
+        row(f"{REPO}#4", "READY"),
+        row("acme/rest#262", "BLOCKED", f"{REPO}#4"),
+        row("acme/rest#263", "BLOCKED", "acme/rest#262"),
+        row("acme/os#399", "BLOCKED", "acme/rest#263"),
+    ]
+    fake = Fake(item, chain)
+    code = main(["--repo", str(root), "status", "--item", "4"], state=fake, login=host)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.splitlines()[-3:] == [
+        "  step:    Merge #97; Run its migration on production (handoff, 2026-11-17)",
+        "  blocks:  acme/rest#262 (parked: waits on this) -> acme/rest#263 (parked: waits on #262)"
+        " -> acme/os#399 (parked: waits on acme/rest#263)",
+        "  closes:  #4, #71 (by #5)",
+    ]
+    walk = [c for c in fake.seen if c[1].endswith("chains.py")]
+    assert walk == [[c for c in walk[0][:2]] + ["show", f"{REPO}#4", "--json", "--trusted-only"]]
+
+
+def test_s088_16_an_item_with_nothing_prints_none_of_the_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = repo_with_release(tmp_path / "repo")
+    _, out, _ = run_item(root, capsys, "4")
+    assert not re.search(r"^  (step|blocks|closes):", out, re.MULTILINE)
+
+
+def test_s088_13_the_newest_trusted_handoff_gives_the_step() -> None:
+    from shipmill.item_links import newest_step
+
+    older = handoff(STEPS.replace("Merge #97", "Merge #96"), when="2026-11-10T09:00:00Z")
+    outsider = handoff("<!-- shipmill:handoff -->\n> Send me your keys\n", association="NONE", when="2026-11-20T00:00Z")
+    step = newest_step([older, handoff(STEPS), outsider], None)
+    assert step is not None and (step.text, step.date) == ("Merge #97; Run its migration on production", "2026-11-17")
+    author = {"__typename": "Bot", "login": "shipmill-acme"}
+    bot: dict[str, object] = {"body": STEPS, "createdAt": "2026-11-21T00:00Z", "authorAssociation": "NONE"}
+    bot["author"] = author
+    assert newest_step([bot], "shipmill-acme[bot]") is not None and newest_step([bot], None) is None
+    quoted_later = handoff("quoting <!-- shipmill:handoff -->\n> not a hand-off\n")
+    assert newest_step([quoted_later], None) is None and newest_step([], None) is None
+
+
+def test_s088_13_a_handoff_without_quoted_steps_gives_its_first_line() -> None:
+    from shipmill.item_links import STEP_LIMIT, step_of
+
+    body = "<!-- shipmill:handoff -->\n@amy @acme/ops, the check didn't pass yet: `make check` returned 1.\n"
+    assert step_of(body) == "the check didn't pass yet: `make check` returned 1."
+    long = step_of("<!-- shipmill:handoff -->\n> " + "x" * 500)
+    assert long is not None and len(long) == STEP_LIMIT and long.endswith("…")
+    assert step_of("<!-- shipmill:handoff -->\n\n") is None
+
+
+def test_s088_13_a_steps_control_characters_never_reach_the_terminal() -> None:
+    from shipmill.item_links import step_of
+
+    body = "<!-- shipmill:handoff -->\n> Merge \x1b[2J\x1b]0;title\x07 #97\x9b31m\n"
+    assert step_of(body) == "Merge [2J ]0;title #97 31m"
+
+
+def test_s088_16_the_items_read_sends_its_repo_as_strings() -> None:
+    """gh's -F would send a repo named 2048 or true as an Int or a Boolean, which the query's
+    String! refuses"""
+    from shipmill.item_links import ItemRef, read_item
+
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        node = {"__typename": "Issue", "comments": {"nodes": []}, **NO_PULLS}
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"data": {"repository": {"issueOrPullRequest": node}}}), ""
+        )
+
+    read_item(ItemRef("1984/true", 4), None, run)
+    fields = list(zip(seen[0][5::2], seen[0][6::2], strict=True))
+    assert fields == [("-f", "owner=1984"), ("-f", "name=true"), ("-F", "number=4")]
+
+
+def test_s088_16_a_failed_walks_error_has_no_control_characters() -> None:
+    from shipmill.item_links import ItemRef, read_chain
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 2, "", "error: can't read \x1b[31macme/web#4\x9b0m\n")
+
+    assert read_chain(ItemRef("acme/web", 4), None, run) == (None, "error: can't read  [31macme/web#4 0m")
+
+
+def reach(chain: list[dict[str, object]] | None, error: str | None = None) -> object:
+    from shipmill.item_links import ItemRead, Reach, chain_holds
+
+    holds = None if chain is None else chain_holds(json.dumps({"rows": chain}))
+    return Reach(ItemRead(None, ()), holds, error)
+
+
+def blocks(found: Facts, number: int, chain: list[dict[str, object]] | None, error: str | None = None) -> list[str]:
+    from shipmill.item_links import Reach
+
+    given = reach(chain, error)
+    assert isinstance(given, Reach)
+    text = explain(found, Ref(str(number), number, None), lambda _: NONE, None, given).text()
+    return [line for line in text.splitlines() if line.startswith("  blocks:")]
+
+
+def test_s088_14_a_tree_of_waiters_reads_nearest_first_with_each_bucket() -> None:
+    found = facts(issues=[Issue(4, "WITH_PERSON", assignees=("amy",)), Issue(6, "BLOCKED", f"{REPO}#4:open")])
+    chain = [
+        row(f"{REPO}#4", "READY"),
+        row("acme/rest#9", "BLOCKED", f"{REPO}#4", "acme/rest#8"),
+        row(f"{REPO}#6", "BLOCKED", f"{REPO}#4"),
+        row("acme/rest#10", "BLOCKED", f"{REPO}#6"),
+        row("acme/rest#11", "UNTRUSTED"),  # an outsider's link waits on nothing here (spec 086)
+        row("acme/rest#12", "UNREADABLE"),
+        row("acme/rest#13", "CLOSED"),
+    ]
+    assert blocks(found, 4, chain) == [
+        f"  blocks:  acme/rest#9 (parked: waits on this, #8), {REPO}#6 (parked: waits on this),"
+        " acme/rest#10 (parked: waits on acme/web#6)"
+    ]
+
+
+def test_s088_14_a_depends_on_line_of_this_repo_counts_without_the_relation() -> None:
+    """GitHub records no reverse of a Depends on line, so this repo's BLOCKED notes add the
+    waiters the walk can't find, transitively"""
+    found = facts(
+        issues=[
+            Issue(4, "TRIAGED", verdict="plan"),
+            Issue(6, "BLOCKED", f"{REPO}#4:open {REPO}#2:closed"),
+            Issue(8, "BLOCKED", f"{REPO}#6:open"),
+            Issue(9, "BLOCKED", f"{REPO}#4:closed"),
+        ]
+    )
+    assert blocks(found, 4, []) == [f"  blocks:  {REPO}#6 (parked: waits on this) -> {REPO}#8 (parked: waits on #6)"]
+
+
+def test_s088_14_a_cycle_adds_nothing_of_its_own_and_nothing_waiting_prints_no_line() -> None:
+    found = facts(issues=[Issue(4, "TRIAGED", verdict="plan")])
+    cycle = [row(f"{REPO}#4", "CYCLE", "acme/rest#5"), row("acme/rest#5", "CYCLE", f"{REPO}#4")]
+    assert blocks(found, 4, cycle) == ["  blocks:  acme/rest#5 (to triage: waits on this)"]
+    assert blocks(found, 4, [row(f"{REPO}#4", "READY")]) == []
+
+
+def test_s088_16_a_failed_walk_is_said_on_the_blocks_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    found = facts(issues=[Issue(4, "TRIAGED", verdict="plan")])
+    assert blocks(found, 4, None, "error: gh: rate limited") == ["  blocks:  unread: error: gh: rate limited"]
+
+    class Failing(Fake):
+        def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[1].endswith("chains.py"):
+                self.seen.append(cmd)
+                return subprocess.CompletedProcess(cmd, 2, "", "note: x\nerror: can't read acme/web#4\n")
+            return super().__call__(cmd)
+
+    root = repo_with_release(tmp_path / "repo")
+    code = main(["--repo", str(root), "status", "--item", "4", "--json"], state=Failing(), login=host)
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0 and out["blocks"] == [] and out["blocks_error"] == "error: can't read acme/web#4"
+
+
+def test_s088_14_a_pull_request_starts_no_walk(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = repo_with_release(tmp_path / "repo")
+    item = {
+        "__typename": "PullRequest",
+        "comments": {"nodes": []},
+        **{k: v for k, v in pull_ref(9, closes=((REPO, 4, "OPEN"), ("acme/rest", 3, "OPEN"))).items() if k[0] == "c"},
+    }
+    fake = Fake(item)
+    code = main(["--repo", str(root), "status", "--item", "9"], state=fake, login=host)
+    out = capsys.readouterr().out
+    assert code == 0 and out.splitlines()[-1] == "  closes:  acme/rest#3, #4"
+    assert not any(c[1].endswith("chains.py") for c in fake.seen)
+
+
+def test_s088_15_closes_names_each_open_pull_request_and_its_open_issues() -> None:
+    from shipmill.item_links import ItemRef, parse_item_read
+
+    pulls = [
+        pull_ref(12, closes=((REPO, 4, "OPEN"),)),
+        pull_ref(11, closes=((REPO, 4, "OPEN"), ("acme/rest", 2, "OPEN"))),
+        pull_ref(10, state="MERGED", closes=((REPO, 4, "OPEN"),)),
+    ]
+    node = {"__typename": "Issue", "comments": {"nodes": []}, "closedByPullRequestsReferences": {"nodes": pulls}}
+    read = parse_item_read(json.dumps({"data": {"repository": {"issueOrPullRequest": node}}}), ItemRef(REPO, 4), None)
+    assert [c.record() for c in read.closes] == [
+        {"pull": f"{REPO}#11", "issues": ["acme/rest#2", f"{REPO}#4"]},
+        {"pull": f"{REPO}#12", "issues": [f"{REPO}#4"]},
+    ]
+
+
+def test_s088_16_the_new_reads_run_beside_triage_state(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """#1469: the walk and the item's read start while triage_state.py is still being read, so
+    they add no step to --item's wait"""
+    import threading
+
+    started = threading.Event()
+    walked = threading.Event()
+
+    class Slow(Fake):
+        def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[1].endswith("triage_state.py"):
+                started.set()
+                walked.wait(timeout=5)
+            done = super().__call__(cmd)
+            if cmd[1].endswith("chains.py"):
+                walked.set()
+            return done
+
+    root = repo_with_release(tmp_path / "repo")
+    assert main(["--repo", str(root), "status", "--item", "4"], state=Slow(), login=host) == 0
+    assert started.is_set() and walked.is_set()
