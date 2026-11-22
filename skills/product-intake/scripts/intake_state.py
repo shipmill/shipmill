@@ -180,17 +180,26 @@ ORDER = (
 )
 LIVE = {"OPPORTUNITY_OPEN", "ACCEPTED", "HANDED_OFF", "DECLINED", "NO_REASON"}  # an OVERLAP counts these
 
+# #1459: GitHub charges a query its worst-case requests over 100, rounded, at least 1 point: one
+# request per connection, times the nodes of the connections it sits in, whatever its own first
+# or last. A page of issues with labels and comments nested costs 1 + 2 x ISSUE_PAGE requests, so
+# 70 (141) is 1 point where 75 (151) is 2; the nested connections' sizes cost no request, and a
+# connection with none nested is 1 request at any size, so those read 100 a page, GitHub's most
+ISSUE_PAGE = 70
+PAGE = 100
 # A comment with its author, so a triage verdict counts only from a trusted one (D-16, #1374)
 COMMENT_FIELDS = "body createdAt author { __typename login } authorAssociation"
+COMMENTS = f"comments(last: {PAGE}) {{ pageInfo {{ hasPreviousPage startCursor }} nodes {{ {COMMENT_FIELDS} }} }}"
+OLDER = f"comments(last: {PAGE}, before: $cursor) {{ pageInfo {{ hasPreviousPage startCursor }} nodes {{ "
 ISSUE_FIELDS = (
     """
         number title url state stateReason closedAt body milestone { title }
         author { __typename login } authorAssociation
         labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
         reactions(content: THUMBS_UP) { totalCount }
-        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { """
-    + COMMENT_FIELDS
-    + """ } }
+        """
+    + COMMENTS
+    + """
 """
 )
 OPEN_ISSUES = (
@@ -198,7 +207,9 @@ OPEN_ISSUES = (
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     hasDiscussionsEnabled
-    issues(states: OPEN, first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+    issues(states: OPEN, first: """
+    + str(ISSUE_PAGE)
+    + """, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {"""
     + ISSUE_FIELDS
@@ -212,7 +223,9 @@ OPPORTUNITIES = (
     """
 query($owner: String!, $name: String!, $label: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    issues(labels: [$label], first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+    issues(labels: [$label], first: """
+    + str(ISSUE_PAGE)
+    + """, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {"""
     + ISSUE_FIELDS
@@ -222,10 +235,13 @@ query($owner: String!, $name: String!, $label: String!, $cursor: String) {
 }
 """
 )
-DISCUSSIONS = """
+DISCUSSIONS = (
+    """
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    discussions(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+    discussions(first: """
+    + str(PAGE)
+    + """, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number title url closed category { name } reactions(content: THUMBS_UP) { totalCount }
@@ -235,12 +251,14 @@ query($owner: String!, $name: String!, $cursor: String) {
   }
 }
 """
+)
 OLDER_COMMENTS = (
     """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
-      comments(last: 50, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { """
+      """
+    + OLDER
     + COMMENT_FIELDS
     + """ } }
     }
@@ -309,15 +327,17 @@ PLAN_ISSUES = (
     """
 query($owner: String!, $name: String!, $label: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    issues(labels: [$label], first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+    issues(labels: [$label], first: """
+    + str(ISSUE_PAGE)
+    + """, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number title url state stateReason closedAt createdAt lastEditedAt body
         author { __typename login } authorAssociation
         labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
-        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { """
-    + PLAN_COMMENT
-    + """ } }
+        """
+    + COMMENTS
+    + """
       }
     }
   }
@@ -329,7 +349,8 @@ OLDER_PLAN_COMMENTS = (
 query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
-      comments(last: 50, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { """
+      """
+    + OLDER
     + PLAN_COMMENT
     + """ } }
     }
@@ -337,17 +358,21 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
 }
 """
 )
-PULLS = """
+PULLS = (
+    """
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     specs: object(expression: "HEAD:docs/specs") { ... on Tree { entries { name object { ... on Blob { text } } } } }
-    pullRequests(states: OPEN, first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+    pullRequests(states: OPEN, first: """
+    + str(PAGE)
+    + """, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes { number body }
     }
   }
 }
 """
+)
 
 
 def fail(message: str) -> NoReturn:
@@ -1222,7 +1247,7 @@ def fetch_plans(
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
-    than 50, and for each accepted plan its items' issues; triage_state.py only when a goal
+    than PAGE, and for each accepted plan its items' issues; triage_state.py only when a goal
     waits on --wip"""
     owner, name = split_repo(repo)
     base: Variables = {"owner": owner, "name": name}
