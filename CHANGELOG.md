@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.162.1] - 2026-11-22
+
+### Fixed
+
+- The gate's change check pages its open issues, pull requests, and incidents at 20 instead of 100, so each tick costs GitHub 1 rate-limit point instead of 6: GitHub charges a query by its worst-case requests, its nested labels, assignees, and links times their pages; `issue_updates` keeps its page of 100 (#1458)
+
 ## [0.162.0] - 2026-11-22
 
 ### Added
@@ -2918,7 +2924,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.162.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.162.1...HEAD
+[0.162.1]: https://github.com/shipmill/shipmill/compare/v0.162.0...v0.162.1
 [0.162.0]: https://github.com/shipmill/shipmill/compare/v0.161.2...v0.162.0
 [0.161.2]: https://github.com/shipmill/shipmill/compare/v0.161.1...v0.161.2
 [0.161.1]: https://github.com/shipmill/shipmill/compare/v0.161.0...v0.161.1
