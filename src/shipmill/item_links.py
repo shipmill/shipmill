@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from shipmill.errors import ReleaseError
-from shipmill.gate import StateRunner, skills_dir
+from shipmill.gate import StateRunner, last_line, skills_dir
 from shipmill.status import gh_read
 
 HANDOFF_MARKER = "<!-- shipmill:handoff -->"  # triage_state.py's HANDOFF_MARKER
@@ -22,6 +22,7 @@ REF = re.compile(r"(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>[1-9]\d*)")
 WAIT = re.compile(r"(?P<ref>[\w.-]+/[\w.-]+#\d+):(?P<state>\w+)")  # item_status.py's WAIT
 MENTIONS = re.compile(r"^(?:@[\w.-]+(?:/[\w.-]+)?[\s,]*)+")
 LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")  # C0, DEL, and C1: a comment's escape sequence never reaches the terminal
 WAITING_STATES = frozenset({"BLOCKED", "CYCLE"})  # chains.py show's open issue held by an open item
 CHAIN_BUCKET = {"BLOCKED": "parked", "CYCLE": "to triage"}  # the picture's line for each (ISSUE_LINES)
 
@@ -203,7 +204,7 @@ def step_of(body: str) -> str | None:
     else:
         first = next((line.strip() for line in lines if line.strip()), "")
         text = MENTIONS.sub("", first)
-    text = " ".join(text.split())
+    text = " ".join(CONTROL.sub(" ", text).split())
     if not text:
         return None
     return text if len(text) <= STEP_LIMIT else text[: STEP_LIMIT - 1].rstrip() + "…"
@@ -358,5 +359,4 @@ def read_chain(item: ItemRef, bot_login: str | None, run: StateRunner) -> tuple[
     proc = run(chains_command(item, bot_login))
     if proc.returncode in (0, 1) and proc.stdout.strip():
         return chain_holds(proc.stdout), None
-    lines = [line for line in proc.stderr.splitlines() if line.strip()]
-    return None, (lines[-1].strip() if lines else f"chains.py show exited {proc.returncode}")
+    return None, (CONTROL.sub(" ", last_line(proc.stderr)).strip() or f"chains.py show exited {proc.returncode}")

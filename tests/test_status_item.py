@@ -573,6 +573,22 @@ def test_s088_13_a_handoff_without_quoted_steps_gives_its_first_line() -> None:
     assert step_of("<!-- shipmill:handoff -->\n\n") is None
 
 
+def test_s088_13_a_steps_control_characters_never_reach_the_terminal() -> None:
+    from shipmill.item_links import step_of
+
+    body = "<!-- shipmill:handoff -->\n> Merge \x1b[2J\x1b]0;title\x07 #97\x9b31m\n"
+    assert step_of(body) == "Merge [2J ]0;title #97 31m"
+
+
+def test_s088_16_a_failed_walks_error_has_no_control_characters() -> None:
+    from shipmill.item_links import ItemRef, read_chain
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 2, "", "error: can't read \x1b[31macme/web#4\x9b0m\n")
+
+    assert read_chain(ItemRef("acme/web", 4), None, run) == (None, "error: can't read  [31macme/web#4 0m")
+
+
 def reach(chain: list[dict[str, object]] | None, error: str | None = None) -> object:
     from shipmill.item_links import ItemRead, Reach, chain_holds
 
