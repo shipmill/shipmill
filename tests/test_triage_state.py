@@ -637,19 +637,19 @@ class HeavyGitHub:
 
 
 def test_a_rejected_first_query_is_asked_again_at_half_the_size(ts: ModuleType) -> None:
-    gh = HeavyGitHub(ts, count=120, limit=30)
+    gh = HeavyGitHub(ts, count=120, limit=15)
     data = ts.fetch("o/r", 20, run=gh)
     assert [i["number"] for i in data["open"]["nodes"]] == list(range(120, 0, -1))
     assert {classify(ts, i) for i in data["open"]["nodes"]} == {"NEW"}
-    # 100, 50, then 25 fits; later pages start at 25 instead of being rejected at 50 first
-    assert gh.calls == [("QUERY", 100), ("QUERY", 50), ("QUERY", 25)] + [("OPEN_PAGE", 25)] * 4
+    # 20, then 10 fits; later pages start at 10 instead of being rejected at 20 first
+    assert gh.calls == [("QUERY", 20), ("QUERY", 10)] + [("OPEN_PAGE", 10)] * 11
 
 
 def test_a_rejected_later_page_backs_off_from_its_cursor(ts: ModuleType) -> None:
-    gh = HeavyGitHub(ts, count=160, limit=30, first_limit=100)
+    gh = HeavyGitHub(ts, count=50, limit=15, first_limit=100)
     data = ts.fetch("o/r", 20, run=gh)
-    assert [i["number"] for i in data["open"]["nodes"]] == list(range(160, 0, -1))
-    assert gh.calls == [("QUERY", 100), ("OPEN_PAGE", 50)] + [("OPEN_PAGE", 25)] * 3
+    assert [i["number"] for i in data["open"]["nodes"]] == list(range(50, 0, -1))
+    assert gh.calls == [("QUERY", 20), ("OPEN_PAGE", 20)] + [("OPEN_PAGE", 10)] * 3
 
 
 def test_a_page_rejected_at_the_floor_fails_with_one_line(ts: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
@@ -657,7 +657,7 @@ def test_a_page_rejected_at_the_floor_fails_with_one_line(ts: ModuleType, capsys
     with pytest.raises(SystemExit) as exc:
         ts.fetch("o/r", 20, run=gh)
     assert exc.value.code == 2
-    assert gh.calls == [("QUERY", 100), ("QUERY", 50), ("QUERY", 25), ("QUERY", 12), ("QUERY", 10)]
+    assert gh.calls == [("QUERY", 20), ("QUERY", 10)]
     assert capsys.readouterr().err.splitlines() == [
         "error: o/r: GitHub's resource limits rejected the first query (open issues, tags, recent closes)"
         " even at 10 per page"
@@ -726,7 +726,7 @@ def test_backward_pages_back_off_mid_pagination(ts: ModuleType) -> None:
     # Tags: the first query held 50; the 110 older are read at 25 after the same back-off
     comments = [("COMMENTS_PAGE", 100), ("COMMENTS_PAGE", 100), ("COMMENTS_PAGE", 50)] + [("COMMENTS_PAGE", 25)] * 4
     tags = [("TAGS_PAGE", 100), ("TAGS_PAGE", 50)] + [("TAGS_PAGE", 25)] * 5
-    assert gh.calls == [("QUERY", 100), *comments, *tags]
+    assert gh.calls == [("QUERY", 20), *comments, *tags]
 
 
 # Build issues split from a spec (#71): "Depends on" lines in the issue body are holds
@@ -1093,3 +1093,60 @@ def test_a_closed_issues_comments_page_back_only_when_all_came_after_the_close(t
     gh = FakeGitHub(ts, {("QUERY", None, None): first_page([], closed_nodes=[closed([before, *after[1:]])])})
     ts.fetch("o/r", 20, run=gh)
     assert gh.calls == [("QUERY", None, None)]
+
+
+# The rate limit (#1459): GitHub charges a query by its worst case, not by what it returns
+
+
+def worst_case(query: str, variables: dict[str, int]) -> tuple[int, int]:
+    """GitHub's node count and rate-limit points for a query with its page sizes: each connection
+    asks for its first or last times the nodes of the connections it sits in, and costs one
+    request per node of those; the points are the requests over 100, rounded, at least 1. A
+    connection under an inline fragment (``... on PullRequest``) counts for neither, as GitHub's
+    rateLimit reports for triage_state.py's queries"""
+    for name, value in variables.items():
+        query = re.sub(rf"\${name}\b", str(value), query)
+    nodes, requests, stack, size = 0, 0, [(1, False)], None
+    for token in re.finditer(r"\([^()]*\)|\{|\}", query):
+        if token[0] == "}":
+            stack.pop()
+        elif token[0] == "{":
+            outer, fragment = stack[-1]
+            fragment = fragment or re.search(r"\.\.\.\s*on\s+\w+\s*$", query[: token.start()]) is not None
+            if size and not fragment:
+                nodes += outer * size
+                requests += outer
+            stack.append((outer * (size or 1), fragment))
+            size = None
+        else:
+            found = re.search(r"\b(?:first|last): (\d+)", token[0])
+            size = int(found[1]) if found else None
+    return nodes, max(1, round(requests / 100))
+
+
+def test_worst_case_counts_nested_connections_but_not_those_under_a_fragment() -> None:
+    sample = "a(first: 2) { nodes { b(last: 3) { n } c(first: $c) { n } ... on X { d(first: 9) { n } } } }"
+    assert worst_case(sample, {"c": 4}) == (2 + 2 * 3 + 2 * 4, 1)
+    assert worst_case(" ".join([sample] * 40), {"c": 4}) == (40 * 16, 2)  # 40 x (1 + 2 + 2) requests
+
+
+def test_1459_the_first_query_costs_2_points_not_8(ts: ModuleType) -> None:
+    # GitHub's rateLimit on shipmill/shipmill (64 open issues) before #1459, pages of 100 open
+    # issues and 50 closed decided ones: cost 8, nodeCount 36,860; the count here reproduces it
+    vetoable = f'labels: ["{ts.DECIDED_LABEL}"], first: {ts.VETOABLE_FIRST},'
+    assert ts.QUERY.count(vetoable) == 1
+    before = ts.QUERY.replace(vetoable, f'labels: ["{ts.DECIDED_LABEL}"], first: 50,')
+    assert worst_case(before, {"size": 100, "closed": 20}) == (36860, 8)
+    # and after, as GitHub reported it: cost 2, nodeCount 10,450 for the first query, then 1 a page
+    assert worst_case(ts.QUERY, {"size": ts.SIZES[ts.QUERY], "closed": 20}) == (10450, 2)
+    assert worst_case(ts.OPEN_PAGE, {"size": ts.SIZES[ts.OPEN_PAGE]}) == (6220, 1)
+    assert worst_case(ts.TEXT_QUERY, {"size": ts.SIZES[ts.TEXT_QUERY], "closed": 20})[1] == 2
+    assert worst_case(ts.TEXT_OPEN_PAGE, {"size": ts.SIZES[ts.TEXT_OPEN_PAGE]})[1] == 1
+    assert worst_case(ts.VETOABLE_PAGE, {"size": ts.SIZES[ts.VETOABLE_PAGE]})[1] == 1
+
+
+def test_1459_open_issues_past_a_page_of_20_are_all_read(ts: ModuleType) -> None:
+    gh = HeavyGitHub(ts, count=45, limit=100)
+    data = ts.fetch("o/r", 20, run=gh)
+    assert [i["number"] for i in data["open"]["nodes"]] == list(range(45, 0, -1))
+    assert gh.calls == [("QUERY", 20), ("OPEN_PAGE", 20), ("OPEN_PAGE", 20)]

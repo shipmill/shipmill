@@ -335,7 +335,7 @@ HANDOFF_DUE, STALE_HANDOFF,
 VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, OFF_MILESTONE, or AGENT_DRAFT (never for NEEDS_DECISION,
 UNTRUSTED, UPSTREAM, WITH_PERSON, or AGENT_DRAFT_HELD),
 1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
-labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
+labels) or a gh failure. It pages past 20 open issues and an issue's 50 comments, 50
 cross-references, 50 blocking issues, or 50 sub-issues, and back through tags to the
 newest stable one, with one query when nothing is capped. A page GitHub rejects for its
 resource limits is asked again at half the size, down to 10 items; one rejected at 10
@@ -409,7 +409,10 @@ NATIVE_SCHEMA = (*NATIVE_FIELDS, "parent")
 DECIDED_LABEL = "decided"
 VETO_WINDOW = dt.timedelta(days=14)
 UTC = dt.timezone.utc  # noqa: UP017 (dt.UTC needs 3.11)
-VETOABLE_FIRST = 50  # the first query's page of them; more are paged with VETOABLE_PAGE
+# The first query's page of them; more are paged with VETOABLE_PAGE. GitHub charges a request
+# for each one's comments, so a page of 50 alone would tip the first query to 3 points (#1459)
+VETOABLE_FIRST = 20
+VETOABLE_LATER = 50  # VETOABLE_PAGE's page, a query of its own that costs 1 point at 50
 VETOABLE_NODES = (
     "pageInfo { hasNextPage endCursor } nodes { number title comments(last: 50) { nodes { " + COMMENT + " } } }"
 )
@@ -682,28 +685,32 @@ query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: Stri
 
 COMMENTS_CAP = 50  # comments(last: 50) in OPEN_ISSUE
 CLOSED_COMMENTS_CAP = 5  # comments(last: 5) of a closed issue in CLOSED_AND_TAGS
-# Each query's first page size, and what a page holds, for the error line. Older open
-# issues carry more history: a page of 100 tripped GitHub's resource limits on
-# astral-sh/uv, so later open-issue pages start at 50
+# Each query's first page size, and what a page holds, for the error line. GitHub's rate limit
+# charges a query by its worst case, not what it returns: a request for each connection per
+# node of the connections it sits in, a point per 100 requests (#1459). An open issue's six
+# connections cost 6 requests each, so a page of 100 cost 8 points a run even with 64 open
+# issues; a page of 20 costs 2 in the first query and 1 in each later one. Older open issues
+# carry more history too: a page of 100 tripped GitHub's resource limits on astral-sh/uv
+OPEN_ISSUES_PAGE = 20
 SIZES = {
-    QUERY: 100,
-    TEXT_QUERY: 100,
-    OPEN_PAGE: 50,
-    TEXT_OPEN_PAGE: 50,
+    QUERY: OPEN_ISSUES_PAGE,
+    TEXT_QUERY: OPEN_ISSUES_PAGE,
+    OPEN_PAGE: OPEN_ISSUES_PAGE,
+    TEXT_OPEN_PAGE: OPEN_ISSUES_PAGE,
     COMMENTS_PAGE: 100,
     TIMELINE_PAGE: 100,
     REFS_PAGE: 100,
     TAGS_PAGE: 100,
-    VETOABLE_PAGE: VETOABLE_FIRST,
+    VETOABLE_PAGE: VETOABLE_LATER,
     DECIDED_PRS_PAGE: 50,
     PR_FILES_PAGE: 100,
     PR_COMMENTS_PAGE: 100,
     **{query: 100 for query in NATIVE_PAGES.values()},
 }
 # A rejected page halves down to this floor; one that fails at the floor ends the run.
-# At 10 open issues a page asks for a tenth of the first query, so a page still rejected
-# there holds an issue too heavy for any size, and pypa/pip's 957 issues would already
-# take some 100 calls of about 5 seconds each
+# At 10 open issues a page asks for a tenth of what a page of 100 did, so a page still
+# rejected there holds an issue too heavy for any size, and pypa/pip's 957 issues would
+# already take some 100 calls
 MIN_PAGE = 10
 RESOURCE_LIMITS = "RESOURCE_LIMITS_EXCEEDED"
 Variables = dict[str, str | int]
