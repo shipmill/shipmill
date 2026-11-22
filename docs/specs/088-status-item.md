@@ -1,6 +1,6 @@
 # S-088: Say why one open issue or pull request is not closed
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -140,4 +140,17 @@ repo, or a failed read, as `shipmill status` exits 2.
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+Checked on the build's pull request against this repo, by running `shipmill status --item` on live items besides the tests `specs.py coverage --spec 088` lists in `tests/test_status_item.py`: #1461 (BLOCKED on its spec PR) read `parked`, waiting on shipmill/shipmill#1464 (open); #1441 by its pull URL read `to land`, conflicting with main, and handed to a gate session that wrote nothing on it.
+
+- S-088-1: issue #4 and pull request #9 give the same output by number and by URL in `test_s088_1_*`
+- S-088-2: a malformed REF, another repo's URL, the wrong kind, and a number that is no open item each name the REF and exit 2 in `test_s088_2_*`
+- S-088-3: every state of each picture line reads that line's label, and a pull request's draft, to land, needs decision, and open buckets, in `test_s088_3_*`
+- S-088-4: every issue state, with and without a gate, and an open pull request each name a condition with who clears it in `test_s088_4_*`
+- S-088-5: a hold, no `[agents]`, and triage, fix, and land below act each add a maintainer's condition in `test_s088_5_*`
+- S-088-6: NEEDS_DECISION, BLOCKED (a closed hold left out), labelled blocked, POSTPONED, WITH_PERSON, IN_PROGRESS, and UPSTREAM in `test_s088_6_*`
+- S-088-7: the newest triage comment's verdict, a longer form of one, a curly apostrophe, and an unknown or unbolded word in `test_s088_7_*`; the two scripts' sets are asserted equal
+- S-088-8: the parked line's `triaged: opportunity`, the item's condition, and a verdict triage_state.py doesn't write refused in `test_s088_8_*`
+- S-088-9: an agent row's item at act reads the gate's turn, not under a hold, without a gate, or under propose; a pull request under land act, and a GATE_IDLE hand-off, in `test_s088_9_*`
+- S-088-10: draft, needs-decision, behind, conflicts, a failing and two pending checks, changes requested, review required, shipmill-ready under propose, and a closed land window that opens again in `test_s088_10_*`
+- S-088-11: `--json`'s one object, field by field, in `test_s088_11_*`
+- S-088-12: the reads a pull request's explanation makes hold no write and no `shipmill gh` in `test_s088_12_*`
