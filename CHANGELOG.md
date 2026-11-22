@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.161.2] - 2026-11-22
+
+### Fixed
+
+- `shipmill status --item REF` for an open issue or pull request takes about 13 to 14 s on shipmill/shipmill, from about 14 to 15 s: the App's bot login is read beside the item's own state, the item's own checks and review beside `watch_state.py` and `triage_state.py`, and `triage_state.py` and `watch_state.py` start as soon as the login is in hand; a closed or missing number still exits 2 at once, waiting on none of the other reads, and the output, stderr, and exit codes are unchanged (#1469)
+
 ## [0.161.1] - 2026-11-22
 
 ### Fixed
@@ -2906,7 +2912,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.161.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.161.2...HEAD
+[0.161.2]: https://github.com/shipmill/shipmill/compare/v0.161.1...v0.161.2
 [0.161.1]: https://github.com/shipmill/shipmill/compare/v0.161.0...v0.161.1
 [0.161.0]: https://github.com/shipmill/shipmill/compare/v0.160.1...v0.161.0
 [0.160.1]: https://github.com/shipmill/shipmill/compare/v0.160.0...v0.160.1
