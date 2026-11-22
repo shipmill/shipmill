@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.161.0] - 2026-11-22
+
+### Added
+
+- `watch_state.py --item N` prints only the full report's rows `shipmill status --item N` reads (HOLD, NEEDS_DECISION, PRS_OPEN, PRS_PARKED, and the agent and GATE_IDLE rows naming #N), exactly as the full report prints them, skipping the sections none of them can come from and reading the rest at once (#1469)
+
+### Fixed
+
+- `shipmill status --item REF` for an open issue or pull request takes about a third of the time it did (about 23 s, from about 62 s, on shipmill/shipmill): it passes `--item` to `watch_state.py`, so the chains, the deployments, the active runs, the work branches, the tags, and the other sections no row of the item comes from are no longer read; its output is unchanged (#1469)
+
 ## [0.160.1] - 2026-11-22
 
 ### Fixed
@@ -2890,7 +2900,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.160.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.161.0...HEAD
+[0.161.0]: https://github.com/shipmill/shipmill/compare/v0.160.1...v0.161.0
 [0.160.1]: https://github.com/shipmill/shipmill/compare/v0.160.0...v0.160.1
 [0.160.0]: https://github.com/shipmill/shipmill/compare/v0.159.0...v0.160.0
 [0.159.0]: https://github.com/shipmill/shipmill/compare/v0.158.1...v0.159.0
