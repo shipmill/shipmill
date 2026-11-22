@@ -3550,24 +3550,34 @@ def _status_item(
     bot_login: Callable[[int, Path], str | None],
 ) -> int:
     """Spec 088, #1469: one item's explanation, from the picture's readings it uses alone. The
-    item's own state comes first, so a closed or missing one exits 2 at once; then [agents]
-    and the bot's login, which the picture's App check also gives, watch_state.py --item's
-    rows (the full report's rows the explanation reads, from the sections one of them can come
-    from), triage_state.py's states, the open pull requests, and the
-    upgrades, the last three read beside watch_state.py, which none of them waits on. None of
-    the host's checks is read (the launchd job, the App check, the gate's CLI, its prune and
-    tick records, the sessions and shipmill sections, agent-as-person): --item prints no
-    factory line (D-55), and the explanation reads none of them"""
-    if not item_status.is_open(slug, ref.number, run):
-        raise item_status.not_open(ref, slug)
-    gate = status.agents_gate(top, platform)
-    bot = status.read_login(slug, top, home, platform, bot_login)
-    read = StateRead(bot_login=bot, roles=resolved)
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        issues = pool.submit(status.read_issues, slug, run, bot, resolved)
+    item's own state comes first, so a closed or missing one exits 2 at once, with the bot's
+    login (which the picture's App check also gives, and which reads GitHub through the App,
+    not through run) read beside it and left behind on that exit. Then [agents], and at once
+    beside each other: watch_state.py --item's rows (the full report's rows the explanation
+    reads, from the sections one of them can come from), triage_state.py's states, the open
+    pull requests and, when the item is one of them, its checks and review, the upgrades, and
+    the landing branch. Each read's error is raised where the one-after-another order raised
+    it. None of the host's checks is read (the launchd job, the App check, the gate's CLI, its
+    prune and tick records, the sessions and shipmill sections, agent-as-person): --item
+    prints no factory line (D-55), and the explanation reads none of them"""
+    pool = ThreadPoolExecutor(max_workers=6)
+    try:  # a closed item's exit waits on no read: what hasn't started is cancelled
+        login = pool.submit(status.read_login, slug, top, home, platform, bot_login)
+        if not item_status.is_open(slug, ref.number, run):
+            raise item_status.not_open(ref, slug)
+        gate = status.agents_gate(top, platform)
         pulls = pool.submit(status.read_pulls, slug, run)
         upgrades = pool.submit(status.read_upgrades, slug, top, run)
         branch = pool.submit(status.landing_branch, slug, top, run)
+
+        def own_detail() -> item_status.PullDetail | None:  # the item's own, read once it is an open pull request
+            listed = any(p.number == ref.number for p in pulls.result())
+            return item_status.read_pull_detail(slug, ref.number, run) if listed else None
+
+        detail = pool.submit(own_detail)
+        bot = login.result()
+        issues = pool.submit(status.read_issues, slug, run, bot, resolved)
+        read = StateRead(bot_login=bot, roles=resolved)
         proc = run(watch_command(slug, top, read, json=True, host=False, item=ref.number))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
         if state_failed(proc):
@@ -3591,8 +3601,15 @@ def _status_item(
             autonomy=autonomy,
             environments=environments,
         )
-    window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
-    why = item_status.explain(facts, ref, lambda n: item_status.read_pull_detail(slug, n, run), window)
+
+        def read_detail(number: int) -> item_status.PullDetail:
+            found = detail.result() if number == ref.number else None
+            return found if found is not None else item_status.read_pull_detail(slug, number, run)
+
+        window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
+        why = item_status.explain(facts, ref, read_detail, window)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     sys.stdout.write(json.dumps(why.record()) + "\n" if as_json else why.text())
     return 0
 
