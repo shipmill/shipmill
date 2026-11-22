@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.160.1] - 2026-11-22
+
+### Fixed
+
+- `shipmill status --item REF` answers a closed or missing number at once from the item's own state, and for an open item reads only what its explanation uses: no launchd job, App check, gate CLI, prune or tick record, host sections, or agent-as-person search, with triage_state.py, the open pull requests, and the upgrades read beside watch_state.py; its output is unchanged (#1469)
+
 ## [0.160.0] - 2026-11-22
 
 ### Added
@@ -2884,7 +2890,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.160.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.160.1...HEAD
+[0.160.1]: https://github.com/shipmill/shipmill/compare/v0.160.0...v0.160.1
 [0.160.0]: https://github.com/shipmill/shipmill/compare/v0.159.0...v0.160.0
 [0.159.0]: https://github.com/shipmill/shipmill/compare/v0.158.1...v0.159.0
 [0.158.1]: https://github.com/shipmill/shipmill/compare/v0.158.0...v0.158.1
