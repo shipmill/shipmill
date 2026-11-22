@@ -258,7 +258,8 @@ def read_item(item: ItemRef, bot_login: str | None, run: StateRunner) -> ItemRea
     """One GraphQL read of the item: its comments and the pull requests that close it"""
     owner, name = item.repo.split("/")
     cmd = ["gh", "api", "graphql", "-f", f"query={ITEM_QUERY}"]
-    cmd += ["-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={item.number}"]
+    # -f keeps a repo named 2048 or true a String; -F's typing is for the number alone
+    cmd += ["-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={item.number}"]
     return parse_item_read(gh_read(cmd, run, f"gh api graphql for {item}"), item, bot_login)
 
 

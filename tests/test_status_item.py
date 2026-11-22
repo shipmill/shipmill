@@ -580,6 +580,25 @@ def test_s088_13_a_steps_control_characters_never_reach_the_terminal() -> None:
     assert step_of(body) == "Merge [2J ]0;title #97 31m"
 
 
+def test_s088_16_the_items_read_sends_its_repo_as_strings() -> None:
+    """gh's -F would send a repo named 2048 or true as an Int or a Boolean, which the query's
+    String! refuses"""
+    from shipmill.item_links import ItemRef, read_item
+
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        node = {"__typename": "Issue", "comments": {"nodes": []}, **NO_PULLS}
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"data": {"repository": {"issueOrPullRequest": node}}}), ""
+        )
+
+    read_item(ItemRef("1984/true", 4), None, run)
+    fields = list(zip(seen[0][5::2], seen[0][6::2], strict=True))
+    assert fields == [("-f", "owner=1984"), ("-f", "name=true"), ("-F", "number=4")]
+
+
 def test_s088_16_a_failed_walks_error_has_no_control_characters() -> None:
     from shipmill.item_links import ItemRef, read_chain
 
