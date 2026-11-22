@@ -31,7 +31,8 @@ KNOWN = "known.json"  # what the change check read, for watch_state.py --known
 CURSOR_OVERLAP = dt.timedelta(minutes=5)  # an update GitHub indexed late is seen next tick
 PAGE = 100  # issue_updates' subjects per aliased query (S-061-7)
 # #1458: the change check's page of open issues, pull requests, and incidents; GitHub charges a
-# query for its worst case, so a page of 100 with its nested connections cost 18,420 nodes a tick
+# query by its worst-case requests (its nested connections times their pages), so a page of 100
+# cost 6 points a tick and a page of 20 costs 1
 CHANGE_PAGE = 20
 RUNS = 10  # the newest runs of each watched workflow the change check reads
 LANDED = 10  # the default branch's newest commits whose merged pull requests the change check reads (spec 048)

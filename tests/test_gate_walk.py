@@ -407,6 +407,36 @@ def test_s046_3_the_change_check_costs_under_100_by_100_nodes() -> None:
     assert worst_case_nodes(change_query(tuple(CONNECTIONS))) < 100 * 100
 
 
+def worst_case_points(query: str) -> int:
+    """GitHub's rate-limit points for a query: each connection costs one request per node of
+    the connections it sits in, and the points are the requests over 100, rounded, at least 1"""
+    requests, stack, size = 0, [1], None
+    for token in re.finditer(r"\([^()]*\)|\{|\}", query):
+        if token[0] == "}":
+            stack.pop()
+        elif token[0] == "{":
+            requests += stack[-1] if size else 0
+            stack.append(stack[-1] * (size or 1))
+            size = None
+        else:
+            found = re.search(r"\b(?:first|last): (\d+)", token[0])
+            size = int(found[1]) if found else None
+    return max(1, round(requests / 100))
+
+
+def test_s046_3_the_change_check_costs_1_point() -> None:
+    # #1458: GitHub charges a query by its worst-case requests, not its nodes; a page of 50 is
+    # 9,220 nodes, under 100 x 100, and still 3 points
+    from shipmill.walk import CHANGE_PAGE, CONNECTIONS, change_query
+
+    sample = " ".join(["a(first: 2) { nodes { b(last: 3) { n } c(first: 4) { n } } }"] * 30)
+    assert worst_case_points(sample) == 2  # 30 x (1 + 2 + 2) requests
+    query = change_query(tuple(CONNECTIONS))
+    assert worst_case_points(query) == 1
+    fifty = re.sub(rf"(\b(?:updated|pulls|incidents): \w+\([^()]*first: ){CHANGE_PAGE}\b", r"\g<1>50", query)
+    assert fifty.count("first: 50") == 3 + 3 and worst_case_points(fifty) == 3
+
+
 def test_s046_3_more_than_20_open_pull_requests_are_read_over_pages() -> None:
     # #1458: the change check's smaller page still reads every open pull request
     queries: list[str] = []
