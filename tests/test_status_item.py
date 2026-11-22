@@ -381,3 +381,17 @@ def test_s088_12_item_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert ["gh", "pr", "view", "9", "-R", REPO, "--json", "statusCheckRollup,reviewDecision,labels"] in gh
     assert not any(set(c) & WRITES for c in gh)
     assert not any(Path(c[0]).name == "shipmill" or c[1:2] == ["gh"] for c in fake.seen)  # no shipmill gh
+
+
+def test_s088_5_land_at_propose_is_the_maintainers_merge() -> None:
+    found = facts(Row("PRS_OPEN", REPO, "#9", False), pulls=[Pull(9, False, "CLEAN", "main")])
+    reason = "[autonomy] land is propose: a session reviews it and labels it shipmill-ready, then you merge it"
+    assert (reason, Who.MAINTAINER) in whos(found, 9)
+    assert ("no reason read: the gate's next tick reads it again", Who.AGENT) not in whos(found, 9)
+
+
+def test_s088_10_the_apps_own_draft_is_a_gate_sessions_to_mark_ready() -> None:
+    row = Row("AGENT_DRAFT", REPO, "#9", True)
+    found = facts(row, pulls=[Pull(9, True, "CLEAN", "main")])
+    assert ("the App's own draft: no session owns it any more (D-67)", Who.AGENT) in whos(found, 9)
+    assert ("a draft: it belongs to its author (D-67)", Who.PERSON) not in whos(found, 9)

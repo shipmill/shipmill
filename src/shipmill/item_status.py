@@ -368,7 +368,16 @@ def pull_conditions(facts: Facts, pull: Pull, detail: PullDetail, window: LandWi
     """S-088-10: what holds the pull request's merge"""
     found = []
     if pull.draft:
-        found.append(Condition("a draft: it belongs to its author (D-67)", Who.PERSON, "its author marks it ready"))
+        if any(r.state == "AGENT_DRAFT" and names(r, pull.number) for r in facts.rows):
+            found.append(
+                Condition(
+                    "the App's own draft: no session owns it any more (D-67)",
+                    Who.AGENT,
+                    "a gate session marks it ready once nothing it waits on is open",
+                )
+            )
+        else:
+            found.append(Condition("a draft: it belongs to its author (D-67)", Who.PERSON, "its author marks it ready"))
     if pull.number in waiting(facts).pulls:
         found.append(
             Condition("waits on the answer to its needs-decision question", Who.MAINTAINER, "answer the question on it")
@@ -394,6 +403,16 @@ def pull_conditions(facts: Facts, pull: Pull, detail: PullDetail, window: LandWi
         found.append(Condition("a review requested changes", Who.AGENT, "a session addresses the review"))
     elif detail.review == "REVIEW_REQUIRED":
         found.append(Condition("a review is required", Who.MAINTAINER, "a review of its head"))
+    land = _level(facts, StageKind.LAND)
+    proposes = facts.gate.agents is not None and land.effective is Autonomy.PROPOSE and land.source is not Source.HOLD
+    if proposes and pull.number in to_land(facts.rows) and pull.number not in to_merge(facts):
+        found.append(  # S-088-5: land at propose, land's default (D-51), merges only by the maintainer
+            Condition(
+                "[autonomy] land is propose: a session reviews it and labels it shipmill-ready, then you merge it",
+                Who.MAINTAINER,
+                'merge it once it is labelled shipmill-ready, or set land = "act" in [autonomy]',
+            )
+        )
     if pull.number in to_merge(facts):
         found.append(
             Condition(
