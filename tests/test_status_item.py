@@ -464,3 +464,5 @@ def test_s088_12_item_reads_only_what_its_explanation_uses(tmp_path: Path, capsy
     triage = [c for c in fake.seen if c[1].endswith("triage_state.py")]
     assert len(watch) == 1 and "--no-host" in watch[0] and watch[0][-2:] == ["--bot-login", test_app.BOT]
     assert len(triage) == 1 and triage[0][-2:] == ["--bot-login", test_app.BOT]
+    # part 2 of #1469: watch_state.py reads only the sections a row of the item can come from
+    assert "--item" in watch[0] and watch[0][watch[0].index("--item") + 1] == "4"
