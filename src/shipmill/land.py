@@ -17,7 +17,7 @@ from shipmill import cli_command, fragments
 from shipmill.app import LAND_PERMISSIONS, Api, AuthFailure, Signer, mint
 from shipmill.environments import deployed_from
 from shipmill.errors import ReleaseError
-from shipmill.github import Forbidden, GitHub, OpenMilestone, close_milestone_args, set_milestone_args
+from shipmill.github import Forbidden, GitHub, Missing, OpenMilestone, close_milestone_args, set_milestone_args
 from shipmill.gitrepo import Git
 from shipmill.plugin import PYPI_PROJECT, Fetch
 from shipmill.policy import Lane, Policy, VersionFiles
@@ -462,14 +462,25 @@ class _Held:
 
 def _await_run(github: GitHub, workflow: str, url: str | None, waiting: Waiting, held: _Held) -> None:
     """Wait for the run land started to succeed; the run is the one GitHub named when it was
-    dispatched, never the newest of its workflow"""
+    dispatched, never the newest of its workflow. GitHub answers 404 for a run it named seconds
+    before (#1467), so a Missing read is read again, on the same deadline"""
     found = _RUN_URL.search(url or "")
     if found is None:
         raise held.say(f"dispatching {workflow} named no run ({url!r}), so land can't wait for it")
     run = int(found["id"])
-    while not (state := github.run_state(run)).done:
-        if waiting.clock() >= held.deadline:
-            raise held.say(f"{workflow} run {url} is still {state.status} after {waiting.timeout:.0f}s")
+    while True:
+        try:
+            state = github.run_state(run)
+        except Missing as exc:
+            if waiting.clock() >= held.deadline:
+                raise held.say(
+                    f"GitHub never served {workflow} run {url} within {waiting.timeout:.0f}s ({exc})"
+                ) from exc
+        else:
+            if state.done:
+                break
+            if waiting.clock() >= held.deadline:
+                raise held.say(f"{workflow} run {url} is still {state.status} after {waiting.timeout:.0f}s")
         waiting.sleep(waiting.poll)
     if state.conclusion != "success":
         raise held.say(f"{workflow} run {url} ended {state.conclusion or 'without a conclusion'}")

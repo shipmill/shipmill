@@ -147,8 +147,9 @@ class FakeGitHub:
     merged_reads: list[tuple[str, ...]] = field(default_factory=list)  # each read's branch names, then its `#<number>`s
     active: dict[str, list[WorkflowRun]] = field(default_factory=dict)  # unfinished runs by workflow file
     actions_error: str = ""  # when set, listing runs fails with it: Forbidden when it holds "(HTTP 403)"
-    # what each read of a run gives, by run id, in turn; the last stays. A run without any passed
-    run_states: dict[int, list[RunState]] = field(default_factory=dict)
+    # what each read of a run gives, by run id, in turn; the last stays. A run without any passed.
+    # An error is raised, as a 404 (Missing) for a run GitHub doesn't serve yet
+    run_states: dict[int, list[RunState | ReleaseError]] = field(default_factory=dict)
     run_reads: list[int] = field(default_factory=list)  # the run id of each run_state call
     no_run_url: bool = False  # dispatch names no run, as a gh too old to print its URL
     repo_labels: set[str] = field(default_factory=set)  # the repository's labels, as label_names reads them
@@ -236,7 +237,10 @@ class FakeGitHub:
     def run_state(self, run: int) -> RunState:
         self.run_reads.append(run)
         states = self.run_states.get(run, [RunState("completed", "success")])
-        return states.pop(0) if len(states) > 1 else states[0]
+        state = states.pop(0) if len(states) > 1 else states[0]
+        if isinstance(state, ReleaseError):
+            raise state
+        return state
 
     def workflow_runs(self, workflow: str, ref: str) -> list[WorkflowRun]:
         return [run for w, r, run in reversed(self.runs) if (w, r) == (workflow, ref)]

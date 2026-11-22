@@ -16,7 +16,7 @@ import pytest
 
 from shipmill.config import config_path
 from shipmill.errors import ReleaseError
-from shipmill.github import RunState
+from shipmill.github import Forbidden, Missing, RunState
 from shipmill.land import Landed, Waiting, land, prepare
 from shipmill.policy import Lane, Policy
 
@@ -148,7 +148,7 @@ def test_a_publish_that_fails_or_never_ends_leaves_the_references(
 ) -> None:
     configure(repo, PUBLISH_FIRST)
     time = Clock()
-    repo.github.run_states[1] = states
+    repo.github.run_states[1] = [*states]
     with pytest.raises(ReleaseError) as refused:
         land_rc(repo, time.waiting())
     message = str(refused.value)
@@ -177,6 +177,45 @@ def test_the_runs_and_pypi_share_one_deadline(repo: Repo) -> None:
     with pytest.raises(ReleaseError, match="PyPI still answers HTTP 404"):
         land_rc(repo, time.waiting(timeout=60.0))
     assert len(time.asked) == 2  # at 45 and 60 seconds
+
+
+NOT_SERVED = "gh api -X GET repos/o/demo/actions/runs/1 failed: Not Found (HTTP 404)"
+
+
+def test_a_run_github_does_not_serve_yet_is_read_again(repo: Repo) -> None:
+    # #1467: GitHub answers 404 for a run it named on dispatch seconds before
+    configure(repo, PUBLISH_FIRST)
+    time = Clock()
+    repo.github.run_states[1] = [Missing(NOT_SERVED), Missing(NOT_SERVED), RUNNING, PASSED]
+    landed = land_rc(repo, time.waiting())
+    assert repo.github.run_reads == [1, 1, 1, 1]
+    assert time.slept == [15.0] * 3
+    assert workflows(repo) == ["publish.yml", "move-major-tag.yml"]
+    assert landed.published == ("github-release", "publish.yml", "move-major-tag.yml")
+
+
+def test_a_run_github_never_serves_leaves_the_references(repo: Repo) -> None:
+    configure(repo, PUBLISH_FIRST)
+    time = Clock()
+    repo.github.run_states[1] = [Missing(NOT_SERVED)]
+    with pytest.raises(ReleaseError) as refused:
+        land_rc(repo, time.waiting(timeout=60.0))
+    message = str(refused.value)
+    assert "GitHub never served publish.yml run https://github.com/o/demo/actions/runs/1 within 60s" in message
+    assert "move-major-tag.yml not started, so the references stay on the previous release" in message
+    assert "gh workflow run move-major-tag.yml --ref main -f tag=v1.1.0rc1" in message
+    assert len(repo.github.run_reads) == 5  # at 0, 15, 30, 45, and 60 seconds, the deadline
+    assert workflows(repo) == ["publish.yml"] and time.asked == []
+
+
+def test_a_run_read_github_refuses_is_not_retried(repo: Repo) -> None:
+    configure(repo, PUBLISH_FIRST)
+    time = Clock()
+    repo.github.run_states[1] = [Forbidden("gh api failed: Resource not accessible by integration (HTTP 403)")]
+    with pytest.raises(Forbidden):
+        land_rc(repo, time.waiting())
+    assert repo.github.run_reads == [1] and time.slept == []
+    assert workflows(repo) == ["publish.yml"]
 
 
 def test_a_dispatch_that_names_no_run_is_not_waited_on_by_guessing(repo: Repo) -> None:
