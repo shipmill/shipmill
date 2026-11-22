@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.161.1] - 2026-11-22
+
+### Fixed
+
+- `triage_state.py` takes about 12 s on shipmill/shipmill, from about 21 s, and `shipmill status --item REF` for an open issue or pull request about 14 to 17 s, from about 24 s: each answer's follow-up calls (an issue's older comments and cross-references, the postponed issues' tag compares, the decided pull requests) start on threads while the open issues are still paged, and the run reads every answer in its own order, so its output, stderr, and exit code are unchanged (#1469)
+
 ## [0.161.0] - 2026-11-22
 
 ### Added
@@ -2900,7 +2906,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.161.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.161.1...HEAD
+[0.161.1]: https://github.com/shipmill/shipmill/compare/v0.161.0...v0.161.1
 [0.161.0]: https://github.com/shipmill/shipmill/compare/v0.160.1...v0.161.0
 [0.160.1]: https://github.com/shipmill/shipmill/compare/v0.160.0...v0.160.1
 [0.160.0]: https://github.com/shipmill/shipmill/compare/v0.159.0...v0.160.0
