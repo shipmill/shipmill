@@ -189,11 +189,10 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   handed item past `retry_hours`, and a dead last session counts as a change and makes the
   tick walk
   - Amended by spec 061 (#1161): the gate hands an item of tier 3, 4, or 6 by its subjects, one by one, and keeps an idle subject's hand past `retry_hours`; a hand past `retry_hours` is a change on the first tick after it runs out, and once a walk marks it idle it is no change on later ticks, since a change to its subject shows in the change check itself (S-061-8)
-- S-046-3: the change check is one GraphQL query, paged only past 100 open issues or pull
+- S-046-3: the change check is one GraphQL query, paged only past 20 open issues or pull
   requests, and one `gh api .../actions/workflows/<file>/runs` read per watched workflow,
   each with `per_page` of at most 10, and no repo-wide `actions/runs` read (revised in #762,
-  D-58)
-  - Amended by #1458: the change check's page is 20 (`CHANGE_PAGE`), not 100, so its worst-case node count stays below 100 × 100; it is still one query, paged only past that page, and `issue_updates` keeps its page of 100 (S-061-7)
+  D-58; page of 20 since #1458)
 - S-046-4: a walk reads the tiers in order and reads no tier below the one where it finds an
   item not handed within `retry_hours`
 - S-046-5: with an untaken item in tier 3, a tick reads no `triage_state.py` and runs no
