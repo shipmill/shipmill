@@ -6684,17 +6684,21 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         bot_read = pool.submit(stalled)
         base_read = pool.submit(base_red)
         intake_read = pool.submit(intake_lines)
-        # with --trusted-only, PyPI's wait for the plans' shipmill leaves the issues unread
+        # with --trusted-only, PyPI's wait for the plans' shipmill leaves the issues and the pull
+        # requests unread (D-16), so neither starts before the intake's lines say it's read
         triage_read = None if args.trusted_only else pool.submit(triage)
         idle_read = pool.submit(gate_idle_rows, args.repo, repo_dir, now)
-        pulls_read = pool.submit(
-            intake_reads,
-            args.repo,
-            args.bot_login,
-            args.trusted_only,
-            now,
-            queue_of=lambda prs: land_queue(args.repo, repo_dir, text, default, prs, now, args.tool),
-        )
+
+        def pulls() -> IntakeReads:
+            return intake_reads(
+                args.repo,
+                args.bot_login,
+                args.trusted_only,
+                now,
+                queue_of=lambda prs: land_queue(args.repo, repo_dir, text, default, prs, now, args.tool),
+            )
+
+        pulls_read = None if args.trusted_only else pool.submit(pulls)
         upgrades = None
         land = None
         rows: list[Row] = []
@@ -6742,7 +6746,7 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
                 plans.untrusted | (feedback.untrusted - (upgrades.owned if upgrades is not None else frozenset())),
                 now,
                 directions,
-                reads=pulls_read.result(),
+                reads=pulls_read.result() if pulls_read is not None else pulls(),
             )
             rows += spec_rows(args.repo, repo_dir, branch, triaged)
         rows += idle_read.result()

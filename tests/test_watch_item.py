@@ -247,6 +247,35 @@ def test_1469_item_skips_the_reads_no_row_it_prints_comes_from(host: Host) -> No
     assert len(item_calls) < len(full_calls)
 
 
+FAKE_UVX = """#!{python}
+import sys
+v = "{version}"
+sys.stderr.write("  x No solution found when resolving tool dependencies:\\n"
+                 f"  -> Because there is no version of shipmill=={v} and you require\\n"
+                 f"  shipmill=={v}, we can conclude that your requirements are unsatisfiable.\\n")
+sys.exit(1)
+"""
+
+
+def test_1469_item_reads_no_pull_request_the_trusted_only_report_leaves_unread(ws: ModuleType, tmp_path: Path) -> None:
+    """With --trusted-only and PyPI not serving the plans' shipmill, the full report reads no
+    issue or pull request (D-16); --item reads none either, rather than reading them and
+    ignoring what it read, or its failure"""
+    host = Host(tmp_path)
+    uvx = FAKE_UVX.replace("{python}", sys.executable).replace("{version}", ws.plugin_version())
+    (tmp_path / "fakes" / "uvx").write_text(uvx, encoding="utf-8")
+    (tmp_path / "fakes" / "uvx").chmod(0o700)
+    (host.work / "docs").mkdir()
+    (host.work / "docs" / "product.md").write_text("# Direction\n", encoding="utf-8")  # plans read the goals
+    full, full_calls = host.watch("--trusted-only")
+    assert "plans, feedback, issues, and pull requests" in full.stdout, full.stderr
+    item, item_calls = host.watch("--trusted-only", "--item", "4")
+    assert item.returncode in (0, 1), item.stderr
+    assert item.stdout.splitlines() == [line for line in full.stdout.splitlines() if read_by_status(line, 4)]
+    assert not any(c[:2] == ["pr", "list"] for c in full_calls)
+    assert not any(c[:2] == ["pr", "list"] for c in item_calls)
+
+
 @pytest.mark.parametrize("flags", [["--tier", "3"], ["--sweep"], ["--host", "sessions"]])
 def test_1469_item_goes_without_tier_sweep_and_host(flags: list[str]) -> None:
     proc = subprocess.run([sys.executable, str(SCRIPT), "o/r", "--item", "12", *flags], capture_output=True, text=True)
