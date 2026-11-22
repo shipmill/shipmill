@@ -3551,8 +3551,9 @@ def _status_item(
 ) -> int:
     """Spec 088, #1469: one item's explanation, from the picture's readings it uses alone. The
     item's own state comes first, so a closed or missing one exits 2 at once; then [agents]
-    and the bot's login, which the picture's App check also gives, watch_state.py's rows
-    without the host's sections, triage_state.py's states, the open pull requests, and the
+    and the bot's login, which the picture's App check also gives, watch_state.py --item's
+    rows (the full report's rows the explanation reads, from the sections one of them can come
+    from), triage_state.py's states, the open pull requests, and the
     upgrades, the last three read beside watch_state.py, which none of them waits on. None of
     the host's checks is read (the launchd job, the App check, the gate's CLI, its prune and
     tick records, the sessions and shipmill sections, agent-as-person): --item prints no
@@ -3567,7 +3568,7 @@ def _status_item(
         pulls = pool.submit(status.read_pulls, slug, run)
         upgrades = pool.submit(status.read_upgrades, slug, top, run)
         branch = pool.submit(status.landing_branch, slug, top, run)
-        proc = run(watch_command(slug, top, read, json=True, host=False))
+        proc = run(watch_command(slug, top, read, json=True, host=False, item=ref.number))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
         if state_failed(proc):
             print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)

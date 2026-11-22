@@ -5,7 +5,7 @@ recent releases, the environments shipmill operate runs, and the issue intake.
 Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN]
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
-                      [--role NAME=FILLER[,FILLER...] ...] [--no-host] [--no-trends]
+                      [--role NAME=FILLER[,FILLER...] ...] [--no-host] [--no-trends] [--item N]
        watch_state.py <owner/repo> --host {sessions,shipmill} [--host-wide] [--repo-dir PATH] [--json]
        watch_state.py <owner/repo> (--tier N [--known FILE] | --sweep) [--repo-dir PATH] [--json] ...
 
@@ -594,6 +594,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
@@ -3848,35 +3849,62 @@ def intake_rows(
     directions: frozenset[int] = frozenset(),
     read: Callable[[list[str]], str] = run,
     queue_of: Callable[[list[dict[str, Any]]], tuple[Queue | None, list[Row]]] | None = None,
+    reads: IntakeReads | None = None,
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, the open pull requests, and the
     closed and merged ones labelled decided and updated in the veto window (spec 030);
     land is the effective [autonomy] land level, None without [agents]; directions are the
-    open direction issues, never in the issue rows (spec 034). The comments of every pull
-    request intake may ask about, a labelled open one or a closed one, save a fork's with
-    trusted_only, are one batched read, not one read each (#842). queue_of reads the land
-    window's queue from the open pull requests (spec 056, land_queue), with its PYPI_WAIT row"""
+    open direction issues, never in the issue rows (spec 034). The pull requests' reads are
+    intake_reads' with read and queue_of, or reads when given, read before (#1469)"""
+    found = reads if reads is not None else intake_reads(repo, bot_login, trusted_only, now, read, queue_of)
+    return found.waits + intake(
+        repo,
+        code,
+        triage,
+        found.prs,
+        found.comments.__getitem__,
+        bot_login,
+        trusted_only,
+        land,
+        upgrades,
+        untrusted_plans,
+        found.closed,
+        directions,
+        queue=found.queue,
+    )
+
+
+@dataclass(frozen=True)
+class IntakeReads:
+    """What intake reads of the pull requests, none of it from triage_state.py"""
+
+    prs: list[dict[str, Any]]
+    closed: list[dict[str, Any]]
+    comments: dict[int, Comments]
+    queue: Queue | None
+    waits: list[Row]
+
+
+def intake_reads(
+    repo: str,
+    bot_login: str | None,
+    trusted_only: bool,
+    now: dt.datetime,
+    read: Callable[[list[str]], str] = run,
+    queue_of: Callable[[list[dict[str, Any]]], tuple[Queue | None, list[Row]]] | None = None,
+) -> IntakeReads:
+    """The open pull requests, the closed and merged ones labelled decided in the veto window,
+    and the comments of every pull request intake may ask about, a labelled open one or a
+    closed one, save a fork's with trusted_only: one batched read, not one read each (#842).
+    queue_of reads the land window's queue from the open pull requests (spec 056, land_queue),
+    with its PYPI_WAIT row"""
     prs = json.loads(read(["gh", "pr", "list", "-R", repo, "--json", PR_FIELDS, "-L", "100"]))
     closed = decided_prs(repo, now, read)
     wanted = [pr for pr in prs if asked(pr) or own_draft(pr, bot_login)] + list(closed)
     numbers = [int(pr["number"]) for pr in wanted if not (trusted_only and pr["isCrossRepository"])]
     comments = batched_comments(repo, numbers, read)
     queue, waits = (None, []) if queue_of is None else queue_of(prs)
-    return waits + intake(
-        repo,
-        code,
-        triage,
-        prs,
-        comments.__getitem__,
-        bot_login,
-        trusted_only,
-        land,
-        upgrades,
-        untrusted_plans,
-        closed,
-        directions,
-        queue=queue,
-    )
+    return IntakeReads(prs, closed, comments, queue, waits)
 
 
 def decided_prs_command(repo: str, now: dt.datetime) -> list[str]:
@@ -6413,6 +6441,13 @@ def arguments() -> argparse.ArgumentParser:
         metavar="FILE",
         help="with --tier: what shipmill gate's change check read already, so the tier reads none of it again",
     )
+    parser.add_argument(
+        "--item",
+        type=int,
+        metavar="N",
+        help="print only the full report's rows `shipmill status --item N` reads, skipping the reads that"
+        " can't give one (#1469)",
+    )
     return parser
 
 
@@ -6576,6 +6611,148 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
     return merged_waits(rows)
 
 
+# -- one item's rows (#1469) -----------------------------------------------------------------
+
+# the rows `shipmill status --item` reads whole, whatever they name (its item_status.py): the
+# hold, the items waiting on a decision, and the pull requests to land and parked
+ITEM_WHOLE = frozenset({"HOLD", "NEEDS_DECISION", "PRS_OPEN", "PRS_PARKED"})
+# a #N of this repo in a row's subject or detail, never one of owner/repo#N: shipmill's
+# item_status.OWN_NUMBER (tests/test_watch_item.py keeps the two equal)
+OWN_NUMBER = re.compile(r"(?<![\w/#])#(\d+)\b")
+
+
+def names_item(row: Row, number: int) -> bool:
+    return any(int(n) == number for n in OWN_NUMBER.findall(f"{row.subject} {row.detail}"))
+
+
+def item_row(row: Row, number: int) -> bool:
+    """Whether `shipmill status --item <number>` reads the row: one of ITEM_WHOLE, or a row
+    naming #number that is an agent's (its --json `agent`) or GATE_IDLE"""
+    if row.state in ITEM_WHOLE:
+        return True
+    return names_item(row, number) and (row.state == "GATE_IDLE" or bool(row.json()["agent"]))
+
+
+def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> list[Row]:
+    """--item's rows (#1469): the full report's rows less the sections no row item_row keeps
+    can come from, each kept one read as report_rows reads it, the independent ones at once,
+    and listed in report_rows' order; main keeps the rows item_row reads. Left out, as no row
+    of theirs is an agent's: the repo settings, the milestones, the tags and their requesters,
+    the triage mode, the App, the classes of service, the postmortems, the deployments and
+    promotions, the chains, the drift, the active runs, and the host's rows but GATE_IDLE. Left
+    out, as their agent's rows never name a #N: BOT_FAILED and OPERATE_FAILED (a run's URL),
+    WORK_BRANCH_STALE and NOT_PUBLISHED (a branch or a tag), and the upstream reports
+    (owner/repo#N). BOT_STALLED, whose
+    reason is the planner's, is read only with a release due"""
+    view = json.loads(run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef,deleteBranchOnMerge"]))
+    policy = policy_file(repo_dir)
+    text = None if policy is None else (repo_dir / policy).read_text(encoding="utf-8")
+    default = view["defaultBranchRef"]["name"]
+    branch = landing_branch(text, POLICY, default)
+    fetch_landing(repo_dir, branch)
+    read = None if policy is None or text is None else config(text, policy, args.incident_label)
+    table = None if policy is None or text is None else agents_table(text, policy)
+    planned = (repo_dir / DIRECTION).is_file()
+
+    def stalled() -> list[Row]:
+        bot = bot_workflow(repo_dir)
+        if policy is None or bot is None or not bot[1]:
+            return []
+        due, _ = bot_plan(args.repo, repo_dir, policy, branch, args.tool, bot[0])
+        if due is None:
+            return []
+        return bot_rows(fetch_runs(args.repo, bot[0]), due, now, dt.timedelta(minutes=args.grace), bot[0], args.repo)
+
+    def base_red() -> list[Row]:
+        revert = "observe" if read is None else read.revert
+        return base_red_rows(args.repo, repo_dir, default, args.bot_login, revert)
+
+    def intake_lines() -> str | PypiWait:
+        wip = plan_wip(table, POLICY) if planned else None
+        try:
+            return intake_run(
+                args.repo, repo_dir, planned, args.tool, args.bot_login, wip, roles=args.role if planned else ()
+            )
+        except PypiWait as wait:
+            return wait
+
+    def triage() -> tuple[int, str]:
+        home = None if policy is None or text is None else product_home(text, policy)
+        return triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        bot_read = pool.submit(stalled)
+        base_read = pool.submit(base_red)
+        intake_read = pool.submit(intake_lines)
+        # with --trusted-only, PyPI's wait for the plans' shipmill leaves the issues and the pull
+        # requests unread (D-16), so neither starts before the intake's lines say it's read
+        triage_read = None if args.trusted_only else pool.submit(triage)
+        idle_read = pool.submit(gate_idle_rows, args.repo, repo_dir, now)
+
+        def pulls() -> IntakeReads:
+            return intake_reads(
+                args.repo,
+                args.bot_login,
+                args.trusted_only,
+                now,
+                queue_of=lambda prs: land_queue(args.repo, repo_dir, text, default, prs, now, args.tool),
+            )
+
+        pulls_read = None if args.trusted_only else pool.submit(pulls)
+        upgrades = None
+        land = None
+        rows: list[Row] = []
+        if policy is not None and read is not None:
+            direction_read = pool.submit(direction_state, table, args.repo, repo_dir, branch, args.tool, args.bot_login)
+            holds_read = pool.submit(fetch_issues, args.repo, "--label", HOLD_LABEL)
+            upgrade_read = pool.submit(fetch_issues, args.repo, "--label", UPGRADE_LABEL)
+            incidents_read = (
+                pool.submit(fetch_issues, args.repo, "--label", read.incident_label) if read.environments else None
+            )
+            holds = hold_rows(holds_read.result(), now, args.repo)
+            land = None if table is None else held_land(read.land, bool(holds))
+            rows += [*bot_read.result(), *base_read.result(), *direction_read.result().rows, *holds]
+            if incidents_read is not None:
+                rows += incident_rows(incidents_read.result(), read.incident_label, now, args.repo)
+            upgrades = upgrade_rows(
+                upgrade_read.result(),
+                read.upgrade,
+                bool(holds),
+                lambda n: pr_comments(args.repo, n),
+                lambda name: declined_prs(args.repo, name),
+                args.repo,
+                args.bot_login,
+            )
+        else:
+            rows += [*bot_read.result(), *base_read.result()]
+        lines = intake_read.result()
+        plans = Plans([], frozenset())
+        feedback = Feedback([], frozenset())
+        if not isinstance(lines, PypiWait):
+            plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
+            feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
+        rows += plans.rows + feedback.rows
+        if not (isinstance(lines, PypiWait) and args.trusted_only):
+            code, triaged = triage_read.result() if triage_read is not None else triage()
+            directions = triage_directions(triaged) if table is not None else frozenset()
+            rows += intake_rows(
+                args.repo,
+                code,
+                triaged,
+                args.bot_login,
+                args.trusted_only,
+                land,
+                upgrades,
+                plans.untrusted | (feedback.untrusted - (upgrades.owned if upgrades is not None else frozenset())),
+                now,
+                directions,
+                reads=pulls_read.result() if pulls_read is not None else pulls(),
+            )
+            rows += spec_rows(args.repo, repo_dir, branch, triaged)
+        rows += idle_read.result()
+    return merged_waits(rows)
+
+
 def main() -> int:
     parser = arguments()
     args = parser.parse_args()
@@ -6600,6 +6777,10 @@ def main() -> int:
         parser.error("--known goes with --tier")
     if args.no_trends and (args.tier is not None or args.sweep or args.host is not None):
         parser.error("--no-trends goes with the full report: --tier, --sweep, and --host make no trends read")
+    if args.item is not None and (args.tier is not None or args.sweep or args.host is not None):
+        parser.error("--item reads the full report's rows: it goes without --tier, --sweep, and --host")
+    if args.item is not None and args.item < 1:
+        parser.error("--item must be an issue or pull request number, 1 or more")
     if "/" not in args.repo:
         parser.error("repo must be owner/name")
     if not 1 <= args.releases <= 20:
@@ -6619,6 +6800,8 @@ def main() -> int:
     elif args.tier is not None:
         known = None if args.known is None else read_known(args.known)
         rows = tier_rows(args.tier, args, repo_dir, known, now)
+    elif args.item is not None:
+        rows = [r for r in item_rows(args, repo_dir, now) if item_row(r, args.item)]
     else:
         rows = report_rows(args, repo_dir, now)
     for row in ordered(rows):
