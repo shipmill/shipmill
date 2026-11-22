@@ -921,11 +921,13 @@ def watch_command(
     tier: int | None = None,
     sweep: bool = False,
     known: Path | None = None,
+    item: int | None = None,
 ) -> list[str]:
     """The gate reads JSON lines; `shipmill status` prints the table unless asked (S-008-7).
     Without host the host's sessions and shipmill rows are left out, for status's picture to
     read each on its own (#745). The gate's walk reads one tier, given what its change check
-    read as known, or the sweep (spec 046); status passes neither and reads every section"""
+    read as known, or the sweep (spec 046); status passes neither and reads every section,
+    and `status --item` its item, the rows it can be named in alone (#1469)"""
     script = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
     return [
         sys.executable,
@@ -938,6 +940,7 @@ def watch_command(
         *([] if tier is None else ["--tier", str(tier)]),
         *(["--known", str(known)] if known is not None else []),
         *(["--sweep"] if sweep else []),
+        *([] if item is None else ["--item", str(item)]),
         *read.flags(),
     ]
 
