@@ -360,7 +360,9 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NoReturn
@@ -933,13 +935,18 @@ CODE_SPAN = re.compile(r"`+[^`]*`+")
 FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 
 
-def gh_graphql(query: str, variables: Variables) -> dict[str, Any]:
-    """The default runner: one ``gh api graphql`` call"""
+def graphql_cmd(query: str, variables: Variables) -> list[str]:
+    """The ``gh api graphql`` command that runs one query with its variables"""
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         # -F sends an int as a number; -f keeps a string a string (a cursor, a numeric repo name)
         cmd += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return cmd
+
+
+def gh_graphql(query: str, variables: Variables, execute: Execute | None = None) -> dict[str, Any]:
+    """The default runner: one ``gh api graphql`` call, run by ``execute`` (default: capture)"""
+    proc = (execute or capture)(graphql_cmd(query, variables))
     if proc.returncode != 0:
         # gh exits 1 on a resource limit, with the response on stdout and its message once
         # per rejected node on stderr: hand the response back to be retried smaller. It
@@ -1215,21 +1222,26 @@ def fetch(
     run: Runner = gh_graphql,
     now: dt.datetime | None = None,
     labels: Sequence[str] = (),
+    ahead: Ahead | None = None,
 ) -> dict[str, Any]:
     """One query, plus follow-up pages only for the connections it reports as capped. When
     the forge refuses blockedBy or subIssues, one stderr note, then the text holds alone.
     ``now`` (default: the clock) dates the window of closed decided issues it reads back;
-    ``labels`` (--label, spec 046) narrows the open issues to those carrying any of them"""
+    ``labels`` (--label, spec 046) narrows the open issues to those carrying any of them.
+    With ``ahead``, whose ``graphql`` is ``run``, each page's follow-up pages start at once,
+    on its threads, while the open issues are still paged (#1469)"""
     owner, _, name = repo.partition("/")
     if not owner or not name or "/" in name:
         fail(f"repo must be owner/name, got {repo!r}")
     moment = now if now is not None else dt.datetime.now(UTC)
     since = (moment - VETO_WINDOW).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        return fetch_pages(owner, name, closed, stable_pattern, run, native=True, since=since, labels=labels)
+        return fetch_pages(
+            owner, name, closed, stable_pattern, run, native=True, since=since, labels=labels, ahead=ahead
+        )
     except NativeUnavailable as refused:
         sys.stderr.write(f"note: native relations unavailable: {refused}\n")
-    return fetch_pages(owner, name, closed, stable_pattern, run, native=False, since=since, labels=labels)
+    return fetch_pages(owner, name, closed, stable_pattern, run, native=False, since=since, labels=labels, ahead=ahead)
 
 
 def fetch_pages(
@@ -1241,6 +1253,7 @@ def fetch_pages(
     native: bool,
     since: str,
     labels: Sequence[str] = (),
+    ahead: Ahead | None = None,
 ) -> dict[str, Any]:
     base: Variables = {"owner": owner, "name": name}
     sizes = dict(SIZES)
@@ -1254,11 +1267,15 @@ def fetch_pages(
     issues = data["open"]
     # A first query that had to shrink says how heavy this repo's issues are
     sizes[later] = min(sizes[later], sizes[first])
+    if ahead is not None:
+        ahead.follow_ups(base, sizes, dig(issues, "nodes"), dig(data, "closed", "nodes"), dig(data, "vetoable"), since)
     seen: set[str] = set()
     while issues["pageInfo"]["hasNextPage"]:
         cursor = advance(issues["pageInfo"]["endCursor"], seen, "open issues")
         what = f"the open issues after the first {len(issues['nodes'])}"
         page = sized(run, later, {**base, "cursor": cursor}, sizes, what)["open"]
+        if ahead is not None:
+            ahead.follow_ups(base, sizes, dig(page, "nodes"), None, None, since)
         issues["nodes"] = issues["nodes"] + page["nodes"]
         issues["pageInfo"] = page["pageInfo"]
     for issue in issues["nodes"]:
@@ -1719,6 +1736,135 @@ def capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
+AHEAD_WORKERS = 8  # gh calls in flight at once: well under GitHub's limit on concurrent requests
+
+
+def dig(value: Any, *keys: str) -> Any:
+    """``value[k1][k2]...``, or None where a step isn't a dict holding the key"""
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    return value
+
+
+def moment_or_none(text: Any) -> dt.datetime | None:
+    """``timestamp`` that never fails: None for a time it would refuse"""
+    if not isinstance(text, str):
+        return None
+    try:
+        moment = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def ahead_key(cmd: list[str]) -> tuple[object, ...]:
+    """A command's key among the started ones: a GraphQL call's variables in any order"""
+    if cmd[:3] != ["gh", "api", "graphql"]:
+        return tuple(cmd)
+    rest = cmd[5:]  # graphql_cmd's flag and name=value pairs
+    return (*cmd[:5], *sorted(zip(rest[0::2], rest[1::2], strict=True)))
+
+
+class Ahead:
+    """Calls started early on worker threads (#1469), whose answers the run takes in its own
+    order, as an Execute: a command started ahead returns its started call's result, any other
+    runs then. A worker only runs the command, so every error, stderr line, and exit code comes
+    from the run's own reading of the answer, in the order it reads them; a call started ahead
+    that the run never asks for changes nothing it prints"""
+
+    def __init__(self, execute: Execute = capture, workers: int = AHEAD_WORKERS) -> None:
+        self.execute = execute
+        self.pool = ThreadPoolExecutor(max_workers=workers)
+        self.lock = threading.Lock()
+        self.started: dict[tuple[object, ...], Future[subprocess.CompletedProcess[str]]] = {}
+
+    def start(self, cmd: list[str], then: Callable[[subprocess.CompletedProcess[str]], None] | None = None) -> None:
+        """Start ``cmd`` unless it is started; ``then`` reads its result on the worker, to start more"""
+
+        def work() -> subprocess.CompletedProcess[str]:
+            proc = self.execute(cmd)
+            if then is not None:
+                then(proc)
+            return proc
+
+        key = ahead_key(cmd)
+        with self.lock:
+            if key not in self.started:
+                self.started[key] = self.pool.submit(work)
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        with self.lock:
+            future = self.started.pop(ahead_key(cmd), None)
+        return self.execute(cmd) if future is None else future.result()
+
+    def graphql(self, query: str, variables: Variables) -> dict[str, Any]:
+        """A Runner: gh_graphql through the calls started ahead"""
+        return gh_graphql(query, variables, self)
+
+    def start_graphql(self, query: str, variables: Variables) -> None:
+        self.start(graphql_cmd(query, variables))
+
+    def next_page(self, query: str, base: Variables, sizes: Sizes, issue: Any, field: str) -> None:
+        """complete_refs' first call for an issue's connection, when its page says there is more"""
+        info = dig(issue, field, "pageInfo")
+        cursor = dig(info, "endCursor")
+        if dig(info, "hasNextPage") is True and isinstance(cursor, str) and cursor:
+            self.start_graphql(query, {**base, "number": issue["number"], "cursor": cursor, "size": sizes[query]})
+
+    def newest_comments(self, base: Variables, sizes: Sizes, issue: Any) -> None:
+        """issue_page's first call for an issue's comments, the newest"""
+        self.start_graphql(COMMENTS_PAGE, {**base, "number": issue["number"], "size": sizes[COMMENTS_PAGE]})
+
+    def follow_ups(self, base: Variables, sizes: Sizes, opened: Any, closed: Any, vetoable: Any, since: str) -> None:
+        """Start the first follow-up call fetch_pages makes for each connection a page reports
+        as capped, by the rules it reads them by: an open issue's comments, cross-references,
+        and native relations, a closed issue's cross-references and comments since its close,
+        and the closed decided issues' next page and comments"""
+        for issue in numbered(opened):
+            if len(dig(issue, "comments", "nodes") or ()) >= COMMENTS_CAP:
+                self.newest_comments(base, sizes, issue)
+            self.next_page(TIMELINE_PAGE, base, sizes, issue, "timelineItems")
+            for field, query in NATIVE_PAGES.items():
+                self.next_page(query, base, sizes, issue, field)
+        for issue in numbered(closed):
+            self.next_page(REFS_PAGE, base, sizes, issue, "refs")
+            if closed_comments_due(issue):
+                self.newest_comments(base, sizes, issue)
+        for issue in numbered(dig(vetoable, "nodes")):
+            if len(dig(issue, "comments", "nodes") or ()) >= COMMENTS_CAP:
+                self.newest_comments(base, sizes, issue)
+        cursor = dig(vetoable, "pageInfo", "endCursor")
+        if dig(vetoable, "pageInfo", "hasNextPage") is True and isinstance(cursor, str) and cursor:
+            self.start_graphql(VETOABLE_PAGE, {**base, "cursor": cursor, "since": since, "size": sizes[VETOABLE_PAGE]})
+
+
+def numbered(nodes: Any) -> list[dict[str, Any]]:
+    """The nodes of a page that are issues with a number, for the calls started ahead"""
+    if not isinstance(nodes, list):
+        return []
+    return [n for n in nodes if isinstance(n, dict) and type(n.get("number")) is int]
+
+
+def closed_comments_due(issue: dict[str, Any]) -> bool:
+    """Whether complete_closed_comments reads a closed issue's comments again, read without
+    failing: False where it would fail first, or on an answer of another shape"""
+    labels = dig(issue, "labels", "nodes")
+    if not isinstance(labels, list) or not all(isinstance(n, dict) and "name" in n for n in labels):
+        return False
+    if "stateReason" not in issue or not isinstance(issue.get("body"), (str, type(None))):
+        return False
+    if checkable(issue) or check_closable(issue):
+        return True
+    nodes = dig(issue, "comments", "nodes")
+    events = dig(issue, "timelineItems", "nodes")
+    if not isinstance(nodes, list) or len(nodes) < CLOSED_COMMENTS_CAP or not isinstance(events, list) or not events:
+        return False
+    newest, closed = moment_or_none(dig(nodes[0], "createdAt")), moment_or_none(dig(events[0], "createdAt"))
+    return newest is not None and closed is not None and newest > closed
+
+
 def product_gh(here: Path, execute: Execute = capture) -> tuple[list[str], Execute]:
     """`shipmill gh` as upstream_state.py runs it: `uvx shipmill==<the plugin's version>
     --repo <the checkout> gh` (spec 031), each call run once more with uv's index refreshed
@@ -1979,13 +2125,16 @@ class Revisits:
             self.compares[key] = self.compare(base, newest)
         return self.compares[key]
 
-    def compare(self, base: str, newest: str) -> list[str] | None:
+    def compare_url(self, base: str, newest: str, page: int) -> str:
         where = f"{quote(base, safe='')}...{quote(newest, safe='')}"
+        return f"repos/{self.owner}/{self.name}/compare/{where}?per_page={COMPARE_PAGE}&page={page}"
+
+    def compare(self, base: str, newest: str) -> list[str] | None:
         files: list[str] = []
         listed = 0
         page = 1
         while True:
-            url = f"repos/{self.owner}/{self.name}/compare/{where}?per_page={COMPARE_PAGE}&page={page}"
+            url = self.compare_url(base, newest, page)
             proc = self.execute(["gh", "api", url])
             if proc.returncode != 0:
                 sys.stderr.write(proc.stderr)
@@ -2006,6 +2155,76 @@ class Revisits:
             if len(nodes) < COMPARE_PAGE:
                 return files
             page += 1
+
+    def start(self, ahead: Ahead, issues: list[dict[str, Any]], marker: str, postponed: str) -> None:
+        """Start, on ``ahead``'s threads, the compares postponed_state is likely to read (#1469):
+        each postponed issue's whose newest triage comment has a readable ``Revisit on:`` line
+        and is older than the newest stable tag, from the newest stable tag in hand before it.
+        Read without failing: an issue whose answer postponed_state would fail on, or whose base
+        tag needs older tags paged, starts none, and is read as before"""
+        stable = stable_in_hand(dig(self.tags, "nodes"), self.pattern)
+        if stable is None:
+            return
+        for issue in issues:
+            labels = dig(issue, "labels", "nodes")
+            if not isinstance(labels, list) or postponed not in {dig(n, "name") for n in labels}:
+                continue
+            comments = dig(issue, "comments", "nodes")
+            triaged = [
+                c
+                for c in (comments if isinstance(comments, list) else [])
+                if isinstance(dig(c, "body"), str) and c["body"].lstrip().startswith(marker)
+            ]
+            recorded = revisit_line(triaged[-1]["body"]) if triaged else None
+            when = moment_or_none(dig(triaged[-1], "createdAt")) if triaged else None
+            if recorded is None or recorded[0] is None or when is None or not when < stable[0]:
+                continue
+            nodes = dig(self.tags, "nodes")
+            before = stable_in_hand([t for t in nodes if (tag_moment(t) or when) < when], self.pattern)
+            if before is not None:
+                self.start_compare(ahead, before[1], stable[1], 1)
+
+    def start_compare(self, ahead: Ahead, base: str, newest: str, page: int) -> None:
+        """Start one page of a compare, and its next page once this one is full, as compare reads them"""
+
+        def more(proc: subprocess.CompletedProcess[str]) -> None:
+            if proc.returncode != 0:
+                return
+            try:
+                answer = json.loads(proc.stdout)
+            except ValueError:
+                return
+            nodes = dig(answer, "files")
+            if isinstance(nodes, list) and len(nodes) >= COMPARE_PAGE and page * COMPARE_PAGE < COMPARE_FILES_CAP:
+                self.start_compare(ahead, base, newest, page + 1)
+
+        ahead.start(["gh", "api", self.compare_url(base, newest, page)], then=more)
+
+
+def tag_moment(tag: Any) -> dt.datetime | None:
+    """When a tag was created, as tag_date reads it, or None where it reads no time"""
+    target = dig(tag, "target")
+    if not isinstance(target, dict):
+        return None
+    tagger = target.get("tagger")
+    date = (tagger.get("date") if isinstance(tagger, dict) else None) or target.get("committedDate")
+    return moment_or_none(date)
+
+
+def stable_in_hand(tags: Any, pattern: re.Pattern[str]) -> tuple[dt.datetime, str] | None:
+    """latest_stable read without failing: None also where a stable tag's time doesn't read"""
+    if not isinstance(tags, list):
+        return None
+    stable = []
+    for tag in tags:
+        name = dig(tag, "name")
+        if not isinstance(name, str) or not pattern.match(name):
+            continue
+        moment = tag_moment(tag)
+        if moment is None:
+            return None
+        stable.append((moment, name))
+    return max(stable) if stable else None
 
 
 def tag_date(tag: dict[str, Any], moment: dt.datetime) -> bool:
@@ -2959,8 +3178,16 @@ def main() -> int:
     except re.error as exc:
         parser.error(f"--stable-tag-regex: {exc}")
 
-    data = fetch(args.repo, max(args.closed, 1), stable_pattern, labels=args.label)
+    # #1469: the follow-up calls each answer makes start on threads as soon as it is in hand;
+    # the run still reads every answer in its own order
+    ahead = Ahead()
+    data = fetch(args.repo, max(args.closed, 1), stable_pattern, labels=args.label, run=ahead.graphql, ahead=ahead)
     owner, _, name = args.repo.partition("/")  # fetch checked it is owner/name
+    revisits = Revisits(owner, name, data["tags"], stable_pattern, execute=ahead)
+    revisits.start(ahead, data["open"]["nodes"], args.marker, args.postponed_label)
+    if any(isinstance(dig(issue, "body"), str) and build_spec(issue) for issue in data["open"]["nodes"]):
+        # veto_windows' first call (fetch_decided_prs), made only when an open issue is a build issue
+        ahead.start_graphql(DECIDED_PRS_PAGE, {"owner": owner, "name": name, "size": SIZES[DECIDED_PRS_PAGE]})
     rows: list[dict[str, Any]] = []
     refs = {r for issue in data["open"]["nodes"] for r in upstream_refs(issue, (owner, name))}
     refs |= {r for issue in data["open"]["nodes"] for r in dependency_refs(issue, (owner, name))}
@@ -2982,7 +3209,6 @@ def main() -> int:
     # with each one's close time too: a person's hand-off is dated against it
     closes = {**closes, **{r: c for r, (_, _, c) in holds.items() if c is not None}}
     stable = latest_stable(data["tags"]["nodes"], stable_pattern)
-    revisits = Revisits(owner, name, data["tags"], stable_pattern)
     people: set[int] = set()
     busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
     issues: list[dict[str, Any]] = data["open"]["nodes"]
@@ -2990,7 +3216,7 @@ def main() -> int:
     untrusted = {n for n, verdict in gates.items() if verdict is not None and verdict[0] == "UNTRUSTED"}
     loops = cycles(issues, (owner, name), args.marker, untrusted)
     # Spec 067: the build issues of a spec approved at notify wait out its veto window
-    windows = veto_windows(args.repo, issues, args.bot_login)
+    windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql)
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(
