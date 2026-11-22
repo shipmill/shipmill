@@ -13,7 +13,7 @@ passed, and a breaking change waits for the maintainer's hand start.
 Run the tool with:
 
 ```bash
-CR="uvx shipmill==0.159.0"
+CR="uvx shipmill==0.160.0"
 ```
 
 the release this plugin pins, from PyPI (spec 031), in every session, a headless gate's

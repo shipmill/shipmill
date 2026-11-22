@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.160.0] - 2026-11-22
+
+### Added
+
+- Status: `shipmill status --item REF` says why one open issue or pull request is not closed, given by number or by its GitHub URL: the bucket the picture lists it on and every condition that keeps it open, each with who clears it (the maintainer, an agent, a person, or an event) and how; `--json` prints one object. A triaged issue on the `parked` line now shows what it was triaged as, such as `triaged: opportunity` (spec 088) (#1461)
+
+### Fixed
+
+- `land` on a lane with `after_publish` no longer exits 2 when GitHub answers 404 for the publish run it named on dispatch seconds before: it reads the run again every poll until the publish deadline, then fails naming the run GitHub never served, with the after_publish workflows left unstarted and the commands that start them; any other error reading the run still stops it at once (#1467)
+
 ## [0.159.0] - 2026-11-22
 
 ### Changed
@@ -2874,7 +2884,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.159.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.160.0...HEAD
+[0.160.0]: https://github.com/shipmill/shipmill/compare/v0.159.0...v0.160.0
 [0.159.0]: https://github.com/shipmill/shipmill/compare/v0.158.1...v0.159.0
 [0.158.1]: https://github.com/shipmill/shipmill/compare/v0.158.0...v0.158.1
 [0.158.0]: https://github.com/shipmill/shipmill/compare/v0.157.1...v0.158.0
