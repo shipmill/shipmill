@@ -1,7 +1,8 @@
 """Spec 088: why one open issue or pull request is not closed. `shipmill status --item REF`
-reads what the picture reads (status.Facts), plus one `gh pr view` for a pull request and the
-land window at now, and names the item's bucket and every condition that keeps it open, each
-with who clears it and how. It only reads (S-088-12)."""
+reads the item's own state first (is_open), then the picture's readings an explanation uses
+(status.Facts, without the host's checks, #1469), plus one `gh pr view` for a pull request and
+the land window at now, and names the item's bucket and every condition that keeps it open,
+each with who clears it and how. It only reads (S-088-12)."""
 
 import json
 import re
@@ -183,6 +184,27 @@ VERDICT_WAITS: dict[str, tuple[str, Who, str]] = {
 }
 
 
+def not_open(ref: Ref, repo: str) -> ReleaseError:
+    return ReleaseError(f"--item {ref.given!r}: #{ref.number} is no open issue or pull request of {repo}")
+
+
+GONE = re.compile(r"\(HTTP 404\)|\(HTTP 410\)")  # gh api's error for a number with no item, or a deleted one
+
+
+def is_open(repo: str, number: int, run: StateRunner) -> bool:
+    """#1469: whether GitHub has an open issue or pull request numbered number, from its own
+    state (the issues endpoint answers for both), read before anything else so a closed or
+    missing item is answered at once; False for closed or none, refused for any other answer"""
+    cmd = ["gh", "api", f"repos/{repo}/issues/{number}", "--jq", ".state"]
+    first = run(cmd)
+    if first.returncode != 0 and GONE.search(first.stderr):
+        return False
+    state = (first.stdout if first.returncode == 0 else gh_read(cmd, run, f"gh api {cmd[2]}")).strip()
+    if state not in ("open", "closed"):
+        raise ReleaseError(f"gh api {cmd[2]} printed the state {state!r}, neither open nor closed")
+    return state == "open"
+
+
 def _find(facts: Facts, ref: Ref) -> tuple[Kind, Issue | None, Pull | None]:
     issue = next(
         (i for i in facts.issues if i.number == ref.number and i.state not in CLOSED_STATES and not i.closed), None
@@ -190,7 +212,7 @@ def _find(facts: Facts, ref: Ref) -> tuple[Kind, Issue | None, Pull | None]:
     pull = next((p for p in facts.pulls if p.number == ref.number), None)
     kind = Kind.ISSUE if issue is not None else Kind.PULL if pull is not None else None
     if kind is None:
-        raise ReleaseError(f"--item {ref.given!r}: #{ref.number} is no open issue or pull request of {facts.repo}")
+        raise not_open(ref, facts.repo)
     if ref.kind is not None and ref.kind is not kind:
         raise ReleaseError(
             f"--item {ref.given!r}: #{ref.number} of {facts.repo} is an open {SAID[kind]}, not {SAID[ref.kind]}"

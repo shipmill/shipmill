@@ -4,6 +4,7 @@ import dataclasses
 import datetime as dt
 import importlib.util
 import json
+import plistlib
 import re
 import subprocess
 from pathlib import Path
@@ -11,8 +12,9 @@ from types import ModuleType
 
 import pytest
 
+from shipmill.app import default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy
-from shipmill.cli import main
+from shipmill.cli import _parser, _status, main
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
 from shipmill.gate import skills_dir
@@ -28,10 +30,14 @@ from shipmill.item_status import (
     parse_ref,
 )
 from shipmill.land_window import LandWindow
+from shipmill.launchd import label
 from shipmill.status import ISSUE_LINES, TRIAGE_VERDICTS, Facts, Issue, Pull, Row, parse_issues, report
+from tests import test_app
 from tests.test_status_picture import REPO, VERSION_JSON, facts, gate, host, repo_with_release
 
 NONE = PullDetail((), "", ())
+ITEM = re.compile(r"repos/[^/]+/[^/]+/issues/(\d+)")  # #1469: the item's own state, read first
+OPEN, CLOSED = {4, 9}, {7}  # the Fake's open issue and pull request, and a closed issue
 
 
 def why(found: Facts, number: int, detail: PullDetail = NONE, window: LandWindow | None = None) -> list[str]:
@@ -77,6 +83,11 @@ class Fake:
             rollup = [{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"}]
             out = {"statusCheckRollup": rollup, "reviewDecision": "", "labels": []}
             return subprocess.CompletedProcess(cmd, 0, json.dumps(out), "")
+        if cmd[:2] == ["gh", "api"] and (found := ITEM.fullmatch(cmd[2])) is not None:
+            number = int(found[1])
+            if number in OPEN | CLOSED:
+                return subprocess.CompletedProcess(cmd, 0, "open\n" if number in OPEN else "closed\n", "")
+            return subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)\n")
         answers = {
             ("gh", "repo"): "main\n",
             ("gh", "release"): '{"tagName": "v1.0.0", "publishedAt": "2026-10-06T12:00:00Z"}',
@@ -395,3 +406,61 @@ def test_s088_10_the_apps_own_draft_is_a_gate_sessions_to_mark_ready() -> None:
     found = facts(row, pulls=[Pull(9, True, "CLEAN", "main")])
     assert ("the App's own draft: no session owns it any more (D-67)", Who.AGENT) in whos(found, 9)
     assert ("a draft: it belongs to its author (D-67)", Who.PERSON) not in whos(found, 9)
+
+
+@pytest.mark.parametrize(("given", "number"), [("7", 7), ("5", 5), (f"https://github.com/{REPO}/pull/7", 7)])
+def test_s088_2_a_closed_or_missing_item_exits_2_before_the_pipeline_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], given: str, number: int
+) -> None:
+    """#1469: a closed or missing number is answered from its own state alone, at once"""
+    root = repo_with_release(tmp_path / "repo")
+    fake = Fake()
+    said = f"--item {given!r}: #{number} is no open issue or pull request of {REPO}"
+    with pytest.raises(ReleaseError, match=re.escape(said)):
+        main(["--repo", str(root), "status", "--item", given], state=fake, login=host)
+    assert capsys.readouterr().out == ""
+    assert fake.seen == [["gh", "api", f"repos/{REPO}/issues/{number}", "--jq", ".state"]]
+
+
+class OnHost(Fake):
+    """The item Fake on a Mac with the gate's launchd job, whose host reads answer too"""
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "launchctl":
+            self.seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 113, "", "Could not find service\n")
+        if cmd[0] == "sysctl":
+            self.seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "{ sec = 0, usec = 0 } Thu Jan  1 00:00:00 1970\n", "")
+        return super().__call__(cmd)
+
+
+def test_s088_12_item_reads_only_what_its_explanation_uses(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """#1469: --item reads [agents], the bot's login, watch_state.py --no-host, triage_state.py,
+    the open pull requests, and the upgrades, as the picture reads them, and none of the host's
+    checks: no launchd job, App check, host section, or agent-as-person search"""
+    root = repo_with_release(tmp_path / "repo", test_app.REPO)
+    (root / ".github").mkdir()
+    config = f'[agents]\nprompt = "/t"\napp_id = {test_app.APP_ID}\n'
+    (root / ".github" / "shipmill.toml").write_text(config, encoding="utf-8")
+    home = tmp_path / "home"
+    key = default_key(test_app.APP_ID, home)
+    key.parent.mkdir(parents=True)
+    key.write_text("not a real key\n", encoding="utf-8")
+    key.chmod(0o600)
+    plist = home / "Library" / "LaunchAgents" / f"{label(test_app.REPO)}.plist"
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(plistlib.dumps({"Label": label(test_app.REPO), "ProgramArguments": ["shipmill", "gate"]}))
+    fake, api = OnHost(), test_app.FakeApi()
+    args = _parser().parse_args(["--repo", str(root), "status", "--item", "4"])
+    code = _status(root, args, fake, api, test_app.FakeSigner(), host, home=home, platform="darwin")
+    out = capsys.readouterr().out
+    assert code == 0 and out.startswith(f"{test_app.REPO}#4 (https://github.com/{test_app.REPO}/issues/4): parked\n")
+    assert not any(c[0] in ("launchctl", "sysctl") for c in fake.seen)  # the gate's launchd job
+    assert [path for path, _ in api.calls] == ["/app"]  # the bot's login alone, not the App check
+    assert not any("--host" in c for c in fake.seen)  # the host's sessions and shipmill sections
+    assert not any(c[:3] == ["gh", "api", "graphql"] for c in fake.seen)  # the agent-as-person search
+    watch = [c for c in fake.seen if c[1].endswith("watch_state.py")]
+    triage = [c for c in fake.seen if c[1].endswith("triage_state.py")]
+    assert len(watch) == 1 and "--no-host" in watch[0] and watch[0][-2:] == ["--bot-login", test_app.BOT]
+    assert len(triage) == 1 and triage[0][-2:] == ["--bot-login", test_app.BOT]

@@ -151,6 +151,7 @@ import sys
 import time
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import partial
@@ -3461,6 +3462,10 @@ def _status(
                 )
             return None
 
+    if ref is not None:  # spec 088: one item's explanation, from the readings it uses (#1469)
+        return _status_item(
+            top, slug, ref, args.json, run, resolved, autonomy, environments, home, platform, when, bot_login
+        )
     # the picture reads as the gate's App, whose needs-decision questions are its own (spec 005)
     gate = status.read_gate(slug, top, home, platform, run, check, os.getuid()) if picture else None
     if gate is not None:  # S-031-17: the gate's own CLI against the latest release
@@ -3526,13 +3531,69 @@ def _status(
         environments=environments,
         refused=refused.in_checkout(top),  # S-052-9
     )
-    if ref is not None:  # spec 088: one item's explanation, from the same facts
-        window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
-        why = item_status.explain(facts, ref, lambda n: item_status.read_pull_detail(slug, n, run), window)
-        sys.stdout.write(json.dumps(why.record()) + "\n" if args.json else why.text())
-        return 0
     sys.stdout.write(status.report(facts).text(slug))
     return code  # S-009-14: spec 008's code, whatever the verdict
+
+
+def _status_item(
+    top: Path,
+    slug: str,
+    ref: item_status.Ref,
+    as_json: bool,
+    run: StateRunner,
+    resolved: tuple[roles.ResolvedRole, ...],
+    autonomy: AutonomyPolicy,
+    environments: tuple[EnvironmentName, ...],
+    home: Path,
+    platform: str,
+    when: dt.datetime,
+    bot_login: Callable[[int, Path], str | None],
+) -> int:
+    """Spec 088, #1469: one item's explanation, from the picture's readings it uses alone. The
+    item's own state comes first, so a closed or missing one exits 2 at once; then [agents]
+    and the bot's login, which the picture's App check also gives, watch_state.py's rows
+    without the host's sections, triage_state.py's states, the open pull requests, and the
+    upgrades, the last three read beside watch_state.py, which none of them waits on. None of
+    the host's checks is read (the launchd job, the App check, the gate's CLI, its prune and
+    tick records, the sessions and shipmill sections, agent-as-person): --item prints no
+    factory line (D-55), and the explanation reads none of them"""
+    if not item_status.is_open(slug, ref.number, run):
+        raise item_status.not_open(ref, slug)
+    gate = status.agents_gate(top, platform)
+    bot = status.read_login(slug, top, home, platform, bot_login)
+    read = StateRead(bot_login=bot, roles=resolved)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        issues = pool.submit(status.read_issues, slug, run, bot, resolved)
+        pulls = pool.submit(status.read_pulls, slug, run)
+        upgrades = pool.submit(status.read_upgrades, slug, top, run)
+        branch = pool.submit(status.landing_branch, slug, top, run)
+        proc = run(watch_command(slug, top, read, json=True, host=False))
+        sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
+        if state_failed(proc):
+            print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
+            return 2
+        git = Git(top)
+        main = status.read_main(git, branch.result())  # after watch_state.py's fetch
+        facts = status.Facts(
+            repo=slug,
+            rows=status.parse_rows(proc.stdout),
+            issues=issues.result(),
+            pulls=pulls.result(),
+            main=main,
+            version=status.describe(git, main.remote),
+            gate=gate,
+            cli=importlib.metadata.version("shipmill"),
+            now=when,
+            checkout=top,
+            command=cli_command(),
+            upgrades=upgrades.result(),
+            autonomy=autonomy,
+            environments=environments,
+        )
+    window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
+    why = item_status.explain(facts, ref, lambda n: item_status.read_pull_detail(slug, n, run), window)
+    sys.stdout.write(json.dumps(why.record()) + "\n" if as_json else why.text())
+    return 0
 
 
 def _with_tick(gate: status.Gate, git: Git) -> status.Gate:

@@ -784,6 +784,17 @@ def read_login(
     return login(agents.app_id, path) if path.is_file() else None
 
 
+def agents_gate(root: Path, platform: str) -> Gate:
+    """#1469: the gate as `status --item` reads it, [agents] from the checkout's config as
+    read_gate reads it and nothing of the host: no launchd job, wake, App check, or credential,
+    since an item's explanation reads only gate.agents of it"""
+    raw = _raw(root)
+    agents = AgentsConfig.load(root) if "agents" in raw else None
+    table = raw.get("agents")
+    mode_set = isinstance(table, dict) and "mode" in table
+    return Gate(agents, mode_set, platform == "darwin", None, None, None, None, None)
+
+
 def read_gate(
     repo: str,
     root: Path,
