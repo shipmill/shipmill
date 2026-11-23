@@ -61,7 +61,7 @@ reaches, orders zones of the same reversibility.
 | Zone | Covers | Default | Floor | Code detects |
 |---|---|---|---|---|
 | `direction` | an edit of `docs/product.md` or `docs/product/`: the mission, users, goals, non-goals, quality bar (D-34) | `never` | `ask` | a changed path |
-| `decision-policy` | the `[decisions]` section of `.github/shipmill.toml` | `never` | `never` | a changed key in that section |
+| `decision-policy` | the `[decisions]` section of `.github/shipmill.toml`, and a raise of an `[autonomy]` stage's level (D-99) | `never` | `never` | a changed key in that section; a stage whose level, as `shipmill autonomy` resolves it with the hold left out, rises (observe < propose < act) |
 | `scope` | accepting or declining an opportunity (D-10), approving a spec, accepting a goal plan (spec 028), creating or editing a milestone | `ask` | `ask` | a spec whose status line becomes `approved`; the `planned` label |
 | `accepted-spec` | approving a spec whose work the maintainer already accepted ([spec 067](067-accepted-spec-notify.md)) | `ask` | `notify` | a spec whose status line becomes `approved`, when every `Spec for #N` issue of its pull request is accepted |
 | `rule-departure` | a change that departs from an active `D-n` or an approved spec's `S-NNN-k` (Q-5) | `ask` | `ask` | candidates only: `decisions.py find` on the changed paths |
@@ -120,7 +120,9 @@ Without the section every zone has its default. `[decisions]` in a config withou
 product intake, `shipmill upgrade`), which run in CI without any agent (Q-6). `[decisions]`
 is read by agent sessions and the tools they use. The two meet in one place, `shipmill
 decide levels`, which shows the release-side zones mapped from `[autonomy]` beside the
-agent zones. No existing config changes, so no spec 014 upgrade is needed.
+agent zones. No existing config changes, so no spec 014 upgrade is needed. D-99 narrows
+this: a pull request that raises an `[autonomy]` stage's level is `decision-policy`, so an
+agent never lands a raise of its own stage, whatever `security` is set to.
 
 ### `shipmill decide`
 
@@ -144,7 +146,11 @@ Code detects these zones from a change:
 
 - `direction`: a path equal to `docs/product.md` or under `docs/product/`
 - `decision-policy`: `.github/shipmill.toml` whose `[decisions]` table differs between the
-  base and the head, compared parsed, so a comment or a reorder elsewhere doesn't count
+  base and the head, compared parsed, so a comment or a reorder elsewhere doesn't count;
+  or whose `[autonomy]` raises a stage's level (D-99): each stage `shipmill autonomy` lists,
+  resolved at both sides with its defaults and the `[agents] prompt` reading and the hold
+  left out, a stage the base lacks read at its default there; levels that can't be read at
+  either side count, and a change that only lowers or keeps the levels stays `security`
 - `security`: any other path under `.github/`
 - `protected`: a path a `REVIEW.md` Protected areas glob on the base covers, matched as
   `pr_gate.py` matches today
