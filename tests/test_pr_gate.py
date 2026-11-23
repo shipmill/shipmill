@@ -924,6 +924,9 @@ def test_1485_python_310_reads_the_lanes_release_workflows_as_tomllib_does() -> 
         "[lanes.dev]\nquiet_minutes = 5\n",
         'lanes.stable.dispatch = ["publish.yml"]\n',
         '[lanes.stable]\ndispatch = "publish.yml"\n',
+        '[lanes.stable]\ndispatch = [\n  # "old.yml",\n  "publish.yml",  # was "nightly.yml"\n]\n',
+        '[lanes.stable]\ndispatch = [  # see [docs]\n  "publish.yml",\n]\n',
+        '[lanes.stable]\ndispatch = ["publish.yml"\n',
     ]
     code = (
         "import importlib.util, json, sys\n"
@@ -945,6 +948,9 @@ def test_1485_python_310_reads_the_lanes_release_workflows_as_tomllib_does() -> 
         ["pages.yml", "publish.yml"],
         [],
         "refused",
+        "refused",
+        ["publish.yml"],
+        ["publish.yml"],
         "refused",
     ]
 

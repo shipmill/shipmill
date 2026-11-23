@@ -1535,7 +1535,6 @@ def release_workflows_310(text: str, where: str, ws: ModuleType) -> frozenset[st
         tables.get("lanes", "")
     ):
         raise unreadable
-    strings = r"\"([^\"]*)\"|'([^']*)'"
     found: set[str] = set()
     for name, body in tables.items():
         parts = name.split(".")
@@ -1544,15 +1543,31 @@ def release_workflows_310(text: str, where: str, ws: ModuleType) -> frozenset[st
         if len(parts) != 2:
             raise unreadable
         for key in RELEASE_KEYS:
-            listed = re.search(rf"^\s*[\"']?{key}[\"']?\s*=\s*\[(.*?)\]", body, re.MULTILINE | re.DOTALL)
-            if listed is None:
+            opened = re.search(rf"^\s*[\"']?{key}[\"']?\s*=\s*\[", body, re.MULTILINE)
+            if opened is None:
                 if re.search(rf"^\s*[\"']?{key}[\"']?\s*=", body, re.MULTILINE):
                     raise unreadable
                 continue
-            if re.sub(r"#[^\n]*", "", re.sub(strings, "", listed.group(1))).replace(",", "").strip():
-                raise unreadable
-            found.update(double or single for double, single in re.findall(strings, listed.group(1)))
+            found.update(array_strings(body[opened.end() :], unreadable))
     return frozenset(found)
+
+
+_ARRAY_TOKEN = re.compile(r"\"([^\"\\\n]*)\"|'([^'\n]*)'|(\])|#[^\n]*|[\s,]+|.")
+
+
+def array_strings(rest: str, unreadable: GateError) -> list[str]:
+    """The strings of a TOML array of plain strings, read from just past its [ to its ]: a
+    comment is skipped, quotes or a ] in it included, and anything else stops the gate"""
+    strings: list[str] = []
+    for token in _ARRAY_TOKEN.finditer(rest):
+        double, single, close = token.groups()
+        if close is not None:
+            return strings
+        if double is not None or single is not None:
+            strings.append(double if double is not None else single)
+        elif not token.group().startswith("#") and token.group().strip(" \t\r\n,"):
+            raise unreadable
+    raise unreadable
 
 
 def head_checks(branch: str, read: Callable[[list[str]], str]) -> tuple[str, list[dict]]:
