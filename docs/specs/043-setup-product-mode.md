@@ -180,7 +180,7 @@ phrased that way reaches the skill.
 
 - D-4: `[product]`, `standalone` included, lives in `.github/shipmill.toml`
 - D-14: setup writes only the repo it runs in
-- D-19: the Product row is read only with `[agents] app_id`, the App the product's repos share
+- D-98 (supersedes D-19): the Product row is read only with `[agents] app_id`, the App the product's repos share
 - D-20: the Product question is asked with the App and mode questions
 - D-21: in a gate session the question goes through the needs-decision protocol
 - D-34: each repo keeps its own direction

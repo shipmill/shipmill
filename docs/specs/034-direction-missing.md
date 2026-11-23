@@ -224,7 +224,7 @@ row shows and no issue is read.
 - D-10: shipmill proposes and the maintainer accepts or declines; a decline is kept
 - D-14: the session opens the issue, posts the question, and opens the pull request as the App
 - D-16: only a trusted author's direction issue counts, and the fix holds no issue text
-- D-19: a person's action in the watch that no agent can take, as `GATE_NO_APP`
+- D-98 (supersedes D-19): a person's action in the watch that no agent can take, as `GATE_NO_APP`
 - D-21: the question goes through the needs-decision protocol, and the answer reads DECIDED
 - D-30: covers only the release workflow's upgrade issues; the direction issue needs no extension of it
 - D-34: a repo with `[agents]` keeps its direction in `docs/product.md`, and only the maintainer changes it

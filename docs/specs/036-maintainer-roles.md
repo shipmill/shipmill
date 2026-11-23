@@ -201,7 +201,7 @@ item a role's item.
 - D-4
 - D-14
 - D-16
-- D-19
+- D-98 (supersedes D-19)
 - D-21
 - D-37
 
