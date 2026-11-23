@@ -87,7 +87,7 @@ Every decision an agent meets falls in a **zone**, and each zone has one **level
 | Zone | Covers | Default | Floor |
 |---|---|---|---|
 | `direction` | an edit of `docs/product.md` or `docs/product/` | `never` | `ask` |
-| `decision-policy` | the `[decisions]` section itself | `never` | `never` |
+| `decision-policy` | the `[decisions]` section itself, and a raise of an `[autonomy]` stage's level (D-99) | `never` | `never` |
 | `scope` | accepting an opportunity, approving a spec not in `accepted-spec`, accepting a goal plan, a milestone | `ask` | `ask` |
 | `accepted-spec` | approving the spec of work you already accepted: an opportunity you planned or an issue you filed (spec 067) | `ask` | `notify` |
 | `rule-departure` | a change that departs from a `D-n` or an approved spec's criterion | `ask` | `ask` |
