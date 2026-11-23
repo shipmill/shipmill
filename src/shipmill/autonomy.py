@@ -38,6 +38,11 @@ class Autonomy(StrEnum):
     PROPOSE = "propose"
     ACT = "act"
 
+    @property
+    def rank(self) -> int:
+        """How far the level goes by itself: observe < propose < act (D-99)"""
+        return list(Autonomy).index(self)
+
 
 class StageKind(StrEnum):
     RELEASE = "release"
