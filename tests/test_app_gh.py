@@ -24,7 +24,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import state_dir
 from shipmill.gitrepo import Git
 
-from .test_app import APP_ID, GRANTED, REPO, FakeSigner, key_file
+from .test_app import APP_ID, BOT, GRANTED, REPO, FakeSigner, key_file
 from .test_app_token import FAKE_GH, MintApi, executable
 from .test_gate import write_config
 
@@ -498,3 +498,170 @@ def test_only_repo_may_come_before_gh(tmp_path: Path, host: Host) -> None:
         main(["--", "gh", "pr", "list"], environ=host.env(), home=host.home, gh_runner=runner)
     assert exited.value.code == 2
     assert runner.calls == []
+
+
+# #1484: a question on a pull request names its head, and a relay keeps to its grammar (D-93), or
+# neither is posted: the gate would discard the answer to either
+
+HEAD = "0123456789abcdef0123456789abcdef01234567"
+OLD_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
+ASKED = (
+    "<!-- shipmill:needs-decision -->\n<!-- shipmill:zone contract-change -->\n"
+    "@romamo Decision needed: rename the flag?\n{lines}\n"
+    "1. Rename it (recommended): clearer\n2. Keep it: no churn\n\nReply here with a number or your own answer."
+)
+HEADLESS = ASKED.format(lines="")
+HEADED = ASKED.format(lines=f"CI on 0123456: 5 checks green\n<!-- shipmill:head {HEAD} -->\n")
+OLD_HEADED = ASKED.format(lines=f"CI on fedcba9: 5 checks green\n<!-- shipmill:head {OLD_HEAD} -->\n")
+RELAY_HEADER = "Decision by `@romamo`, relayed by Claude Code"
+
+
+@dataclass
+class ItemReads:
+    """Stands in for the gh that reads an item as the App: its comments, one JSON line each as
+    decision_label's jq filter prints them, and, for the GraphQL read, its type and head"""
+
+    thread: list[tuple[str, str, str]]
+    kind: str = "PullRequest"
+    head: str = HEAD
+    calls: list[list[str]] = field(default_factory=list)
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+        self.calls.append(list(argv))
+        if "graphql" in argv:
+            return 0, json.dumps([self.kind, self.head if self.kind == "PullRequest" else ""]) + "\n"
+        return 0, "".join(json.dumps(list(row)) + "\n" for row in self.thread)
+
+
+def as_app_1484(
+    tmp_path: Path,
+    host: Host,
+    args: list[str],
+    reads: ItemReads | None = None,
+    stdin: str = "",
+    runner: Runner | None = None,
+) -> Runner:
+    """args through shipmill gh as the App; gh, runner, runs them unless shipmill refuses (ReleaseError)"""
+    root = checkout(tmp_path, WITH_APP)
+    runner = Runner(code=0) if runner is None else runner
+    main(
+        ["--repo", str(root), "gh", "--app-key", str(key_file(tmp_path)), *args],
+        api=MintApi(),
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+        gh_feed=lambda argv, env, fed: runner(argv, env),
+        gh_capture=reads or ItemReads([]),
+        stdin=io.StringIO(stdin),
+    )
+    return runner
+
+
+def _body_file(tmp_path: Path, body: str) -> str:
+    path = tmp_path / "comment.md"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+# (1) the label goes on a pull request only under a question naming its current head
+
+
+@pytest.mark.parametrize("group", ["pr", "issue"])  # `gh issue edit` labels a pull request too
+@pytest.mark.parametrize(
+    ("question", "found"),
+    [(HEADLESS, "names no head"), (OLD_HEADED, f"names {OLD_HEAD}")],
+    ids=["headless", "old-head"],
+)
+def test_1484_adding_the_label_under_a_question_not_naming_the_head_exits_2(
+    tmp_path: Path, host: Host, group: str, question: str, found: str
+) -> None:
+    reads, runner = ItemReads([(BOT, "NONE", question)]), Runner()
+    with pytest.raises(ReleaseError, match=rf"{found}.*<!-- shipmill:head {HEAD} -->") as raised:
+        as_app_1484(tmp_path, host, [group, "edit", "41", "--add-label", "needs-decision"], reads, runner=runner)
+    assert "then add the label" in str(raised.value)
+    assert runner.calls == []  # gh never ran
+
+
+@pytest.mark.parametrize("group", ["pr", "issue"])
+def test_1484_adding_the_label_under_a_question_naming_the_head_runs(tmp_path: Path, host: Host, group: str) -> None:
+    args = [group, "edit", "41", "--add-label", "needs-decision"]
+    runner = as_app_1484(tmp_path, host, args, ItemReads([(BOT, "NONE", HEADED)]))
+    [(argv, _)] = runner.calls
+    assert argv[1:] == args
+
+
+def test_1484_an_issue_question_carries_no_head_and_still_takes_the_label(tmp_path: Path, host: Host) -> None:
+    args = ["issue", "edit", "41", "--add-label", "needs-decision"]
+    runner = as_app_1484(tmp_path, host, args, ItemReads([(BOT, "NONE", HEADLESS)], kind="Issue"))
+    assert len(runner.calls) == 1
+
+
+# (2) a question posted on a pull request names its head
+
+
+@pytest.mark.parametrize("how", ["body", "file", "stdin"])
+def test_1484_a_pull_request_question_without_its_head_line_exits_2(tmp_path: Path, host: Host, how: str) -> None:
+    given = {
+        "body": (["--body", HEADLESS], ""),
+        "file": (["--body-file", _body_file(tmp_path, HEADLESS)], ""),
+        "stdin": (["--body-file", "-"], HEADLESS),
+    }
+    flags, stdin = given[how]
+    reads, runner = ItemReads([]), Runner()
+    with pytest.raises(ReleaseError, match=r"no `<!-- shipmill:head <sha> -->` line.*headRefOid"):
+        as_app_1484(tmp_path, host, ["pr", "comment", "41", *flags], reads, stdin, runner)
+    assert (reads.calls, runner.calls) == ([], [])  # nothing read or written
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["pr", "comment", "41", "--body", HEADED],  # a pull request's question naming its head
+        ["issue", "comment", "41", "--body", HEADLESS],  # an issue's question carries none
+    ],
+    ids=["pull-request", "issue"],
+)
+def test_1484_a_question_as_the_protocol_writes_it_still_posts(tmp_path: Path, host: Host, args: list[str]) -> None:
+    runner = as_app_1484(tmp_path, host, args)
+    assert len(runner.calls) == 1
+
+
+# (3) a relay out of the relay grammar (D-93), read by retro.py's parse_relay
+
+
+@pytest.mark.parametrize("group", ["issue", "pr"])
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["Answered in the session: 1", "Thanks, and rename the flag later."],  # a paragraph before Note:
+        ["Answered in the session: own:"],  # an empty own:
+        ["Answered in the session: 1", "Basis: everything"],  # a malformed Basis:
+        ["1", "<!-- a comment -->"],  # an HTML comment before Note:
+    ],
+    ids=["paragraph", "empty-own", "bad-basis", "html-comment"],
+)
+def test_1484_a_relay_out_of_its_grammar_exits_2(tmp_path: Path, host: Host, group: str, lines: list[str]) -> None:
+    body = "\n\n".join([RELAY_HEADER, *lines])
+    reads, runner = ItemReads([]), Runner()
+    args = [group, "comment", "41", "--body-file", _body_file(tmp_path, body)]
+    with pytest.raises(ReleaseError, match=r"relay grammar.*relay not counted: format.*Note:"):
+        as_app_1484(tmp_path, host, args, reads, runner=runner)
+    assert (reads.calls, runner.calls) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["Answered in the session: 1"],
+        ["Answered in the session: own: keep it, and document it"],
+        ["Answered in the session: 1", "Basis: item", "Note: checked against the diff"],
+        ["2"],  # a header and one line reads as before
+        [],  # a header alone
+    ],
+    ids=["option", "own", "basis-and-note", "one-line", "header-only"],
+)
+def test_1484_a_relay_in_its_grammar_still_posts(tmp_path: Path, host: Host, lines: list[str]) -> None:
+    body = "\n\n".join([RELAY_HEADER, *lines])
+    runner = as_app_1484(tmp_path, host, ["pr", "comment", "41", "--body-file", _body_file(tmp_path, body)])
+    assert len(runner.calls) == 1
