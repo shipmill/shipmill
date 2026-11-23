@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.163.1] - 2026-11-23
+
+### Fixed
+
+- `test_proof.py` reads a plan's `Tests changed: none` (any case, alone or followed by prose such as `none; only new tests`) as naming no file instead of exiting 2; `none` on a line that also holds a backticked path, with or without its reason, still exits 2, and its message now says the line may be `none` (#1507)
+
 ## [0.163.0] - 2026-11-23
 
 ### Fixed
@@ -2945,7 +2951,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.163.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.163.1...HEAD
+[0.163.1]: https://github.com/shipmill/shipmill/compare/v0.163.0...v0.163.1
 [0.163.0]: https://github.com/shipmill/shipmill/compare/v0.162.2...v0.163.0
 [0.162.2]: https://github.com/shipmill/shipmill/compare/v0.162.1...v0.162.2
 [0.162.1]: https://github.com/shipmill/shipmill/compare/v0.162.0...v0.162.1
