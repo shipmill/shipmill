@@ -26,6 +26,7 @@ from shipmill.agent_marker import BODY_LIMIT, carries, closed_with, decided_by, 
 from shipmill.agents import MergeMethod
 from shipmill.classify import Pulls
 from shipmill.config import CONFIG_PATH
+from shipmill.credit import DECISION_BY, first_line
 from shipmill.errors import ReleaseError
 from shipmill.github import MergeMethods
 from shipmill.leaks import Text
@@ -948,6 +949,75 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
     if name in ("-F", "--field") and body.startswith("@"):
         body = read(name, body[1:])
     return [*kept, "-f", f"body={_sized(body, what)}", *tail]
+
+
+# -- #1491: a relayed decision names its person in a code span (D-61) ----------------------------
+
+# The REST endpoint that posts a comment on an issue's or a pull request's thread, past the host
+_API_COMMENT = re.compile(r"repos/[^/]+/[^/]+/issues/[0-9]+/comments/?", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class PostedComment:
+    """A comment on an issue's or a pull request's thread that gh's args post: the command as a
+    refusal names it, and its body"""
+
+    what: str  # such as `gh pr comment`
+    body: str
+
+
+def posted_comment(args: Sequence[str]) -> PostedComment | None:
+    """The comment gh's args post once `marked_args` made them, its body one --body, --comment,
+    or `body` field: `issue comment`, `pr comment`, `issue|pr close|reopen --comment`, or `gh
+    api`'s POST on `repos/<owner>/<repo>/issues/<n>/comments`; None for every other call, and
+    for one that writes no comment (--delete-last, --help, a close without --comment)"""
+    if not args or args[0] == "--":
+        return None
+    if args[0] == "api":
+        positional, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+        if not positional or _api_method(flags) != "POST" or _API_COMMENT.fullmatch(_endpoint(positional[0])) is None:
+            return None
+        bodies = [value.partition("=")[2] for name, value in flags if _field(name, value) == "body"]
+        return PostedComment(f"gh api {positional[0]}", bodies[-1]) if bodies else None
+    if args[0] not in _GROUP_FLAGS:
+        return None
+    positional, _ = _scan(args[1:], _GROUP_FLAGS[args[0]].long, _GROUP_FLAGS[args[0]].short)
+    if not positional:
+        return None
+    command = (args[0], positional[0])
+    what = f"gh {' '.join(command)}"
+    if command in _CLOSES:
+        _, flags = _scan(args[1:], _CLOSE_FLAGS.long, _CLOSE_FLAGS.short)
+        comments = [value for name, value in flags if name in _COMMENT_FLAG]
+        return None if not comments or _helped(flags) else PostedComment(what, comments[-1])
+    if command[1] != "comment" or command not in _CREATES:
+        return None
+    _, flags = _scan(args[1:], _COMMENT_FLAGS.long, _COMMENT_FLAGS.short)
+    if _helped(flags) or _on(flags, "--delete-last"):
+        return None
+    bodies = [value for name, value in flags if name in ("--body", "-b")]
+    return PostedComment(what, bodies[-1]) if bodies else None
+
+
+def hold_relay_mention(args: Sequence[str]) -> None:
+    """#1491: a comment gh's args post, once `marked_args` made them, whose first line, past any
+    leading blank lines, is a relay header naming its person bare (`Decision by @<login>`) exits 2
+    before any token or gh, showing the line with the login in a code span: a bare mention from
+    the App emails them, and a relay records an answer they already gave (D-61). A question
+    (`@<login> Decision needed`) and a decided comment (`@<login> Decided without waiting`)
+    mention on purpose and aren't relays; every other call passes"""
+    comment = posted_comment(args)
+    if comment is None:
+        return
+    line = first_line(comment.body)
+    found = DECISION_BY.match(line)
+    if found is None or found["bare"] is None:
+        return
+    spanned = f"{line[: found.start('bare') - 1]}`@{found['bare']}`{line[found.end('bare') :]}"
+    raise ReleaseError(
+        f"{comment.what} is refused: its first line relays a decision naming @{found['bare']} bare, which emails them "
+        f"for an answer they already gave (D-61); write the login in a code span: {spanned}"
+    )
 
 
 # -- S-051-7, S-051-12: the three writes assisted mode makes as the decider ----------------------
