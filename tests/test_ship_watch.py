@@ -1367,6 +1367,37 @@ def test_no_gate_no_app_row_without_a_prompt_or_with_an_app(ws: ModuleType, text
     assert ws.gate_app_rows(ws.agents_table_toml(tomllib.loads(text), policy)) == []
 
 
+@pytest.mark.parametrize("mode", ["", 'mode = "headless"\n'])
+def test_1429_a_gate_the_owner_chose_to_run_as_the_host_reads_no_gate_no_app(ws: ModuleType, mode: str) -> None:
+    # #1429, D-98: identity = "host" is the owner's recorded choice, so the watch stops asking for an App
+    policy = Path("shipmill.toml")
+    text = AGENTS_CONFIG + mode + 'identity = "host"\n'
+    assert ws.gate_app_rows(ws.agents_table_310(text, policy)) == []
+    assert ws.gate_app_rows(ws.agents_table_toml(tomllib.loads(text), policy)) == []
+
+
+def test_1429_a_gate_in_a_repo_where_agents_dont_write_says_its_sessions_cant_write(ws: ModuleType) -> None:
+    # #1429, D-98: identity = "none" with a gate prompt is still a person's action, as setup's AGENTS_NO_WRITE
+    policy = Path("shipmill.toml")
+    text = AGENTS_CONFIG + 'identity = "none"\n'
+    for table in (ws.agents_table_310(text, policy), ws.agents_table_toml(tomllib.loads(text), policy)):
+        (row,) = ws.gate_app_rows(table)
+        assert (row.state, row.subject, row.json()["agent"]) == ("GATE_NO_APP", "[agents]", False)
+        assert row.detail.startswith('identity = "none": the gate\'s sessions stop at their first write')
+        assert "sessions write as the host's gh login" not in row.detail
+        assert 'identity = "host"' in row.detail
+
+
+@pytest.mark.parametrize("identity", ["", 'identity = "app"\n'])
+def test_1429_an_unchosen_or_app_identity_without_app_id_still_reads_gate_no_app(ws: ModuleType, identity: str) -> None:
+    policy = Path("shipmill.toml")
+    text = AGENTS_CONFIG + identity
+    for table in (ws.agents_table_310(text, policy), ws.agents_table_toml(tomllib.loads(text), policy)):
+        (row,) = ws.gate_app_rows(table)
+        assert row.state == "GATE_NO_APP"
+        assert row.detail.startswith("no app connected: sessions write as the host's gh login")
+
+
 def test_no_agents_table_reads_no_gate(ws: ModuleType) -> None:
     row = ws.triage_mode_row('name = "demo"\n', Path("shipmill.toml"))
     assert row.detail.startswith("no [agents]")

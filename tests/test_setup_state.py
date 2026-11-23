@@ -668,6 +668,51 @@ def test_a_gate_without_an_app_is_unfinished_in_either_mode(ss: ModuleType, tmp_
     assert ss.agents_row(tmp_path).state == ("AGENTS_OK" if mode else "AGENTS_NO_MODE")
 
 
+PROMPT_ONLY = '[agents]\nprompt = "/github-issue-triage {repo}"\n'
+
+
+def no_login() -> str:
+    raise AssertionError("the host's login is read only for identity = host with a mode")
+
+
+def test_1429_identity_host_skips_the_app_and_names_the_hosts_login(ss: ModuleType, tmp_path: Path) -> None:
+    # #1429, D-98: the owner chose to write as their own login, so setup stops asking for an App
+    write(tmp_path, ".github/shipmill.toml", PROMPT_ONLY + 'identity = "host"\nmode = "headless"\n')
+    row = ss.agents_row(tmp_path, "host", lambda: "octo")
+    assert row.state == "AGENTS_OK" and row.state in ss.DONE
+    assert row.detail == '[agents] has a prompt and mode, and identity = "host": sessions write as octo'
+
+
+def test_1429_identity_host_still_needs_a_mode(ss: ModuleType, tmp_path: Path) -> None:
+    write(tmp_path, ".github/shipmill.toml", PROMPT_ONLY + 'identity = "host"\n')
+    row = ss.agents_row(tmp_path, "host", no_login)
+    assert (row.state, row.detail) == ("AGENTS_NO_MODE", NO_MODE)
+
+
+@pytest.mark.parametrize("mode", ["", 'mode = "interactive"\n'])
+def test_1429_identity_none_with_a_gate_prompt_reads_no_write(ss: ModuleType, tmp_path: Path, mode: str) -> None:
+    # #1429, D-98: agents don't write here, so a gate's sessions stop at their first write
+    write(tmp_path, ".github/shipmill.toml", PROMPT_ONLY + 'identity = "none"\n' + mode)
+    row = ss.agents_row(tmp_path, "none", no_login)
+    assert row.state == "AGENTS_NO_WRITE" and row.state not in ss.DONE
+    assert row.detail.startswith('identity = "none": the gate\'s sessions stop at their first write')
+    assert 'identity = "host"' in row.detail and "app-create" in row.detail
+
+
+@pytest.mark.parametrize("identity", ["app", "none", "host"])
+def test_1429_no_prompt_reads_agents_missing_whatever_the_identity(
+    ss: ModuleType, tmp_path: Path, identity: str
+) -> None:
+    write(tmp_path, ".github/shipmill.toml", f'[agents]\nidentity = "{identity}"\n')
+    assert ss.agents_row(tmp_path, identity, no_login).state == "AGENTS_MISSING"
+
+
+def test_1429_identity_app_without_app_id_still_reads_no_app(ss: ModuleType, tmp_path: Path) -> None:
+    write(tmp_path, ".github/shipmill.toml", PROMPT_ONLY + 'identity = "app"\nmode = "headless"\n')
+    row = ss.agents_row(tmp_path, "app", no_login)
+    assert (row.state, row.detail) == ("AGENTS_NO_APP", NO_APP)
+
+
 NO_MODE = (
     'no mode in [agents]: the gate runs interactive by default, which nobody chose; set mode = "interactive"'
     ' or mode = "headless" (shipmill-setup\'s step 4)'
