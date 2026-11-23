@@ -143,7 +143,7 @@ def test_s081_15_a_gitleaks_that_cant_tell_its_version_warns(agents_repo: Repo, 
 @pytest.mark.parametrize(
     ("text", "names"),
     [
-        ('terms = ["Acme Rocket"]\nallow = true\n', "unknown key 'allow'"),
+        ('terms = ["Acme Rocket"]\nallow = true\n', "unknown key at line 2"),
         ('terms = "Acme Rocket"\n', "terms must be a list of strings"),
         ('terms = ["ab"]\n', "terms holds a term under 3 characters"),
         ("terms = [\n", "isn't valid TOML"),
@@ -176,6 +176,25 @@ def test_s081_15_a_private_file_that_isnt_toml_fails_naming_where_never_a_term(
     (failed, _) = block(agents_repo, probe(home))
     assert failed.status == "FAIL"
     assert failed.detail.startswith(f"private file: {path} {where}; fix it")
+    assert "acme" not in failed.detail.lower().replace(str(path).lower(), "")
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        pytest.param('terms = []\n["Acme Rocket"]\n', 2, id="table"),
+        pytest.param("terms = []\nacme.rocket = 1\n", 2, id="dotted-key"),
+        pytest.param('terms = [\n  "x",\n]\n"Acme Rocket" = 1\n', 4, id="quoted-key"),
+    ],
+)
+def test_s081_15_an_unknown_key_fails_naming_its_line_never_a_term(
+    agents_repo: Repo, tmp_path: Path, text: str, line: int
+) -> None:
+    home = tmp_path / "home"
+    path = private(home, text)
+    (failed, _) = block(agents_repo, probe(home))
+    assert failed.status == "FAIL"
+    assert failed.detail.startswith(f"private file: {path} has an unknown key at line {line}; it takes only terms")
     assert "acme" not in failed.detail.lower().replace(str(path).lower(), "")
 
 

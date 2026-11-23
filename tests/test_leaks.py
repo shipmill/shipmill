@@ -378,7 +378,7 @@ def test_s081_4_a_file_without_terms_reads_no_visibility(tmp_path: Path, host: H
 @pytest.mark.parametrize(
     ("text", "match"),
     [
-        ('terms = ["Acme Rocket"]\nallow = true\n', "unknown key 'allow'"),
+        ('terms = ["Acme Rocket"]\nallow = true\n', "unknown key at line 2"),
         ('terms = "Acme Rocket"\n', "terms must be a list of strings"),
         ("terms = [1]\n", "terms must be a list of strings"),
         ('secret_files = "~/.env"\n', "secret_files must be a list of strings"),
@@ -433,6 +433,45 @@ def test_s081_4_a_private_file_that_doesnt_parse_names_where_never_its_text(
     assert said.startswith(f"{path} {where}; fix it, the leak check refuses every write until then")
     assert "acme" not in said.lower().replace(str(path).lower(), "")
     assert "0xff" not in said
+
+
+@pytest.mark.parametrize(
+    ("raw", "line"),
+    [
+        pytest.param(b'terms = []\n["Acme Rocket"]\nlaunch = 1\n', 2, id="table"),
+        pytest.param(b'terms = []\n[["Acme Rocket"]]\n', 2, id="array-of-tables"),
+        pytest.param(b'[ "Acme Rocket" . launch ]\n', 1, id="dotted-table"),
+        pytest.param(b"terms = []\nacme.rocket = 1\n", 2, id="dotted-key"),
+        pytest.param(b'"Acme Rocket" = 1\n', 1, id="quoted-key"),
+        pytest.param(b"terms = []\n'Acme Rocket'.launch = true\n", 2, id="literal-dotted-key"),
+        pytest.param(b'terms = [\n  "Acme Rocket",\n  [1, 2],\n]\n"Acme Rocket" = 1\n', 5, id="multi-line-array"),
+        pytest.param(b'terms = ["""Acme\nRocket = 1\n[fake]"""]\n["Acme Rocket"]\n', 4, id="multi-line-string"),
+        pytest.param(b"terms = ['''\n[\"Acme Rocket\"]\n''']\n\"Acme Rocket\" = 1\n", 4, id="literal-multi-line"),
+        pytest.param(b'terms = ["""Acme\\"""\n"""", """Acme \\\n Rocket"""]\nacme = 1\n', 4, id="escaped-quotes"),
+        pytest.param(b'terms = [ # ] "\n  "Acme Rocket"]\nacme = 1\n', 3, id="comment"),
+        pytest.param(b'[terms]\n"Acme Rocket" = 1\n["Acme Rocket".x]\n', 3, id="key-under-allowed-table"),
+        pytest.param(b'terms = []\r\n"Acme Rocket" = 1\r\n', 2, id="crlf"),
+        pytest.param(b'"\\u0074erms" = []\nacme = 1\n', 2, id="escaped-known-key"),
+    ],
+)
+def test_s081_4_an_unknown_key_names_its_line_never_the_key(tmp_path: Path, host: Host, raw: bytes, line: int) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    path = host.home / PRIVATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    with pytest.raises(ReleaseError) as caught:
+        main(
+            ["--repo", str(root), "gh", "issue", "comment", "250", "--body", "clean"],
+            api=MintApi(),
+            signer=FakeSigner(),
+            environ=host.env(),
+            home=host.home,
+            gh_runner=Runner(),
+            gh_capture=Reads("private"),
+        )
+    said = str(caught.value)
+    assert said == f"{path} has an unknown key at line {line}; it takes only terms and secret_files (spec 081)"
+    assert caught.value.__cause__ is None and caught.value.__context__ is None  # no parser text rides along
 
 
 def test_s081_4_a_malformed_private_file_fails_no_read(tmp_path: Path, host: Host) -> None:
