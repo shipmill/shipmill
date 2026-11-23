@@ -910,6 +910,21 @@ def test_s002_20_1207_gh_reads_pull_requests_by_number_in_the_same_request(tmp_p
     assert gh.merged_pull_requests([], []) == []
 
 
+def test_s002_20_a_query_of_numbers_alone_defines_no_unused_fragment(tmp_path: Path) -> None:
+    """GitHub refuses a query that defines a fragment it doesn't use, and a batch past the last
+    branch name holds only numbers, so one such batch failed the whole prune"""
+    out = tmp_path / "out.json"
+    out.write_text(json.dumps({"data": {"repository": {"n0": numbered_node(5, merged=True)}}}), encoding="utf-8")
+    script = (
+        'case "$*" in *"...merged"*) ;; *"fragment merged"*) '
+        "echo 'gh: Fragment merged was defined, but not used' >&2; exit 1;; esac\n"
+        f'cat "{out}"\n'
+    )
+    bin_dir = fake_tool(tmp_path, "gh", script)
+    pulls = GhCli(tmp_path, str(bin_dir / "gh")).merged_pull_requests([], [5])
+    assert [p.number for p in pulls] == [5]
+
+
 @pytest.mark.parametrize(
     "answer",
     [
