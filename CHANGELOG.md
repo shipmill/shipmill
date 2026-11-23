@@ -7,6 +7,21 @@ bot.
 
 ## [Unreleased]
 
+## [0.163.0] - 2026-11-23
+
+### Fixed
+
+- A deploy proposal from `operate.yml` reaches the maintainer queue: given the App's private key as its new optional `SHIPMILL_OPERATE_KEY` secret, with `[agents] app_id` set, operate opens and updates the "Ready to promote" issue as the App, with a token limited to the repository and `issues: write`, instead of as `github-actions[bot]`, which the queue leaves out; without the secret nothing changes (#1371)
+- An unknown key in `~/.config/shipmill/private.toml` is named by its line and the keys the file takes, never by its text: a table or key named after a private term no longer reaches a refused write's message, a refused push, or `shipmill doctor`'s `leaks` FAIL (spec 081, S-081-4 amended) (#1416)
+- The setup checklist and github-ship-watch read the agent identity the owner recorded (D-98): with `[agents] identity = "host"` neither asks for an App any more, and `AGENTS_OK` names the host's login the gate's sessions write as; with `identity = "none"` and a gate prompt, setup reads a new `AGENTS_NO_WRITE` action and the watch's `GATE_NO_APP` says the same, since those sessions stop at their first write, so the agents row no longer contradicts the identity row (#1429)
+- The merge gate holds a pull request as `BLOCKED`, naming the incident, while an open incident is on an environment's latest deploy; a revert or a hotfix still reads `READY`, and an incident from an earlier deploy holds nothing (#1481)
+- `shipmill gh`: a comment whose first line relays a decision naming its person bare (`Decision by @<login>, relayed by <agent>`) exits 2 before anything reaches GitHub, its error showing the line with the login in a code span, so a relay no longer emails the person who already answered (D-61); readers still take both forms (#1491)
+- Triage: a merged closing pull request no longer reads an issue DONE_NOT_CLOSED while one of its holds is still open; it reads BLOCKED, and a parent with a `## Check` reads VERIFY_DUE once its last child closes (#1492)
+
+### Added
+
+- `fleet.py overview` prints the fleet report's rows and the maintainer's queue in one pass: each repo is cloned once and the repos are read concurrently, at most `--jobs N` at once (default 4), in the fleet file's order (#1479)
+
 ## [0.162.2] - 2026-11-23
 
 ### Fixed
@@ -2930,7 +2945,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.162.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.163.0...HEAD
+[0.163.0]: https://github.com/shipmill/shipmill/compare/v0.162.2...v0.163.0
 [0.162.2]: https://github.com/shipmill/shipmill/compare/v0.162.1...v0.162.2
 [0.162.1]: https://github.com/shipmill/shipmill/compare/v0.162.0...v0.162.1
 [0.162.0]: https://github.com/shipmill/shipmill/compare/v0.161.2...v0.162.0
