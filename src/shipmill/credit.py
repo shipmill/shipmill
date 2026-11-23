@@ -30,7 +30,7 @@ _TRAILER_LINE = re.compile(r"[A-Za-z0-9-]+: .+")
 # nobody rather than the account its first part spells
 MARKER = "<!-- shipmill:needs-decision -->"
 _LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
-_DECISION_BY = re.compile(
+DECISION_BY = re.compile(
     rf"Decision by (?:@(?P<bare>{_LOGIN})(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(?P<span>{_LOGIN})`(?![\w`-]))"
 )
 # The permissions on the repo a label event's author is trusted by; GitHub's legacy
@@ -424,7 +424,7 @@ def answers(comments: Sequence[Comment], where: str, app: str) -> list[Named]:
         if line == MARKER:
             asked = asked or by_app or (not comment.user.bot and comment.association in TRUSTED)
         elif comment.user.bot:
-            relayed = _DECISION_BY.match(line) if by_app else None
+            relayed = DECISION_BY.match(line) if by_app else None
             if relayed is not None:
                 found.append(Named(Person(relayed["bare"] or relayed["span"], False), True, why))
         elif asked and not comment.agent:

@@ -852,7 +852,7 @@ STILL_WAITS_MARKER = "<!-- shipmill:still-waits -->"
 # An @login, not an @org/team, bare or in a code span (`@login`, D-61): a backtick is no word character
 MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")
 # A relayed answer's first line (needs-decision.md, Answered in the session), the login bare or
-# in a code span (D-61), as shipmill's credit._DECISION_BY reads it
+# in a code span (D-61), as shipmill's credit.DECISION_BY reads it
 DECISION_BY = re.compile(
     r"Decision by (?:@(" + LOGIN_PATTERN + r")(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(" + LOGIN_PATTERN + r")`(?![\w`-]))"
 )

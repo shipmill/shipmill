@@ -3,6 +3,7 @@ repo's App when [agents] app_id is set and as the host's login when it isn't. No
 reaches the network: GitHub is MintApi and openssl FakeSigner"""
 
 import datetime as dt
+import io
 import json
 import os
 import shutil
@@ -402,6 +403,91 @@ def test_every_argument_after_gh_goes_to_gh(tmp_path: Path, host: Host, args: li
     runner = Runner()
     assert gh(root, args, host, MintApi(), runner) == 7
     assert runner.calls[0][0] == [host.gh, *args]
+
+
+# #1491: a relayed decision names the person in a code span, so it emails nobody (D-61)
+
+BARE_RELAY = "Decision by @romamo, relayed by Claude Code\n\nAnswered in the session: 1. Take it"
+SPAN_RELAY = "Decision by `@romamo`, relayed by Claude Code\n\nAnswered in the session: 1. Take it"
+SPAN_LINE = "Decision by `@romamo`, relayed by Claude Code"
+
+
+def _comment_args(tmp_path: Path, how: str, body: str) -> tuple[list[str], io.StringIO | None]:
+    """A comment posting body, given as how says: inline, from a file, or from stdin"""
+    if how == "body":
+        return ["issue", "comment", "5", "--body", body], None
+    if how == "file":
+        path = tmp_path / "relay.md"
+        path.write_text(body, encoding="utf-8")
+        return ["pr", "comment", "5", "--body-file", str(path)], None
+    if how == "stdin":
+        return ["pr", "comment", "5", "-F", "-"], io.StringIO(body)
+    if how == "close":
+        return ["pr", "close", "5", "--comment", body], None
+    return ["api", f"repos/{REPO}/issues/5/comments", "-f", f"body={body}"], None
+
+
+@pytest.mark.parametrize("how", ["body", "file", "stdin", "close", "api"])
+@pytest.mark.parametrize("lead", ["", "\n\n  "])
+def test_1491_a_relay_naming_its_person_bare_exits_2_before_github(
+    tmp_path: Path, host: Host, how: str, lead: str
+) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    key_file(tmp_path)
+    args, stdin = _comment_args(tmp_path, how, lead + BARE_RELAY)
+    api = MintApi()
+    runner = Runner()
+    with pytest.raises(ReleaseError, match="D-61") as raised:
+        main(
+            ["--repo", str(root), "gh", "--app-key", str(tmp_path / "app.pem"), *args],
+            api=api,
+            signer=FakeSigner(),
+            environ=host.env(),
+            home=host.home,
+            gh_runner=runner,
+            stdin=stdin,
+        )
+    assert SPAN_LINE in str(raised.value)
+    assert (runner.calls, api.posts) == ([], [])  # no token minted, gh never ran
+
+
+def test_1491_a_relay_naming_its_person_bare_is_refused_as_the_host_too(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    runner = Runner()
+    with pytest.raises(ReleaseError, match="D-61"):
+        gh(root, ["issue", "comment", "5", "--body", BARE_RELAY], host, MintApi(), runner)
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("how", ["body", "file", "stdin", "close", "api"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        SPAN_RELAY,
+        "<!-- shipmill:needs-decision -->\n@romamo Decision needed: which one?",
+        "<!-- shipmill:decided zone=scope until=2026-11-24T10:20:00Z -->\n@romamo Decided without waiting: this",
+        "Thanks @romamo.\n\nDecision by @romamo, relayed by Claude Code",  # not a relay: its first line isn't
+    ],
+)
+def test_1491_a_code_span_relay_and_the_comments_that_mention_on_purpose_still_post(
+    tmp_path: Path, host: Host, how: str, body: str
+) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    key_file(tmp_path)
+    args, stdin = _comment_args(tmp_path, how, body)
+    runner = Runner(code=0)
+    code = main(
+        ["--repo", str(root), "gh", "--app-key", str(tmp_path / "app.pem"), *args],
+        api=MintApi(),
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+        gh_feed=lambda argv, env, fed: runner(argv, env),
+        stdin=stdin,
+    )
+    assert code == 0
+    assert len(runner.calls) == 1
 
 
 def test_only_repo_may_come_before_gh(tmp_path: Path, host: Host) -> None:
