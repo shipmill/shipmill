@@ -531,6 +531,48 @@ def test_s079_13_a_marker_quoted_below_the_first_line_counts_for_nothing(ts: Mod
     assert read_reopened(ts, item, "OPEN") == ("DONE_NOT_CLOSED", "#8:merged")
 
 
+CHECKED = "Mention the maintainer only when they have to act.\n\nDepends on o/r#13\n\n## Check\n\nRun it.\n"
+CHECK_FAILED = "<!-- shipmill:check-failed -->\nThe check still mentions the maintainer."
+
+
+def merged_parent(child: str, closed: str | None = None) -> dict[str, Any]:
+    """#771's shape (#1492): merged #8 closes #12, which has a ## Check, a Depends on line
+    naming its child #13, the App's check-failed comment after the merge, and #13 itself"""
+    item = issue(("2026-11-01T10:00:00Z", "Triage: **implement**"), body=CHECKED)
+    item["number"] = 12
+    item["comments"]["nodes"].append(
+        {"createdAt": "2026-11-23T09:00:00Z", "body": CHECK_FAILED, "author": {"login": "shipmill-app"}}
+    )
+    pr = {"number": 8, "state": "MERGED", "title": "a change", "body": "Fixes #12"}
+    item["timelineItems"] = {"nodes": [{"willCloseTarget": True, "isCrossRepository": False, "source": pr}]}
+    node = {"number": 13, "state": child, "closedAt": closed, "repository": {"nameWithOwner": "o/r"}}
+    item["subIssues"] = {"nodes": [node]}
+    return item
+
+
+def test_1492_a_merged_closer_leaves_an_issue_with_an_open_child_blocked(ts: ModuleType) -> None:
+    states = {("o", "r", 13): "OPEN"}
+    found = ts.classify_open(merged_parent("OPEN"), "Triage:", "postponed", states, None, REPO, BOT)
+    assert found == ("BLOCKED", "children 0/1 closed o/r#13:open(child)")
+
+
+def test_1492_its_check_is_due_once_the_child_closes(ts: ModuleType) -> None:
+    item = merged_parent("CLOSED", "2026-11-23T12:00:00Z")
+    found = ts.classify_open(item, "Triage:", "postponed", {("o", "r", 13): "CLOSED"}, None, REPO, BOT)
+    assert found == ("VERIFY_DUE", "children 1/1 closed o/r#13:closed(child): run its ## Check")
+
+
+def test_1492_a_merged_closer_with_every_hold_closed_still_reads_done_not_closed(ts: ModuleType) -> None:
+    item = issue(("2026-11-01T10:00:00Z", "Triage: **implement**"), body="Depends on o/r#13\n")
+    item["number"] = 12
+    pr = {"number": 8, "state": "MERGED", "title": "a change", "body": "Fixes #12"}
+    item["timelineItems"] = {"nodes": [{"willCloseTarget": True, "isCrossRepository": False, "source": pr}]}
+    for hold in ("CLOSED", "NOT_PLANNED"):
+        states = {("o", "r", 13): hold}
+        found = ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT)
+        assert found == ("DONE_NOT_CLOSED", "#8:merged")
+
+
 def test_416_github_s_link_and_part_of_anywhere_still_link(ts: ModuleType) -> None:
     # a cross-repo or full-URL closer reaches triage as GitHub's willCloseTarget
     linked = {"number": 8, "state": "MERGED", "title": "x", "body": "Fixes https://github.com/o/r/issues/12"}
