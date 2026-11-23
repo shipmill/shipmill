@@ -105,7 +105,12 @@ For each open issue:
   UNBLOCKED        every upstream issue it waits on has closed, and every pull
                    request merged: resume it. One closed as not planned shows as
                    owner/repo#N:not_planned in the note: its work never landed, so
-                   decide whether the issue still makes sense before resuming
+                   decide whether the issue still makes sense before resuming. A hold
+                   that closed before the newest triage comment holds nothing: that
+                   comment decided it again (#1493), and the issue reads by its other
+                   rules (BLOCKED "labelled blocked", POSTPONED, or its verdict). A
+                   sub-issue, a hold whose close time is unknown, and a person's
+                   item's holds count whenever they closed
   POSTPONED        has the postponed label. When its newest triage comment has a line
                    "Revisit on: `<path>`, `<path>`" (spec 061), its note is "waits on
                    <paths>"
@@ -2306,7 +2311,8 @@ def classify_open(
     window: str | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
-    closed, which a person's item (labelled human or role:<name>) reads its hand-off against.
+    closed, which a person's item (labelled human or role:<name>) reads its hand-off against,
+    and before which any other issue's newest triage comment takes a hold up (#1493).
     Without ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS).
     ``roles``, the --role flags (None without them), turns NO_ASSIGNEE into ASSIGN_DUE.
     ``cycle`` is the issue's loop when it is on a cycle (cycles), with the issue on it that
@@ -2397,8 +2403,22 @@ def classify_open(
             marks[key] = "(native)"
     comments = issue["comments"]["nodes"]
     verdict = max((i for i, c in enumerate(comments) if c["body"].lstrip().startswith(marker)), default=-1)
-    # A refused PR named before the newest triage comment was decided again: it holds nothing
-    waits = sorted(r for r, i in named.items() if states.get(r) != "CLOSED_UNMERGED" or i >= verdict)
+    # A refused PR named before the newest triage comment was decided again: it holds nothing.
+    # So does a hold that closed before that comment (#1493), save a sub-issue, which always
+    # counts, and a person's item's, whose hand-off starts at its newest hold's close
+    decided = timestamp(comments[verdict]["createdAt"]) if verdict >= 0 and not human else None
+    taken = {
+        r
+        for r in named
+        if decided is not None
+        and marks.get(r) != "(child)"
+        and states.get(r) in CLOSED_STATES
+        and r in closes
+        and timestamp(closes[r]) < decided
+    }
+    waits = sorted(
+        r for r, i in named.items() if (states.get(r) != "CLOSED_UNMERGED" or i >= verdict) and r not in taken
+    )
     shown = " ".join(f"{o}/{n}#{k}:{states.get((o, n, k), '?').lower()}{marks.get((o, n, k), '')}" for o, n, k in waits)
     if children:
         closed = sum(1 for s in children if s in ("CLOSED", "NOT_PLANNED"))
