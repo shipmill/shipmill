@@ -244,7 +244,7 @@ The build updates every place that describes `shipmill gh` in a repo without an 
 - D-14: agent writes go as the App or not at all where the App is set, so `identity =
   "host"` with `app_id`, and `--as-host` with `app_id`, exit 2, and behaviour with
   `app_id` set doesn't change
-- D-19: a gate without an App is unfinished setup; the refusal's first fix is an App, and
+- D-98 (supersedes D-19): a gate without an App is unfinished setup; the refusal's first fix is an App, and
   `identity = "host"` doesn't change D-19's reports
 - D-54 (superseding D-40): the hooks fail open and act only in repos
   with `[agents]`; `shipmill gh` fails safe, and `--as-host` turns off no hook rule

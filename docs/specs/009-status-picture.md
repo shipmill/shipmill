@@ -277,7 +277,7 @@ names no slug.
 - D-15: a hold stops the gate on purpose; the report counts it as the person's to lift
 - D-16: `--trusted-only` stays the unattended gate's; the report shows every item
 - D-17: a headless session never reads as waiting on the user, and isn't in `claude agents`
-- D-19: a gate without an App is unfinished setup: a reason the report waits on you, and
+- D-98 (supersedes D-19): a gate without an App is unfinished setup: a reason the report waits on you, and
   `GATE_NO_APP` is placed on the app line
 - D-20: `[agents] mode` is written explicitly; the mode line says when it isn't
 

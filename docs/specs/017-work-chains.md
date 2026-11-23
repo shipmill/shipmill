@@ -219,7 +219,7 @@ an action row, CHAIN_NO_GATE, naming the item and the repo.
 - D-10
 - D-14
 - D-16
-- D-19
+- D-98 (supersedes D-19)
 - D-21
 
 ## Issues

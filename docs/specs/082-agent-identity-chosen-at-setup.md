@@ -227,7 +227,7 @@ Touched areas: `src/shipmill/agents.py` (`[agents] identity`), `src/shipmill/cli
 - D-4
 - D-9
 - D-14
-- D-19
+- D-98 (supersedes D-19)
 - D-20
 - D-42
 - D-54

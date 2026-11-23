@@ -160,6 +160,7 @@ entry that supersedes it, never by editing an old one.
 - Why: Without an App a session's comments, PRs, and commits read as the maintainer's own, the maintainer can't approve its PRs, and GitHub doesn't notify them of its mentions; on romamo/treaty a gate went live that way unnoticed because the report counted it as done. Refusing in the gate itself would break gates already installed
 - Applies to: skills/shipmill-setup/SKILL.md, skills/shipmill-setup/scripts/setup_state.py, skills/github-ship-watch/scripts/watch_state.py, [agents] app_id, shipmill status
 - Enforced by: the setup_state.py and watch_state.py tests (with the implementing PR)
+- Superseded by: D-98
 
 ## D-20: Setup writes [agents] mode explicitly
 
@@ -819,3 +820,20 @@ entry that supersedes it, never by editing an old one.
 - Why: Expedite work is taken first only if the walk knows which rows are an expedite outcome's, and the change check's query carries no labels of issues it doesn't list; one short read per walk of tier 3 costs well under a second. Decided by `@romamo` on #1405 (option 1, relayed 2026-11-20)
 - Applies to: skills/github-ship-watch/scripts/watch_state.py, src/shipmill/gate.py, src/shipmill/walk.py, docs/specs/070-class-of-service.md, docs/specs/046-gate-work-queue.md, tier 3
 - Enforced by: tests/test_expedite_order.py (test_s070_3_tier_3_marks_the_pull_request_closing_a_sub_issue_and_no_other)
+
+## D-98: A gate without an App is unfinished setup, unless the owner chose identity host or none
+
+- Decided: 2026-11-23, in shipmill/shipmill#1429
+- Rule: shipmill-setup sets [agents] app_id before it installs the gate's launchd job, and an [agents] prompt with no app_id reads as an action in setup_state.py (AGENTS_NO_APP) and watch_state.py (GATE_NO_APP), never as done, unless [agents] identity records the owner's choice: identity = "host" skips the App check (setup goes on to the mode check, AGENTS_OK naming the host's login as the writer, and the watch reports no GATE_NO_APP), and identity = "none" with a gate prompt reads AGENTS_NO_WRITE, an action, since the gate's sessions stop at their first write; unchosen or identity = "app" without app_id stays AGENTS_NO_APP. The gate and launchd commands still run without an App
+- Why: Spec 082 records host and none as the owner's final choice, yet setup's agents row still asked for an App and contradicted its own identity row, so setup never reached exit 0 on that choice (#1429). The reason for D-19 still holds where no choice is recorded. Decided by `@romamo` on #1429 (option 1, relayed 2026-11-23)
+- Applies to: skills/shipmill-setup/SKILL.md, skills/shipmill-setup/scripts/setup_state.py, skills/github-ship-watch/scripts/watch_state.py, [agents] app_id, [agents] identity, shipmill status
+- Enforced by: the setup_state.py and watch_state.py tests (with the implementing PR)
+- Supersedes: D-19
+
+## D-99: A pull request that raises an [autonomy] stage level is in decision-policy
+
+- Decided: 2026-11-23, in shipmill/shipmill#1457
+- Rule: A pull request whose .github/shipmill.toml raises the effective level of any [autonomy] stage between the merge base and the head (observe < propose < act, as shipmill autonomy resolves it with defaults and the [agents] prompt reading, the hold left out), or adds a deploy.<env> stage above its default, falls in the decision-policy zone and so is never: the App may prepare it and the maintainer merges it by hand. A change that only lowers levels or keeps the effective levels (a reorder, a comment, a migration writing what the prompt already gives) stays in security. This narrows D-48's "[autonomy] stays as it is" to the stage levels' names and mapping; the rest of D-48 holds
+- Why: With security = "notify" an agent could raise its own stage level and land it on a notice and a veto window, while [decisions], the question one level down, is fixed at never; four connected repos run security at notify (#1457). Lowering a level stays fast so an emergency step back never waits on a hand merge. Decided by `@romamo` on #1457 (option 1, relayed 2026-11-23)
+- Applies to: src/shipmill/classify.py, src/shipmill/decide.py, docs/specs/030-decision-policy.md, [autonomy], decision-policy zone
+- Enforced by: tests/test_classify.py (with the implementing PR)
