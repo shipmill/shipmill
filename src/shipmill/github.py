@@ -59,8 +59,10 @@ _CLOSE_FRAGMENT = (
     f"comments(last: {COMMENTS_READ}) "
     "{ nodes { createdAt body authorAssociation author { __typename login } } } }"
 )
-_MERGED_FRAGMENT = (
-    "fragment merged on PullRequestConnection { nodes { ...pull } } "
+# apart, since GitHub refuses a query that defines a fragment it doesn't use: a batch of pull
+# request numbers alone has no connection to spread `merged` on
+_MERGED_FRAGMENT = "fragment merged on PullRequestConnection { nodes { ...pull } } "
+_PULL_FRAGMENT = (
     "fragment pull on PullRequest { number merged headRefName baseRefName headRefOid "
     f"commits(last: {HISTORY_LIMIT}) {{ nodes {{ commit {{ oid }} }} }} "
     f"timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: {HISTORY_LIMIT}) "
@@ -1112,9 +1114,10 @@ class GhCli:
                 ]
                 + [f"n{i}: pullRequest(number: $n{i}) {{ ...pull }}" for i in range(len(nums))]
             )
+            fragments = f"{_MERGED_FRAGMENT}{_PULL_FRAGMENT}" if names else _PULL_FRAGMENT
             query = (
                 f"query($owner: String!, $name: String!{params}) "
-                f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {_MERGED_FRAGMENT}"
+                f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {fragments}"
             )
             variables = [a for i, n in enumerate(names) for a in ("-f", f"b{i}={n}")]
             variables += [a for i, n in enumerate(nums) for a in ("-F", f"n{i}={n}")]
