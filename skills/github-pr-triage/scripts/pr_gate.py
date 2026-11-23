@@ -202,7 +202,9 @@ shipmill review record`, until a review record covers the judged head. A PR chan
 every file it touches is documentation: a name ending .md, .mdx, .rst, or .txt, or a path under
 docs/, and none of them the agents' instructions (under skills/, .claude/, or .claude-plugin/, or
 named CLAUDE.md, AGENTS.md, or REVIEW.md), a renamed file's old path among them, read from the
-files API once every listed path is documentation; a person's PR needs no record either. The records are
+files API once every listed path is documentation, and no spec's patch from that read adds a
+`status: built` line (#1486: that line claims a feature finished; a spec whose patch GitHub omits
+reads as one); a person's PR needs no record either. The records are
 read from `repos/<o>/<r>/pulls/<n>/reviews`, one paginated read, only for such a PR: the
 --bot-login's review whose body's first line is `<!-- shipmill:review merge -->` or `<!--
 shipmill:review refuse -->`, and an APPROVED review by an OWNER, MEMBER, or COLLABORATOR, not a
@@ -344,6 +346,7 @@ TIMESTAMP = re.compile(
 )
 # a spec file, named as specs.py's NAME names one, under docs/specs/ (spec 053)
 SPEC_FILE = re.compile(r"docs/specs/[0-9]{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md")
+SPEC_BUILT = re.compile(r"\+status: built")  # a patch's added line setting a spec built, as specs.py's STATUS reads it
 # a body line naming the issue a spec pull request specifies: #N, or owner/repo#N
 _SPEC_FOR = re.compile(r"^\s*(?:[-*]\s+)?Spec for\s+([\w.-]+/[\w.-]+)?#([0-9]+)\b")
 NO_ISSUE = 'names no feature issue: add "Spec for #N" for the open issue it specifies'
@@ -1392,6 +1395,10 @@ def files_api(data: dict, number: int, repo: str | None) -> dict[str, str]:
     entries = [json.loads(line) for line in gh(cmd, number, env).splitlines() if line.strip()]
     statuses = {str(e["filename"]): str(e["status"]) for e in entries}
     data["previous"] = tuple(str(e["previous_filename"]) for e in entries if e.get("previous_filename"))
+    # a file's patch, None where GitHub omits it past its size limit; a pure rename changes no line (#1486)
+    data["patch_of"] = {
+        str(e["filename"]): str(e["patch"]) if "patch" in e else "" if e.get("changes") == 0 else None for e in entries
+    }
     if len(statuses) < changed:
         sys.exit(
             f"pr_gate: #{number} changes {changed} files but GitHub lists {len(statuses)} (its files API stops at "
@@ -2517,16 +2524,28 @@ def documentation(path: str) -> bool:
     return path.startswith("docs/") or name.endswith(DOC_SUFFIXES)
 
 
+def sets_built(patch: str | None) -> bool:
+    """Whether a spec's patch adds a `status: built` line, as specs.py reads a status (#1486); a
+    patch GitHub omitted (None) reads as one, so a spec the gate can't read needs a review"""
+    if patch is None:
+        return True
+    return any(SPEC_BUILT.fullmatch(line) for line in patch.splitlines())
+
+
 def docs_only(data: dict, number: int, repo: str | None) -> bool:
     """Whether every file the PR touches is documentation: each path gh pr view lists, past its
     first hundred too, and, read from the files API once they all are, each renamed file's old
-    path, so a rename out of code reads as touching code"""
+    path, so a rename out of code reads as touching code; a spec the PR sets to built is not
+    (#1486), from the same read's patches, so no other PR costs a call"""
     data["files"] = all_files(data, number, repo)
     if not all(documentation(path) for path in data["files"]):
         return False
-    if "previous" not in data:
+    if "patch_of" not in data:
         data["statuses"] = files_api(data, number, repo)
-    return all(documentation(path) for path in data["previous"])
+    if not all(documentation(path) for path in data["previous"]):
+        return False
+    patches: dict[str, str | None] = data["patch_of"]
+    return not any(sets_built(patch) for path, patch in patches.items() if SPEC_FILE.fullmatch(path))
 
 
 def reviews_of(number: int, repo: str | None) -> list[dict]:
