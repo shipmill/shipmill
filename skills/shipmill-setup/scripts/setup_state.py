@@ -16,21 +16,27 @@ Releases (.github/shipmill.toml):
 Agents (the config's [agents] section, read by `shipmill gate`):
   AGENTS_MISSING   no [agents] section: the gate has no prompt. Fine when agents run
                    only on demand
-  AGENTS_NO_APP    a prompt but no app_id, in either mode: no App is connected, so
-                   sessions write as the host's gh login (their PRs, comments, and
-                   commits read as the user's, who can't approve them, and GitHub
-                   won't notify them of a needs-decision mention). The gate still
-                   runs; shipmill-setup's step 3 under The gate connects one (D-19).
-                   --fix leaves it: it needs the user
-  AGENTS_NO_MODE   a prompt and app_id but no mode key: the gate runs interactive by
-                   default, but nobody chose it, so a machine nobody watches may hold
-                   the repo on a question. shipmill-setup's step 4 under The gate asks
-                   and writes mode = "interactive" or "headless" (D-20). --fix leaves it
-  AGENTS_OK        a section with a prompt, app_id, and mode
+  AGENTS_NO_WRITE  a prompt and identity = "none": agents don't write to GitHub here, so
+                   the gate's sessions stop at their first write. Remove the [agents]
+                   prompt, or choose an App or identity = "host" (D-98). --fix leaves it
+  AGENTS_NO_APP    a prompt but no app_id, in either mode, with identity unchosen or
+                   "app": no App is connected, so sessions write as the host's gh login
+                   (their PRs, comments, and commits read as the user's, who can't
+                   approve them, and GitHub won't notify them of a needs-decision
+                   mention). The gate still runs; shipmill-setup's step 3 under The gate
+                   connects one (D-98). --fix leaves it: it needs the user
+  AGENTS_NO_MODE   a prompt and app_id (or identity = "host") but no mode key: the gate
+                   runs interactive by default, but nobody chose it, so a machine nobody
+                   watches may hold the repo on a question. shipmill-setup's step 4 under
+                   The gate asks and writes mode = "interactive" or "headless" (D-20).
+                   --fix leaves it
+  AGENTS_OK        a section with a prompt, app_id, and mode; or a prompt and mode with
+                   identity = "host", the detail naming the host's gh login the sessions
+                   write as (`gh api user`, read only then)
 
-The section reads as one row, the first that applies: AGENTS_MISSING, AGENTS_NO_APP,
-AGENTS_NO_MODE, then AGENTS_OK. Setup asks for the App and the mode together, so the
-one PR that sets app_id sets mode too. One more row follows it when it applies:
+The section reads as one row, the first that applies: AGENTS_MISSING, AGENTS_NO_WRITE,
+AGENTS_NO_APP, AGENTS_NO_MODE, then AGENTS_OK. Setup asks for the App and the mode together,
+so the one PR that sets app_id sets mode too. One more row follows it when it applies:
   AGENTS_UNPREFIXED  the prompt calls a shipmill skill as /<name>, not /shipmill:<name>: a
                    skill of that name in ~/.claude/skills or ~/.agents/skills answers it in
                    place of the plugin's (#236). The detail names the prefixed form to write.
@@ -190,8 +196,8 @@ Gate checkout (a warning, read only on a Mac with the repo's gate job in ~/Libra
 Exit 0 when every row is RELEASE_READY, AGENTS_OK, IDENTITY_APP, IDENTITY_HOST, IDENTITY_NONE,
 PRODUCT_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED,
 CHANGELOG_RULES, GATE_IN_TMP, and IDENTITY_UNCHOSEN without an [agents] section, warnings,
-leave the exit code alone), 1 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
-IDENTITY_UNCHOSEN with an [agents] section,
+leave the exit code alone), 1 otherwise (AGENTS_NO_WRITE, AGENTS_NO_APP, AGENTS_NO_MODE,
+AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT, IDENTITY_UNCHOSEN with an [agents] section,
 PRODUCT_LISTED, PRODUCT_SIBLINGS, PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and
 SKILL_SHADOWED included; --fix reads the rows after its changes, so a PLUGIN_COMMITTED it
 removed reads as the host's install), 2 on bad input, a malformed
@@ -289,10 +295,15 @@ PERMISSION_LABEL = ("d93f0b", "A permission the App's owner grants and accepts o
 # by the section's queued_label
 QUEUED_DEFAULT = "land-queued"
 QUEUED_LABEL = ("fef2c0", "A held pull request queued for the land window; it merges once the window allows")
-# D-19: the gate runs without an App, but setup isn't done until one is connected
+# D-98 (superseding D-19): the gate runs without an App, but setup isn't done until one is
+# connected, unless [agents] identity records the owner's choice of "host" or "none"
 NO_APP = (
     "no app connected: sessions write as the host's gh login, so you can't approve their PRs"
     " and GitHub won't notify you of their mentions; run shipmill-setup's step 3 (app-create)"
+)
+NO_WRITE = (
+    "identity = \"none\": the gate's sessions stop at their first write, since agents don't write to GitHub"
+    ' here; remove the [agents] prompt, or choose an App (shipmill-setup\'s step 3, app-create) or identity = "host"'
 )
 # D-20: the gate defaults to interactive, but setup writes the mode the user chose
 NO_MODE = (
@@ -423,18 +434,30 @@ def release_row(repo_dir: Path) -> Row:
     fail(f"{config}: mode must be off, dry-run, or release, got {mode!r}")
 
 
-def agents_row(repo_dir: Path) -> Row:
-    """Presence only; `shipmill gate` and the release config loader validate the section.
-    A prompt without app_id is unfinished setup in either mode (D-19): the gate runs, but its
-    sessions write as the host's gh login. Without a mode key it is unfinished too (D-20): the
-    gate's default, interactive, was never chosen"""
+def host_login() -> str:
+    """The host's gh login, read for identity = "host" alone: a 404 or any other failure exits 2"""
+    return gh_need(gh_get, ["gh", "api", "user", "--jq", ".login"]).strip()
+
+
+def agents_row(repo_dir: Path, identity: str = "app", login: Callable[[], str] = host_login) -> Row:
+    """Presence only; `shipmill gate` and the release config loader validate the section, and
+    identity_of reads identity (one of IDENTITIES). A prompt without app_id is unfinished setup
+    in either mode unless the owner chose otherwise (D-98, superseding D-19): identity = "none"
+    reads AGENTS_NO_WRITE, since the gate's sessions stop at their first write, and identity =
+    "host" skips the App, its AGENTS_OK naming the login the sessions write as (read once,
+    only then). Without a mode key it is unfinished too (D-20): the gate's default,
+    interactive, was never chosen"""
     section = agents_section(repo_dir)
     if section is None or not re.search(r"^prompt\s*=", section, re.MULTILINE):
         return Row("AGENTS_MISSING", f"no [agents] prompt in {CONFIG}: needed only for `shipmill gate`")
-    if not sets_app_id(section):
+    if identity == "none":
+        return Row("AGENTS_NO_WRITE", NO_WRITE)
+    if identity != "host" and not sets_app_id(section):
         return Row("AGENTS_NO_APP", NO_APP)
     if not re.search(r"^[ \t]*mode\s*=", section, re.MULTILINE):
         return Row("AGENTS_NO_MODE", NO_MODE)
+    if identity == "host":
+        return Row("AGENTS_OK", f'[agents] has a prompt and mode, and identity = "host": sessions write as {login()}')
     return Row("AGENTS_OK", "[agents] has a prompt, app_id, and mode")
 
 
@@ -1593,7 +1616,7 @@ def main() -> int:
     )
     rows = [
         release_row(repo_dir),
-        agents_row(repo_dir),
+        agents_row(repo_dir, chosen.identity),
         *prompt_rows(repo_dir, ws),
         *autonomy_rows(repo_dir, ws),
         identity_row(args.repo, chosen, Path.home(), ws),  # reads only: --fix leaves it
