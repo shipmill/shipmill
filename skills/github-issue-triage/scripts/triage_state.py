@@ -28,7 +28,12 @@ For each open issue:
                    #N open", read right after IN_PROGRESS; merged, it reads its
                    other state (NEEDS_PR for a triaged implement), #N noted
                    #N:reverted. Once #R closed unmerged, #N counts again. The same
-                   marker by anyone else, or without --bot-login, counts for nothing
+                   marker by anyone else, or without --bot-login, counts for nothing.
+                   Nor does a merged closer while a hold BLOCKED reads (a Depends on
+                   line, a hold comment, blockedBy, a sub-issue) is still open (#1492):
+                   the issue reads as its holds say (BLOCKED, "children K/N closed"
+                   for a parent). Once every hold closed, a parent with a "## Check"
+                   reads VERIFY_DUE, CHECK_FAILED, or WITH_PERSON as below (spec 042)
   BLOCKED          labelled blocked, or a comment says it is on hold / blocked /
                    waiting on an upstream issue that is still open, or on a pull
                    request (such as a spec PR) that is still open. The hold line
@@ -2364,8 +2369,6 @@ def classify_open(
     if pending and not human:
         # Spec 079: nothing builds the fix again until the revert lands
         return "BLOCKED", " | ".join(pending)
-    if merged and not human:
-        return "DONE_NOT_CLOSED", note
     # The body's dependencies are older than every comment; a comment naming one too is newer.
     # They hold a triaged issue only, as the forge's own relations do (spec 017): an
     # untriaged one with "Depends on #48", a blockedBy issue, or a sub-issue still reads NEW
@@ -2400,6 +2403,12 @@ def classify_open(
     if children:
         closed = sum(1 for s in children if s in ("CLOSED", "NOT_PLANNED"))
         shown = f"children {closed}/{len(children)} closed {shown}"
+    if merged and not human and all(states.get(r) in (*CLOSED_STATES, "CLOSED_UNMERGED") for r in waits):
+        # #1492: a merged closer finishes the issue only once no hold is still open; a parent
+        # with a ## Check runs it first (spec 042), with a hold open it reads as its holds say
+        if children and CHECK.search(issue.get("body") or ""):
+            return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
+        return "DONE_NOT_CLOSED", note
     unfilled = unfilled_dependencies(issue)
     if unfilled:
         # Which issue it waits on is unknown, so neither BLOCKED nor ready: someone fills it in
