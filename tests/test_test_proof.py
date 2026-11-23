@@ -227,6 +227,12 @@ def test_1507_none_mixed_with_an_entry_or_a_longer_word_exits_2(value: str) -> N
     assert "`none`" in str(raised.value)
 
 
+@pytest.mark.parametrize("value", ["none; `tests/a.py`", "none - `tests/a.py`"])
+def test_1507_none_with_a_path_and_no_reason_exits_2(value: str) -> None:
+    with pytest.raises(proof.Stop, match="`none`"):
+        proof.tests_changed(f"## Plan\n\n- Tests changed: {value}\n")
+
+
 def test_1507_two_none_lines_still_exit_2() -> None:
     with pytest.raises(proof.Stop, match="2 `Tests changed:` lines"):
         proof.tests_changed("## Plan\n\n- Tests changed: none\n- Tests changed: none\n")

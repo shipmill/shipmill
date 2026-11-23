@@ -37,7 +37,7 @@ refactor checks, in order:
 --plan-file is a file holding the pull request's body: its `## Plan` section's
 `Tests changed:` line names files exempt from fix's check 4 and refactor's check 2, each in
 backticks followed by `: ` and its reason, entries separated by `;`; a line whose first word
-is `none` (`Tests changed: none; only new tests`) names no file.
+is `none` (`Tests changed: none; only new tests`) and that holds no backticks names no file.
 
 Output: `test_proof: <VERDICT> (<kind>)`, then one `ok:` or `fail:` line per check, and under
 a failed or unexpectedly passing run its last 40 output lines. --json prints one object.
@@ -75,7 +75,8 @@ _TESTS_CHANGED = re.compile(r"^\s*(?:[-*]\s+)?Tests changed:(.*)$")
 _ENTRY = re.compile(r"`([^`]+)`(?::(.*))?")
 # `none` as the line's first word, alone or followed by prose; `none.py` or `nonesuch` is not it
 _NONE = re.compile(r"none(?:$|[\s;,:()-]|\.(?!\w))", re.IGNORECASE)
-_ENTRY_SHAPE = re.compile(r"`[^`]+`\s*:")
+# a backticked span after `none` may be an entry, with or without its reason: read the line as entries
+_ENTRY_SHAPE = re.compile(r"`[^`]+`")
 
 
 class Stop(Exception):
