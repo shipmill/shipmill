@@ -142,6 +142,18 @@ list --label shipmill-hold`) is made for it, and an open hold reads act as propo
 judged as any PR: its review record, its plan, and its zones still apply, so it reads UNREVIEWED
 or NEEDS_DECISION first when one of them holds it.
 
+An open incident (#1481): when the default branch's .github/shipmill.toml (read as REVIEW.md is)
+has [environments], a PR that would otherwise read READY reads BLOCKED, `  incident: #N is open on
+<environment>'s latest deploy, <tag>: only a revert or a hotfix lands`, while an open issue labelled
+its [operate] incident_label (`incident` by default) is open on an environment's latest deploy: it
+was opened after that deploy started, or names its tag or commit as a whole word (an incident
+operate opens names the bad tag and the rollback's on its hidden line). An incident from an earlier
+deploy holds nothing. A revert lands through it (the App's, as above, or a PR titled `Revert "`), and
+so does a hotfix (its base a hotfix/* branch, or release/X.Y when the config has [lanes.hotfix]).
+Each environment's newest deployment (`repos/<o>/<r>/deployments?environment=<name>&per_page=1`) and
+the open incidents (`gh issue list --label <label>`) are read once a pass, and only for a PR it would
+hold; a repo without [environments], or no checkout, reads neither.
+
 Closing keywords (D-76, D-79): a merge never closes an issue its PR is only part of, or one whose
 check has not run. A commit's (gh pr view's) closing keyword counts as GitHub closes by it (#988):
 any of close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved as a whole word, in any
@@ -199,7 +211,8 @@ Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base'
 or gh failed; 3 a check is still pending, on the PR's head or a base check rerunning a failure
 (#1310) (or --wait timed out); 4 a PR is not open, conflicts, or holds an unhandled veto
 (#1309) or one a thread cut off at 100 comments can't place (#1330), or is the App's revert
-below [autonomy] revert = "act" (spec 079); 5 a PR needs the
+below [autonomy] revert = "act" (spec 079), or an open incident on the latest deploy holds it
+(#1481); 5 a PR needs the
 maintainer's decision; 6 an agent's PR is refused for its plan, a spec PR names no open feature
 issue, or a PR's closing keyword names a Part of issue, an open one with a ## Check (D-76), or an
 open pull request, or its title or a commit writes a Dependabot alert as #N (#1321); 7 a PR only
@@ -275,6 +288,11 @@ PART_OF = re.compile(r"\bpart of:?\s+#([0-9]+)\b", re.IGNORECASE)
 CONFIG = ".github/shipmill.toml"
 REVERT_LEVELS = ("observe", "propose", "act")  # [autonomy] revert, observe by default (spec 079)
 HOLD_LABEL = "shipmill-hold"  # shipmill's autonomy.HOLD_LABEL
+INCIDENT_LABEL = "incident"  # the default of [operate] incident_label (#1481)
+INCIDENT_LIMIT = 1000  # the open incidents read; as many stops the gate rather than judging a partial list
+REVERT_TITLE = 'Revert "'  # GitHub's own revert pull request's title (#1481)
+HOTFIX_BRANCH = re.compile(r"hotfix/.+")  # a hotfix's base branch, whatever the config (#1481)
+RELEASE_BRANCH = re.compile(r"release/[0-9]+\.[0-9]+")  # the [lanes.hotfix] lane's branch, release/X.Y
 
 DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product/"
@@ -352,6 +370,7 @@ class Gate:
     vetoes: tuple[str, ...] = ()  # the unhandled vetoes of a decision taken at notify (D-48, #1309)
     spec_asks: tuple[str, ...] = ()  # the approved specs it changes past format: the answer lifts them (#1311)
     revert: str = ""  # why the App's revert PR waits for a person below [autonomy] revert = "act" (spec 079)
+    incidents: tuple[str, ...] = ()  # the open incidents on the latest deploy that hold it (#1481)
 
     @property
     def verdict(self) -> int:
@@ -378,7 +397,7 @@ class Gate:
             return PENDING
         if self.unreviewed:
             return UNREVIEWED
-        if self.revert:  # only an otherwise READY revert carries it (spec 079)
+        if self.revert or self.incidents:  # only an otherwise READY PR carries them (spec 079, #1481)
             return BLOCKED
         if self.queued:  # QUEUED only takes READY's place (spec 056)
             return QUEUED
@@ -414,6 +433,9 @@ class Base:
     maintainers: frozenset[str] = frozenset()
     window: bool = False  # the config has [land.window]: `shipmill window` reads it (spec 056)
     revert: str = "observe"  # the config's [autonomy] revert (spec 079)
+    environments: tuple[str, ...] = ()  # the config's [environments], whose latest deploys an incident holds (#1481)
+    incident_label: str = INCIDENT_LABEL  # the config's [operate] incident_label
+    hotfix_lane: bool = False  # the config has [lanes.hotfix]: a PR into release/X.Y is a hotfix
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -751,7 +773,33 @@ def read_base(checkout: str, ref: str) -> Base:
     maintainers = frozenset() if config is None else maintainer_users(config, where)
     window = config is not None and has_land_window(config, where)
     revert = REVERT_LEVELS[0] if config is None else revert_level(config, where)
-    return Base(ids, reviews, agents, ref, maintainers, window, revert)
+    environments, label, hotfix = ((), INCIDENT_LABEL, False) if config is None else operations(config, where)
+    return Base(ids, reviews, agents, ref, maintainers, window, revert, environments, label, hotfix)
+
+
+def operations(text: str, where: str) -> tuple[tuple[str, ...], str, bool]:
+    """The config's [environments] names, its [operate] incident_label (read only when it has
+    environments), and whether it has [lanes.hotfix] (#1481), read as watch_state.py reads them:
+    a form it can't read stops the gate"""
+    ws = watch_state()
+    policy = Path(where)
+    try:
+        if ws.tomllib is None:
+            envs = ws.environments_310(text, policy)
+            label = ws.incident_label_310(text, policy) if envs else INCIDENT_LABEL
+            hotfix = "lanes.hotfix" in ws.toml_tables(text)
+        else:
+            try:
+                raw = ws.tomllib.loads(text)
+            except ws.tomllib.TOMLDecodeError as exc:
+                raise GateError(f"{where}: {exc}") from None
+            envs = ws.environments_toml(raw, policy)
+            label = ws.incident_label_toml(raw, policy) if envs else INCIDENT_LABEL
+            lanes = raw.get("lanes")
+            hotfix = isinstance(lanes, dict) and "hotfix" in lanes
+    except ws.Refused as refused:
+        raise GateError(str(refused).removeprefix("error: ")) from None
+    return tuple(str(e.name) for e in envs), str(label), hotfix
 
 
 def revert_level(text: str, where: str) -> str:
@@ -810,6 +858,115 @@ def open_holds(number: int, repo: str | None) -> list[int]:
     if not isinstance(data, list) or not all(isinstance(e, dict) and isinstance(e.get("number"), int) for e in data):
         raise GateError(f"gh issue list --label {HOLD_LABEL} printed no list of issues: {str(data)[:200]}")
     return sorted(e["number"] for e in data)
+
+
+def lands_through_incident(data: dict, own: bool, base: Base) -> bool:
+    """Whether the PR lands while an incident is open (#1481): a revert (the App's, as `shipmill
+    revert open` opens it, or one titled as GitHub's own revert titles it) or a hotfix (into a
+    hotfix/* branch, or into release/X.Y when the config has [lanes.hotfix])"""
+    if (own and is_revert(str(data.get("body") or ""))) or str(data.get("title") or "").startswith(REVERT_TITLE):
+        return True
+    branch = str(data["baseRefName"])
+    return HOTFIX_BRANCH.fullmatch(branch) is not None or (
+        base.hotfix_lane and RELEASE_BRANCH.fullmatch(branch) is not None
+    )
+
+
+@dataclass(frozen=True)
+class Deploy:
+    """An environment's newest deployment, as GitHub lists it"""
+
+    environment: str
+    tag: str  # its ref, refs/tags/ left off
+    sha: str
+    started: datetime
+
+
+@dataclass(frozen=True)
+class Incident:
+    number: int
+    text: str  # its title and body
+    opened: datetime
+
+    def on(self, deploy: Deploy) -> bool:
+        """Whether it is open on that deploy: opened after it started, or naming its tag or its
+        commit (a short sha of 7 or more), a whole word (an operate incident names the bad tag
+        and the rollback's in its hidden line, so one a rollback left open still names it)"""
+        if self.opened >= deploy.started:
+            return True
+        named = r"(?<![\w.\-/]){}(?![\w\-/]|\.\w)"
+        tag = deploy.tag and re.search(named.format(re.escape(deploy.tag)), self.text)
+        shas = re.findall(r"(?<![\w])[0-9a-f]{7,40}(?![\w])", self.text)
+        return bool(tag) or any(deploy.sha.startswith(s) for s in shas)
+
+
+class Incidents:
+    """Each environment's latest deploy and the open incidents, read once a pass, and only for a
+    PR that would otherwise read READY in a repo whose config has [environments] (#1481)"""
+
+    def __init__(self, repo: str | None) -> None:
+        self.repo = repo
+        self.deploys: dict[str, Deploy | None] = {}
+        self.open: dict[str, list[Incident]] = {}
+
+    def holds(self, base: Base, number: int) -> tuple[str, ...]:
+        """One line for each open incident on an environment's latest deploy"""
+        lines = []
+        for environment in base.environments:
+            if environment not in self.deploys:
+                self.deploys[environment] = latest_deploy(environment, number, self.repo)
+            deploy = self.deploys[environment]
+            if deploy is None:
+                continue
+            if base.incident_label not in self.open:
+                self.open[base.incident_label] = open_incidents(base.incident_label, number, self.repo)
+            lines += [
+                f"#{i.number} is open on {environment}'s latest deploy, {deploy.tag or deploy.sha[:7]}: only a"
+                " revert or a hotfix lands"
+                for i in self.open[base.incident_label]
+                if i.on(deploy)
+            ]
+        return tuple(lines)
+
+
+def latest_deploy(environment: str, number: int, repo: str | None) -> Deploy | None:
+    """The environment's newest deployment, whatever its state: GitHub lists them newest first"""
+    query = ["-f", f"environment={environment}", "-f", "per_page=1"]
+    cmd, env = api(["-X", "GET", "repos/{owner}/{repo}/deployments", *query], repo)
+    data = json.loads(gh(cmd, number, env))
+    what = f"the deployments of {environment}"
+    if not isinstance(data, list) or not all(isinstance(d, dict) for d in data):
+        raise GateError(f"{what} are no list of deployments: {str(data)[:200]}")
+    if not data:
+        return None
+    newest = data[0]
+    ref, sha = newest.get("ref"), newest.get("sha")
+    if not isinstance(ref, str) or not isinstance(sha, str):
+        raise GateError(f"{what}: a deployment with no ref or sha: {str(newest)[:200]}")
+    started = moment(newest.get("created_at"), f"{what}: a deployment's created_at")
+    return Deploy(environment, ref.removeprefix("refs/tags/"), sha, started)
+
+
+def open_incidents(label: str, number: int, repo: str | None) -> list[Incident]:
+    """The open issues labelled label, oldest first"""
+    fields = "number,title,body,createdAt"
+    cmd = ["gh", "issue", "list", "--label", label, "--state", "open", "--json", fields, "--limit", str(INCIDENT_LIMIT)]
+    if repo:
+        cmd += ["-R", repo]
+    data = json.loads(gh(cmd, number))
+    if not isinstance(data, list) or not all(isinstance(e, dict) and isinstance(e.get("number"), int) for e in data):
+        raise GateError(f"gh issue list --label {label} printed no list of issues: {str(data)[:200]}")
+    if len(data) >= INCIDENT_LIMIT:
+        raise GateError(f"{INCIDENT_LIMIT} or more open issues labelled {label}: the gate judges no partial list")
+    found = [
+        Incident(
+            e["number"],
+            f"{e.get('title') or ''}\n{e.get('body') or ''}",
+            moment(e.get("createdAt"), "an incident's createdAt"),
+        )
+        for e in data
+    ]
+    return sorted(found, key=lambda i: i.number)
 
 
 def has_land_window(text: str, where: str) -> bool:
@@ -2236,6 +2393,7 @@ def render(gate: Gate) -> str:
     lines += [f"  decided: {veto}" for veto in gate.vetoes]
     lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
     lines += [f"  revert: {gate.revert}"] if gate.revert else []
+    lines += [f"  incident: {line}" for line in gate.incidents]
     if gate.verdict == QUEUED:
         lines += [f"  queued: {reason}" for reason in gate.queued]
     if gate.verdict == DRAFT and gate.own:
@@ -2313,6 +2471,7 @@ def main() -> int:
             gates = []
             heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
             windows = Windows(bases.checkout, args.tool)  # each base's land window, read once a pass (spec 056)
+            incidents = Incidents(args.repo)  # the latest deploys and open incidents, read once a pass (#1481)
             for number in args.prs:
                 data = fetch(number, args.repo)
                 base = bases.base(str(data["baseRefName"]))
@@ -2377,6 +2536,9 @@ def main() -> int:
                 # the App's revert waits for a person below [autonomy] revert = "act" (spec 079)
                 if judged.verdict == READY and own and is_revert(str(data.get("body") or "")):
                     judged = replace(judged, revert=revert_hold(base.revert, number, args.repo))
+                # an open incident on the latest deploy holds all but a revert or a hotfix (#1481)
+                if judged.verdict == READY and base.environments and not lands_through_incident(data, own, base):
+                    judged = replace(judged, incidents=incidents.holds(base, number))
                 # one window per repo, for PRs into the branch its config was read from (spec 056)
                 if data["state"] == "OPEN" and base.window and base.ref == f"origin/{data['baseRefName']}":
                     window = windows.window(base.ref)  # read for every PR there: a failure stops them all
