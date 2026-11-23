@@ -379,6 +379,14 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
         ]
     if state == "UPSTREAM":
         return [Condition("an upstream report: waits on the repo that owns the fault", Who.EVENT, "that repo's fix")]
+    if state == "UPSTREAM_UNOWNED":  # #1487: nobody linked it to an issue in another repo or took it
+        return [
+            Condition(
+                "an upstream report nobody linked or took: waits for you to report it where it belongs",
+                Who.MAINTAINER,
+                "a Depends on line naming the issue in the owning repo, or an assignee",
+            )
+        ]
     if state == "TRIAGED":
         if issue.verdict is None:
             return [

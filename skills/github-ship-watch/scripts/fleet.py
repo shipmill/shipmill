@@ -75,6 +75,11 @@ login:
   YOUR_ITEM   an open item triage_state.py reads WITH_PERSON whose "assignees" include the
               reader (logins compared ignoring case); one assigned only to other logins or
               only to a team is none; since the time its note gives ("since <time>")
+  UPSTREAM    an open report triage_state.py reads UPSTREAM_UNOWNED, still labelled upstream:
+              nobody linked it to an issue in another repo or took it (#1487), so the
+              maintainer reports it where it belongs; since the label's newest event, else
+              its opening. triage_state.py runs with the clone's [product] home as --home,
+              as the watch does, so in a product the coordinator's report is none
   OPPORTUNITY an open opportunity intake_state.py reads OPPORTUNITY_OPEN; since its opening
   PLAN        an open plan issue intake_state.py reads PLAN_OPEN; since its newest revision:
               the newest <!-- shipmill:plan-revised rev=k --> comment by the --bot-login
@@ -527,6 +532,7 @@ OPPORTUNITY = "OPPORTUNITY"
 PLAN = "PLAN"
 NO_REASON = "NO_REASON"
 SPEC_TO_MERGE = "SPEC_TO_MERGE"
+UPSTREAM = "UPSTREAM"  # #1487: triage_state.py's UPSTREAM_UNOWNED, an upstream report nobody linked or took
 # what each kind asks of the maintainer: the fixed phrase the row's title follows
 ASKED = {
     QUESTION: "answer the needs-decision question",
@@ -537,6 +543,7 @@ ASKED = {
     OPPORTUNITY: "accept or decline the opportunity",
     PLAN: "answer the goal plan",
     NO_REASON: "record why the opportunity was declined",
+    UPSTREAM: "report it where it belongs",
 }
 KIND_WIDTH = max(len(kind) for kind in ASKED)  # the kind column, as wide as OPPORTUNITY
 # intake_state.py's --json states the queue lists, by the line's kind, and the row each is
@@ -633,11 +640,22 @@ def role_flags(roles: Sequence[str]) -> list[str]:
     return [item for value in roles for item in ("--role", value)]
 
 
-def triage_command(e: Entry, bot_login: str | None, roles: Sequence[str] = ()) -> list[str]:
-    """triage_state.py for one repo's person's items, with the watch's trust (D-16) and the
-    clone's roles (spec 036)"""
+def triage_command(e: Entry, bot_login: str | None, roles: Sequence[str] = (), home: str | None = None) -> list[str]:
+    """triage_state.py for one repo's person's items and unowned upstream reports, with the
+    watch's trust (D-16), the clone's roles (spec 036), and its [product] home as --home, as
+    the watch passes it (spec 038): with one, the coordinator routes the reports (#1487)"""
     cmd = [sys.executable, str(WS.TRIAGE_STATE), e.repo, "--json", "--trusted-only"]
-    return cmd + (["--bot-login", bot_login] if bot_login is not None else []) + role_flags(roles)
+    cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    return cmd + role_flags(roles) + (["--home", home] if home is not None else [])
+
+
+def clone_home(checkout: Path) -> str | None:
+    """The clone's [product] home, read with watch_state.py's reader (None without a config)"""
+    policy = WS.policy_file(checkout)
+    if policy is None:
+        return None
+    home: str | None = WS.product_home((checkout / policy).read_text(encoding="utf-8"), policy)
+    return home
 
 
 def intake_command(e: Entry, bot_login: str | None, plans: bool, roles: Sequence[str] = ()) -> list[str]:
@@ -690,6 +708,12 @@ def person_items(text: str, repo: str, login: str) -> dict[int, dt.datetime]:
             raise Refused(f"error: {what} printed a WITH_PERSON line without its since: {line!r}")
         found[number_of(line, what)] = WS.TRIAGE.timestamp(since.group(1))
     return found
+
+
+def upstream_items(text: str, repo: str) -> list[int]:
+    """triage_state.py --json's UPSTREAM_UNOWNED reports: nobody linked or took them (#1487)"""
+    what = f"triage_state.py for {repo}"
+    return [number_of(line, what) for line in json_lines(text, what) if line.get("state") == "UPSTREAM_UNOWNED"]
 
 
 def intake_items(text: str, repo: str) -> dict[int, str]:
@@ -825,6 +849,10 @@ def queue_item(
         if WS.READY_LABEL not in labels:
             return None
         since = labelled_since(node, WS.READY_LABEL, where) or opened
+    elif kind == UPSTREAM:
+        if WS.TRIAGE.UPSTREAM_LABEL not in labels:
+            return None
+        since = labelled_since(node, WS.TRIAGE.UPSTREAM_LABEL, where) or opened
     else:
         since = opened
     return Item(repo, kind, int(node["number"]), str(node["url"]), str(node["title"]), since)
@@ -1004,7 +1032,7 @@ def queue_clone(e: Entry, runner: Runner, checkout: Path, bot_login: str | None,
     watched = runner(queue_watch_command(e, checkout, bot_login))
     if watched.returncode not in (0, 1):
         return RepoError(e.repo, "watch_state.py", first_line(watched, "watch_state.py"))
-    triaged = runner(triage_command(e, bot_login, roles))
+    triaged = runner(triage_command(e, bot_login, roles, clone_home(checkout)))
     if triaged.returncode not in (0, 1):
         return RepoError(e.repo, "triage_state.py", first_line(triaged, "triage_state.py"))
     intake = runner(intake_command(e, bot_login, (checkout / WS.DIRECTION).is_file(), roles), cwd=checkout)
@@ -1012,7 +1040,8 @@ def queue_clone(e: Entry, runner: Runner, checkout: Path, bot_login: str | None,
         return RepoError(e.repo, "intake_state.py", first_line(intake, "intake_state.py"))
     kinds = wanted(watch_rows(e.repo, watched.stdout))
     mine = person_items(triaged.stdout, e.repo, login)
-    for n, kind in [*((n, YOUR_ITEM) for n in mine), *intake_items(intake.stdout, e.repo).items()]:
+    unowned = [(n, UPSTREAM) for n in upstream_items(triaged.stdout, e.repo)]
+    for n, kind in [*((n, YOUR_ITEM) for n in mine), *intake_items(intake.stdout, e.repo).items(), *unowned]:
         kinds.setdefault(n, kind)
     found = read_items(e.repo, kinds, runner, bot_login, mine) if kinds else []
     if isinstance(found, RepoError):

@@ -198,6 +198,14 @@ For each open issue:
                    coordinator: waits for the maintainer", and adds "asks the maintainer"
                    when it is labelled needs-decision and its question has no reply.
                    Never an action: it starts no session
+  UPSTREAM_UNOWNED an UPSTREAM report without --home that waits on nobody (#1487): no
+                   assignee and no link to an issue in another repo (a Depends on line, a
+                   blocked-by relation, or a sub-issue naming one; a link in its own repo
+                   routes it nowhere). Its note is "no coordinator: waits for the
+                   maintainer to report it where it belongs", with "asks the maintainer"
+                   as UPSTREAM's. Never an action; fleet.py queue lists it as the
+                   maintainer's until it is linked or assigned. With --home the
+                   coordinator's ROUTE_DUE takes it up, so it reads UPSTREAM
   OFF_MILESTONE    a build issue whose feature issue (its sub-issue parent, in this
                    repo) is in a milestone it isn't in (spec 022): set its milestone
                    to the parent's. Read after UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, and
@@ -353,7 +361,7 @@ Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, 
 MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, RELAY_REFUSED, VETOED, SUSPECT_CLOSE,
 HANDOFF_DUE, STALE_HANDOFF,
 VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, OFF_MILESTONE, or AGENT_DRAFT (never for NEEDS_DECISION,
-UNTRUSTED, UPSTREAM, WITH_PERSON, or AGENT_DRAFT_HELD),
+UNTRUSTED, UPSTREAM, UPSTREAM_UNOWNED, WITH_PERSON, or AGENT_DRAFT_HELD),
 1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 20 open issues and an issue's 50 comments, 50
 cross-references, 50 blocking issues, or 50 sub-issues, and back through tags to the
@@ -2919,6 +2927,30 @@ def upstream_note(home: str | None, asks: bool) -> str:
     return f"{note}, asks the maintainer" if asks else note
 
 
+UNOWNED_NOTE = "no coordinator: waits for the maintainer to report it where it belongs"
+
+
+def unowned(issue: dict[str, Any], repo: tuple[str, str], home: str | None) -> bool:
+    """Whether an upstream report waits on nobody (#1487): no coordinator (no --home), no
+    assignee, and no link to an issue in another repo, by a Depends on line, a blocked-by
+    relation, or a sub-issue. A link in its own repo routes it nowhere"""
+    if home is not None or assignees(issue):
+        return False
+    here = fold((*repo, 0))[:2]
+    return all(fold(ref)[:2] == here for ref in [*dependency_refs(issue, repo), *native_holds(issue)])
+
+
+def owned_upstream(
+    verdict: tuple[str, str] | None, issue: dict[str, Any], repo: tuple[str, str], home: str | None
+) -> tuple[str, str] | None:
+    """gated's verdict, with an UPSTREAM report nobody linked or took read as UPSTREAM_UNOWNED
+    (#1487), its note keeping whether it asks the maintainer"""
+    if verdict is None or verdict[0] != "UPSTREAM" or not unowned(issue, repo, home):
+        return verdict
+    asks = verdict[1].endswith(", asks the maintainer")
+    return "UPSTREAM_UNOWNED", f"{UNOWNED_NOTE}, asks the maintainer" if asks else UNOWNED_NOTE
+
+
 def home_hold_note(still: list[Ref], states: dict[Ref, str], repo: tuple[str, str], home: str | None) -> str | None:
     """BLOCKED's added note in a component (D-60, #773): a hold still open on an item of the
     product's home that this session can't read (no state came back, even through the read
@@ -3199,7 +3231,7 @@ def main() -> int:
             "States: NEW NEEDS_PR IN_PROGRESS AGENT_DRAFT AGENT_DRAFT_HELD DONE_NOT_CLOSED BLOCKED UNFILLED "
             "MALFORMED_DEPENDS CYCLE SPEC_REFUSED "
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED RELAY_REFUSED VETOED UNTRUSTED UPSTREAM "
-            "OFF_MILESTONE; "
+            "UPSTREAM_UNOWNED OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
             "(a person's item) STALE_HANDOFF NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; "
             "for a closed issue "
@@ -3308,7 +3340,10 @@ def main() -> int:
     issues: list[dict[str, Any]] = data["open"]["nodes"]
     maintainers = maintainers_of(roles)  # whom a relayed veto may name (D-103)
     gates = {
-        issue["number"]: gated(issue, args.bot_login, args.trusted_only, args.home, maintainers) for issue in issues
+        issue["number"]: owned_upstream(
+            gated(issue, args.bot_login, args.trusted_only, args.home, maintainers), issue, (owner, name), args.home
+        )
+        for issue in issues
     }
     untrusted = {n for n, verdict in gates.items() if verdict is not None and verdict[0] == "UNTRUSTED"}
     loops = cycles(issues, (owner, name), args.marker, untrusted)
@@ -3412,6 +3447,7 @@ def main() -> int:
         "BLOCKED",
         "TRIAGED",
         "POSTPONED",
+        "UPSTREAM_UNOWNED",
         "UPSTREAM",
         "NEEDS_DECISION",
         "UNTRUSTED",
