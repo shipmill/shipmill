@@ -100,6 +100,9 @@ elif args[0] == "api" and any(a.endswith("/status?per_page=100") for a in args):
 elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100&filter=all") for a in args):  # every attempt
     for run in base["check_runs"]:  # one object a line, as gh --jq .check_runs[] prints them
         print(json.dumps(run))
+elif args[0] == "api" and any(re.fullmatch(r"repos/.+/actions/runs/[0-9]+", a) for a in args):  # #1485
+    run = [a for a in args if re.fullmatch(r"repos/.+/actions/runs/[0-9]+", a)][0].rsplit("/", 1)[1]
+    print(json.dumps(base["runs"][run]))
 elif args[:2] == ["issue", "list"] and args[args.index("--label") + 1] == "shipmill-hold":  # spec 079
     print(json.dumps([{{"number": n}} for n in fake["holds"]]))
 elif args[:2] == ["issue", "list"]:  # the open incidents, by the label read from the config (#1481)
@@ -845,6 +848,105 @@ def test_1310_the_base_check_runs_are_read_with_every_attempt_in_one_read(tmp_pa
     run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": runs})
     reads = [a for c in gh_calls(tmp_path) for a in c["args"] if "/check-runs" in a]
     assert reads == ["repos/{owner}/{repo}/commits/ba5e0123456789/check-runs?per_page=100&filter=all"]
+
+
+# #1485: a lane's release workflow is dispatched on the base branch for a tag, so GitHub records
+# its run on the base's head though it tests the tag: its failure is not the head's
+
+RELEASE_CONFIG = '[lanes.stable]\ndispatch = ["publish.yml"]\nafter_publish = ["move-major-tag.yml"]\n'
+
+
+def workflow_run(run: int, event: str = "workflow_dispatch", workflow: str = "publish.yml") -> dict[str, Any]:
+    """A workflow run as `GET repos/<o>/<r>/actions/runs/<id>` answers it"""
+    return {"id": run, "event": event, "path": f".github/workflows/{workflow}", "run_attempt": 1}
+
+
+def gate_on_release_base(
+    tmp_path: Path, runs: list[dict[str, Any]], *workflows: dict[str, Any]
+) -> subprocess.CompletedProcess[str]:
+    """The gate on a PR into main, whose config names the lanes' release workflows"""
+    work = checkout(tmp_path, {".github/shipmill.toml": RELEASE_CONFIG})
+    base = {"check_runs": runs, "runs": {str(w["id"]): w for w in workflows}}
+    return run_gate(tmp_path, work, {7: pr(body="Fixes #7", login="amy")}, base=base)
+
+
+@pytest.mark.parametrize("workflow", ["publish.yml", "move-major-tag.yml"])
+def test_1485_a_failed_dispatched_release_run_on_the_base_is_not_red(tmp_path: Path, workflow: str) -> None:
+    proc = gate_on_release_base(tmp_path, [base_run("failure")], workflow_run(900, workflow=workflow))
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+@pytest.mark.parametrize(
+    ("event", "workflow"),
+    [
+        pytest.param("push", "publish.yml", id="a release workflow on push"),
+        pytest.param("pull_request", "publish.yml", id="a release workflow on a pull request"),
+        pytest.param("workflow_dispatch", "nightly.yml", id="a dispatched workflow no lane names"),
+    ],
+)
+def test_1485_any_other_failed_run_on_the_base_stays_red(tmp_path: Path, event: str, workflow: str) -> None:
+    proc = gate_on_release_base(tmp_path, [base_run("failure")], workflow_run(900, event, workflow))
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [RED]
+
+
+def test_1485_a_release_run_failing_beside_a_ci_job_leaves_the_ci_job_red(tmp_path: Path) -> None:
+    runs = [base_run("failure"), base_run("failure", name="publish", run=910, job=911)]
+    proc = gate_on_release_base(tmp_path, runs, workflow_run(900, "push", "ci.yml"), workflow_run(910))
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [RED]
+
+
+def test_1485_a_config_naming_no_release_workflow_reads_no_run(tmp_path: Path) -> None:
+    work = checkout(tmp_path, {".github/shipmill.toml": "[lanes.stable]\nquiet_minutes = 30\n"})
+    proc = run_gate(tmp_path, work, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": [base_run("failure")]})
+    assert proc.returncode == 1 and proc.stdout.splitlines()[1:] == [RED], proc.stdout + proc.stderr
+    assert not [a for c in gh_calls(tmp_path) for a in c["args"] if "/actions/runs/" in a]
+
+
+def test_1485_the_lanes_release_workflows_are_read_from_every_lane() -> None:
+    config = (
+        RELEASE_CONFIG + '[lanes.hotfix]\ndispatch = ["publish.yml", "pages.yml"]\n[lanes.dev]\nquiet_minutes = 5\n'
+    )
+    assert gate.release_workflows(config, "cfg") == {"publish.yml", "move-major-tag.yml", "pages.yml"}
+    assert gate.release_workflows("", "cfg") == frozenset()
+    with pytest.raises(gate.GateError, match="dispatch"):
+        gate.release_workflows('[lanes.stable]\ndispatch = "publish.yml"\n', "cfg")
+
+
+def test_1485_python_310_reads_the_lanes_release_workflows_as_tomllib_does() -> None:
+    """Without tomllib, plain [lanes.<name>] tables are read, and a form it can't read stops the gate"""
+    uv = shutil.which("uv")
+    assert uv is not None
+    configs = [
+        RELEASE_CONFIG,
+        "[lanes.stable]\ndispatch = [\n  'publish.yml',  # PyPI\n  \"pages.yml\",\n]\n",
+        "[lanes.dev]\nquiet_minutes = 5\n",
+        'lanes.stable.dispatch = ["publish.yml"]\n',
+        '[lanes.stable]\ndispatch = "publish.yml"\n',
+    ]
+    code = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('pr_gate', sys.argv[1])\n"
+        "pg = importlib.util.module_from_spec(spec); sys.modules['pr_gate'] = pg; spec.loader.exec_module(pg)\n"
+        "assert pg.watch_state().tomllib is None, 'tomllib on 3.10'\n"
+        "def read(text):\n"
+        "    try:\n"
+        "        return sorted(pg.release_workflows(text, 'cfg'))\n"
+        "    except pg.GateError:\n"
+        "        return 'refused'\n"
+        "print(json.dumps([read(t) for t in json.loads(sys.argv[2])]))\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), json.dumps(configs)]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        ["move-major-tag.yml", "publish.yml"],
+        ["pages.yml", "publish.yml"],
+        [],
+        "refused",
+        "refused",
+    ]
 
 
 # spec 079: the App's revert of the merge that turned the base red waits for a person below act
