@@ -3,6 +3,7 @@
 
 Usage: fleet.py report --fleet FILE [--metrics] [--json]
        fleet.py queue --fleet FILE [--login LOGIN] [--bot-login LOGIN] [--json]
+       fleet.py overview --fleet FILE [--login LOGIN] [--bot-login LOGIN] [--jobs N] [--json]
 
 A fleet file lists the repos, in TOML:
 
@@ -102,6 +103,16 @@ watch, triage_state.py, intake_state.py, or GitHub read fails gets one REPO_ERRO
 the queue, naming the step and the error's first line; a repo is never read without its roles.
 Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's read
 failed, and 2 on a malformed fleet file. Reads only.
+
+overview (#1479) prints what report (without --metrics) and queue print, each repo read once:
+one clone, on which report's watch and queue's reads run as those commands run them. The
+queue's watch still runs on its own, since --trusted-only and the --bot-login change how the
+watch reads an item, not only which rows it prints. The repos are read concurrently, at most
+--jobs N at once (default 4); the output keeps the fleet file's order, and the queue stays
+oldest first. The text is report's table, a blank line, then queue's lines; --json prints
+{"report": <report --json>, "queue": <queue --json>}. A repo whose clone fails gets its
+REPO_ERROR in both. Exit 2 when report or queue would exit 2, else 1 when either would exit
+1, else 0. Reads only.
 """
 
 from __future__ import annotations
@@ -115,10 +126,11 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 try:
     import tomllib
@@ -416,13 +428,23 @@ def watch_rows(repo: str, out: str) -> list[Row]:
     return rows
 
 
-def check(e: Entry, runner: Runner, workdir: Path, until: str | None) -> RepoReport:
-    """One repo's watch rows (and metrics, given until), or its REPO_ERROR row"""
+def clone(e: Entry, runner: Runner, workdir: Path) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    """The repo's fresh clone in workdir, and how the clone went"""
     checkout = workdir / e.repo
     checkout.parent.mkdir(parents=True, exist_ok=True)
-    cloned = runner(clone_command(e, checkout))
+    return checkout, runner(clone_command(e, checkout))
+
+
+def check(e: Entry, runner: Runner, workdir: Path, until: str | None) -> RepoReport:
+    """One repo's watch rows (and metrics, given until), or its REPO_ERROR row"""
+    checkout, cloned = clone(e, runner, workdir)
     if cloned.returncode != 0:
         return RepoReport(e.repo, (error_row("gh repo clone", cloned),), None)
+    return check_clone(e, runner, checkout, until)
+
+
+def check_clone(e: Entry, runner: Runner, checkout: Path, until: str | None) -> RepoReport:
+    """check's read of the repo's clone: the full watch, and with until the metrics"""
     watched = runner(watch_command(e, checkout))
     if watched.returncode not in (0, 1):
         return RepoReport(e.repo, (error_row("watch_state.py", watched),), None)
@@ -966,11 +988,15 @@ def queue_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None, l
     """One repo's rows: the watch, triage_state.py, and intake_state.py on a fresh clone name
     the items, GitHub times them; an item in QUESTION is in no other row (S-069-6). The clone's
     roles are read first, and a failed read is the repo's REPO_ERROR, never a queue without them"""
-    checkout = workdir / e.repo
-    checkout.parent.mkdir(parents=True, exist_ok=True)
-    cloned = runner(clone_command(e, checkout))
+    checkout, cloned = clone(e, runner, workdir)
     if cloned.returncode != 0:
         return RepoError(e.repo, "gh repo clone", first_line(cloned, "gh repo clone"))
+    return queue_clone(e, runner, checkout, bot_login, login)
+
+
+def queue_clone(e: Entry, runner: Runner, checkout: Path, bot_login: str | None, login: str) -> list[Item] | RepoError:
+    """queue_repo's read of the repo's clone: its roles, the trusted watch, the state scripts,
+    and GitHub's items and spec pull requests"""
     read_roles = WS.pinned(roles_command(checkout), lambda cmd: runner(cmd, cwd=checkout))
     if read_roles.returncode != 0:
         return RepoError(e.repo, "shipmill roles --flags", first_line(read_roles, "shipmill roles --flags"))
@@ -1029,29 +1055,108 @@ def queue_lines(items: list[Item], errors: list[RepoError], now: dt.datetime) ->
     return lines + [f"{e.repo:<{width}} REPO_ERROR {e.step}: {e.error}" for e in errors]
 
 
+def gathered(found: Sequence[list[Item] | RepoError]) -> tuple[list[Item], list[RepoError]]:
+    """The repos' reads, in the fleet file's order, as the queue's rows oldest first (a tie to
+    the fleet file's order, then the number) and the failed repos' errors"""
+    items: list[tuple[int, Item]] = []
+    errors: list[RepoError] = []
+    for index, read in enumerate(found):
+        if isinstance(read, RepoError):
+            errors.append(read)
+        else:
+            items += [(index, i) for i in read]
+    return [i for _, i in sorted(items, key=lambda x: (x[1].since, x[0], x[1].number))], errors
+
+
+def queue_json(login: str, items: list[Item], errors: list[RepoError], now: dt.datetime) -> dict[str, Any]:
+    return {"login": login, "items": [i.json(now) for i in items], "errors": [e.json() for e in errors]}
+
+
+def queue_code(items: list[Item], errors: list[RepoError]) -> int:
+    if errors:
+        return 2
+    return 1 if items else 0
+
+
 def queue(args: argparse.Namespace, runner: Runner, clock: Callable[[], dt.datetime]) -> int:
     """fleet.py queue: every repo's rows in one list, oldest first; reads only"""
     entries = load(args.fleet)
     login = reader(args.login, runner)
-    items: list[tuple[int, Item]] = []
-    errors: list[RepoError] = []
     with tempfile.TemporaryDirectory(prefix="fleet-") as workdir:
-        for index, e in enumerate(entries):
-            found = queue_repo(e, runner, Path(workdir), args.bot_login, login)
-            if isinstance(found, RepoError):
-                errors.append(found)
-            else:
-                items += [(index, i) for i in found]
-    ordered = [i for _, i in sorted(items, key=lambda x: (x[1].since, x[0], x[1].number))]
+        ordered, errors = gathered([queue_repo(e, runner, Path(workdir), args.bot_login, login) for e in entries])
     now = clock()
     if args.json:
-        found_json = {"login": login, "items": [i.json(now) for i in ordered], "errors": [e.json() for e in errors]}
-        print(json.dumps(found_json, indent=2, sort_keys=True))
+        print(json.dumps(queue_json(login, ordered, errors, now), indent=2, sort_keys=True))
     else:
         print("\n".join(queue_lines(ordered, errors, now)))
-    if errors:
-        return 2
-    return 1 if ordered else 0
+    return queue_code(ordered, errors)
+
+
+# -- the overview (#1479): the report and the queue in one pass, one clone per repo -------------
+
+JOBS = 4  # repos read at once by default
+
+
+T = TypeVar("T")
+R = TypeVar("R")
+
+
+def in_order(read: Callable[[T], R], entries: Sequence[T], jobs: int) -> list[R]:  # noqa: UP047 (3.10)
+    """read of each entry, at most jobs at once, the results in the entries' order; a read that
+    raises (a Refused) raises here, once the reads already started have ended and the rest are dropped"""
+    pool = ThreadPoolExecutor(max_workers=jobs)
+    try:
+        return list(pool.map(read, entries))
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+@dataclass(frozen=True)
+class RepoOverview:
+    """One repo's report and queue, read from one clone"""
+
+    report: RepoReport
+    queue: list[Item] | RepoError
+
+
+def overview_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None, login: str) -> RepoOverview:
+    """One clone, then the report's full watch and the queue's read on it. The queue's watch
+    still runs on its own: --trusted-only and the --bot-login change how the watch reads an
+    item (a fork's pull request, a question's thread), so its rows can't be filtered from the
+    full watch's"""
+    checkout, cloned = clone(e, runner, workdir)
+    if cloned.returncode != 0:
+        failed = RepoError(e.repo, "gh repo clone", first_line(cloned, "gh repo clone"))
+        return RepoOverview(RepoReport(e.repo, (error_row("gh repo clone", cloned),), None), failed)
+    return RepoOverview(check_clone(e, runner, checkout, None), queue_clone(e, runner, checkout, bot_login, login))
+
+
+def overview(args: argparse.Namespace, runner: Runner, clock: Callable[[], dt.datetime]) -> int:
+    """fleet.py overview: report's rows and queue's items, each repo read once; reads only"""
+    entries = load(args.fleet)
+    login = reader(args.login, runner)
+    with tempfile.TemporaryDirectory(prefix="fleet-") as workdir:
+        found = in_order(lambda e: overview_repo(e, runner, Path(workdir), args.bot_login, login), entries, args.jobs)
+    reports = [f.report for f in found]
+    ordered, errors = gathered([f.queue for f in found])
+    now = clock()
+    if args.json:
+        both = {"report": {"repos": [r.json(False) for r in reports]}, "queue": queue_json(login, ordered, errors, now)}
+        print(json.dumps(both, indent=2, sort_keys=True))
+    else:
+        print("\n".join([*table(reports), "", *queue_lines(ordered, errors, now)]))
+    return max(exit_code(reports), queue_code(ordered, errors))
+
+
+def jobs(text: str) -> int:
+    """--jobs: a positive number of repos read at once"""
+    try:
+        found = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if found < 1:
+        raise argparse.ArgumentTypeError(f"{found} is not a positive number")
+    return found
 
 
 def arguments() -> argparse.ArgumentParser:
@@ -1066,16 +1171,22 @@ def arguments() -> argparse.ArgumentParser:
     que.add_argument("--login", help="the reader (default: the authenticated gh user)")
     que.add_argument("--bot-login", help="the gate's App, <slug>[bot], whose items are trusted (D-16)")
     que.add_argument("--json", action="store_true", help="one JSON object instead of a list")
+    ove = commands.add_parser("overview", help="the report and the queue in one pass, each repo read once")
+    ove.add_argument("--fleet", required=True, type=Path, help="the fleet file")
+    ove.add_argument("--login", help="the reader (default: the authenticated gh user)")
+    ove.add_argument("--bot-login", help="the gate's App, <slug>[bot], whose items are trusted (D-16)")
+    ove.add_argument("--jobs", type=jobs, default=JOBS, help=f"repos read at once (default {JOBS})")
+    ove.add_argument("--json", action="store_true", help="one JSON object instead of the two tables")
     return parser
 
 
 def main(argv: Sequence[str] | None = None, runner: Runner = run, clock: Callable[[], dt.datetime] = utc_now) -> int:
     parser = arguments()
     args = parser.parse_args(argv)
-    if args.command == "queue":
+    if args.command in ("queue", "overview"):
         if args.bot_login is not None and not WS.LOGIN.match(args.bot_login):
             parser.error("--bot-login must be a GitHub login, such as <slug>[bot]")
-        return queue(args, runner, clock)
+        return queue(args, runner, clock) if args.command == "queue" else overview(args, runner, clock)
     entries = load(args.fleet)
     until = clock().isoformat() if args.metrics else None
     with tempfile.TemporaryDirectory(prefix="fleet-") as workdir:

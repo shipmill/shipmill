@@ -371,6 +371,10 @@ asked, and how long it has waited, then each REPO_ERROR. Change nothing: each st
 where it is, the question, the item, or the pull request.
 ```
 
+### The report and the queue in one pass
+
+`scripts/fleet.py overview --fleet <file> [--login LOGIN] [--bot-login <slug>[bot]] [--jobs N] [--json]` prints what `report` (without `--metrics`) and `queue` print, reading each repo once: one clone, on which the report's watch and the queue's reads run. Use it when you want both: it saves a clone per repo and reads the repos concurrently, at most `--jobs` at once (default 4), so it costs less of the host login's rate budget and time than the two commands one after the other. The queue's watch still runs on its own on that clone, since `--trusted-only` and the `--bot-login` change how the watch reads an item. The output keeps the fleet file's order and the queue stays oldest first: the report's table, a blank line, then the queue's lines. `--json` prints `{"report": ..., "queue": ...}`, each as its own command's `--json` prints it. A repo whose clone fails gets its REPO_ERROR in both. Exit 2 when either command would exit 2, else 1 when either would exit 1, else 0.
+
 ## Improve the skill
 
 When a pass misses something stuck, or repairs something it shouldn't have, add a state to `watch_state.py` (with a test in shipmill's `tests/test_ship_watch.py`) or a rule here. When a rule must hold, put it in code too (a script with its test, a hook, or the gate), since a skill's prose only makes it likely; the evals stopped (D-74), so add no case under `evals/`.
