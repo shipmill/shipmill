@@ -110,6 +110,7 @@ class FakeGh:
     relayed: dict[str, set[int]] = field(default_factory=dict)  # repo: plans a relayed maintainer answer accepted
     pulls: dict[str, list[dict[str, Any]]] = field(default_factory=dict)  # repo: its open pull requests
     page: int = 0  # pull requests per page of the open pull requests' read; 0 for one page
+    configs: dict[str, str] = field(default_factory=dict)  # repo: its clone's .github/shipmill.toml
 
     def cli(self, cmd: list[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
         """The pinned CLI's `--repo <clone> roles --flags`, the repo read from the clone's path"""
@@ -145,6 +146,9 @@ class FakeGh:
             if repo not in self.undirected:
                 (Path(cmd[4]) / "docs").mkdir(parents=True)
                 (Path(cmd[4]) / "docs" / "product.md").write_text("# Product\n", encoding="utf-8")
+            if repo in self.configs:
+                (Path(cmd[4]) / ".github").mkdir(parents=True)
+                (Path(cmd[4]) / ".github" / "shipmill.toml").write_text(self.configs[repo], encoding="utf-8")
             return proc(0)
         if step == "intake_state.py" and "--plans" in cmd and not (cwd and (cwd / "docs" / "product.md").is_file()):
             return proc(2, err="error: shipmill product show failed with exit 2: docs/product.md:1: no such file")
@@ -824,6 +828,48 @@ def test_a_closed_item_or_one_whose_label_came_off_is_no_row(fl: ModuleType) -> 
     assert fl.queue_item("o/r", fl.QUESTION, asked(1, "Closed", ago(hours=1), state="CLOSED"), None) is None
     assert fl.queue_item("o/r", fl.TO_MERGE, item(2, "Unlabelled", pr=True), None) is None
     assert fl.queue_item("o/r", fl.QUESTION, item(3, "No label"), None) is None
+
+
+def upstream_line(number: int, state: str) -> dict[str, Any]:
+    """A triage_state.py --json line of an upstream report"""
+    return {"number": number, "state": state, "title": f"Report {number}", "note": "no coordinator"}
+
+
+def test_1487_an_unowned_upstream_report_waits_on_the_maintainer_until_linked_or_assigned(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unowned = item(5, "Index missing upstream", labels=["upstream"], labelled=[("upstream", ago(days=6))])
+    fake = FakeGh(
+        triage={"o/r": [upstream_line(5, "UPSTREAM_UNOWNED"), upstream_line(6, "UPSTREAM")]},  # #6 linked or assigned
+        github={"o/r": {5: unowned, 6: item(6, "Routed", labels=["upstream"])}},
+    )
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 1
+    assert out.splitlines() == ["o/r UPSTREAM      #5     report it where it belongs: Index missing upstream (6d 0h)"]
+    graphql = next(c for c in fake.calls if c[:3] == ["gh", "api", "graphql"])
+    assert re.findall(r"\bi(\d+): issueOrPullRequest", graphql[4]) == ["5"]  # the routed one is never read
+    # once linked or assigned, triage reads it UPSTREAM: no row
+    fake.triage["o/r"] = [upstream_line(5, "UPSTREAM")]
+    assert run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT) == (0, "nothing waits on the maintainer\n")
+
+
+def test_1487_an_unowned_report_whose_label_came_off_is_no_row(fl: ModuleType) -> None:
+    assert fl.queue_item("o/r", fl.UPSTREAM, item(5, "Relabelled"), BOT) is None
+    found = fl.queue_item("o/r", fl.UPSTREAM, item(5, "No label event", labels=["upstream"], created=ago(days=2)), BOT)
+    assert found is not None and found.since == NOW - dt.timedelta(days=2)  # since its opening
+
+
+def test_1487_in_a_component_triage_reads_with_the_clones_home(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeGh(configs={"o/r": '[product]\nhome = "acme/product"\n'})
+    run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+
+    def triage(repo: str) -> list[str]:
+        return next(c for c in fake.calls if c[1:3] == [str(fl.WS.TRIAGE_STATE), repo])
+
+    assert triage("o/r")[-2:] == ["--home", "acme/product"]  # the coordinator's ROUTE_DUE takes its reports up
+    assert "--home" not in triage("o/s")  # no [product] home: none
 
 
 def test_a_bot_login_that_isnt_a_login_is_refused(fl: ModuleType, tmp_path: Path) -> None:
