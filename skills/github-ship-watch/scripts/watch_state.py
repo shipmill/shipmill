@@ -422,8 +422,10 @@ Gate setup (the config's [agents] table):
                   gate's sessions write as the host's gh login (their PRs, comments, and
                   commits read as the maintainer's, who can't approve them). A person
                   connects one with shipmill-setup's step 3 under The gate (app-create,
-                  then app_id in [agents]), so an action but never an agent's (D-19); no
-                  row without a prompt or with app_id
+                  then app_id in [agents]), so an action but never an agent's (D-98); no
+                  row without a prompt, with app_id, or with identity = "host". With
+                  identity = "none" it says the gate's sessions stop at their first
+                  write: remove the prompt, or choose an App or identity = "host"
 
 shipmill on this host (from `claude plugin list --json` and `claude plugin marketplace list --json`):
   SHIPMILL_VERSION   the latest shipmill release (the ref of the marketplace entry on
@@ -4490,10 +4492,20 @@ def triage_mode_row(text: str, policy: Path, declined: int | None = None, held: 
 
 
 def gate_app_rows(table: dict[str, str] | None) -> list[Row]:
-    """D-19: the [agents] table (agents_table's) configures a gate without an App, which only a
-    person connects; never an agent's row, or every tick on an app-less repo would start a session"""
+    """D-98 (superseding D-19): the [agents] table (agents_table's) configures a gate without an
+    App, which only a person connects, unless identity records the owner's choice: "host" reads
+    no row, and "none" says the gate's sessions stop at their first write, as setup's
+    AGENTS_NO_WRITE. Never an agent's row, or every tick on an app-less repo would start a session"""
     if table is None or "prompt" not in table or "app_id" in table:
         return []
+    raw = table.get("identity", '"app"')
+    identity = json.loads(raw) if raw.startswith('"') else None  # shipmill validates it, not the watch
+    if identity == "host":
+        return []
+    if identity == "none":
+        fix = 'remove the [agents] prompt, or choose an App (shipmill-setup\'s step 3, app-create) or identity = "host"'
+        detail = f'identity = "none": the gate\'s sessions stop at their first write; {fix}'
+        return [Row("GATE_NO_APP", "[agents]", detail, fix)]
     fix = "run shipmill-setup's step 3 (app-create), then set app_id in [agents]"
     return [Row("GATE_NO_APP", "[agents]", f"no app connected: sessions write as the host's gh login; {fix}", fix)]
 

@@ -872,7 +872,13 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    (D-14). Without `app_id`, a session writes as the host's `gh` login: its work reads as
    the user's own, the user can't approve its pull requests, and GitHub doesn't notify
    them of its mentions. Until `app_id` is set, `setup_state.py` reads `AGENTS_NO_APP` and
-   github-ship-watch reads `GATE_NO_APP`, both an action for the user (exit 1). Ask the
+   github-ship-watch reads `GATE_NO_APP`, both an action for the user (exit 1), unless the
+   owner recorded another choice (D-98): with `identity = "host"` neither asks for an App,
+   and `AGENTS_OK` (after the mode check) names the host's login the sessions write as;
+   with `identity = "none"` and a gate prompt, `setup_state.py` reads `AGENTS_NO_WRITE`
+   and the watch's `GATE_NO_APP` says the same, an action: the gate's sessions stop at
+   their first write, so remove the `[agents]` prompt, or choose an App or
+   `identity = "host"`. Ask the
    user who should own the App (below), then create it with `$CR app-create` (spec 006),
    or for a repo added to an existing App, run `$CR app-install`:
    - **Plan it:** `$CR app-create --dry-run` finds the accounts the user's `gh` login
@@ -1063,7 +1069,8 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    - **Notifications:** with `app_id`, the question is `<slug>[bot]`'s, so its mention
      notifies the user on GitHub and the gate sends no desktop notification. Without it,
      the comment is the user's own and GitHub doesn't notify anyone of their own mention:
-     `setup_state.py` reads `AGENTS_NO_APP` (an action, D-19), a launch prints `no app_id:
+     `setup_state.py` reads `AGENTS_NO_APP` (an action, D-98; with `identity = "host"`
+     it reads `AGENTS_OK` naming the host's login), a launch prints `no app_id:
      needs-decision comments post as <login>, so GitHub won't notify you`, and with
      `notify = true` the gate sends a desktop notification, `#<n> waits on your decision:
      <url>`, at once and every `remind_hours` while the item waits. Either way it records
