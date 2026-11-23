@@ -2085,13 +2085,13 @@ def test_d82_the_checkouts_project_scripts_pass(tmp_path: Path) -> None:
     for command in ("uv run demo-cli check", "uv run shipmill gate --dry-run", "uv run --locked demo-cli"):
         allowed(bash(command, root, env=gate_env()))
         allowed(bash(command, root / "src", env=gate_env()))
-    for command in ("uv run as-watch", "uv run demo", "uv run src/demo-cli"):
+    for command in ("uv run demo-watch", "uv run demo", "uv run src/demo-cli"):
         refused(bash(command, root, env=gate_env()), "uv-run", "D-82")
 
 
 def test_d82_a_repo_widens_the_list_in_hooks_uv_run(tmp_path: Path) -> None:
-    root = git_repo(tmp_path / "widened", AGENTS + '[hooks]\nuv_run = ["treaty", "as-watch"]\n')
-    for command in ("uv run treaty check", "uv run --no-project as-watch", "uv run pytest"):
+    root = git_repo(tmp_path / "widened", AGENTS + '[hooks]\nuv_run = ["treaty", "demo-watch"]\n')
+    for command in ("uv run treaty check", "uv run --no-project demo-watch", "uv run pytest"):
         allowed(bash(command, root, env=gate_env()))
     refused(bash("uv run cloudfall", root, env=gate_env()), "uv-run", "D-82")
     refused(bash("uv run env X=1 treaty", root, env=gate_env()), "uv-run", "D-82")
@@ -2130,7 +2130,7 @@ def test_d82_pyproject_is_read_once_and_only_when_needed(delivery: ModuleType, t
         return tally
 
     assert counted("uv run pytest && uv run mypy") == Counted(0, 1)  # the config alone
-    assert counted("uv run demo-cli && uv run shipmill && uv run as-watch") == Counted(0, 2)
+    assert counted("uv run demo-cli && uv run shipmill && uv run demo-watch") == Counted(0, 2)
     assert counted("uv run PATH=/x gh && uv run ./x.sh") == Counted(0, 1)  # never a script name
     assert counted("uv run env X=1 ls") == Counted(0, 2)  # env could be one of the project's
 

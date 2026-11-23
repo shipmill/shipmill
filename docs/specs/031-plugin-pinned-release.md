@@ -9,7 +9,7 @@ Under D-35 the gate starts no session while the plugin a session would load is o
 the latest release, at any scope. The gate never updates a user-scope install, so every
 shipmill release pauses every gate on a host until the maintainer updates that install by
 hand (shipmill/shipmill#477). On 2026-10-18 shipmill released four times; after 0.53.0
-four gates read `PLUGIN_STALE` all night, and romamo/linkedin-agent#22 sat green with no
+four gates read `PLUGIN_STALE` all night, and a private repo's pull request sat green with no
 session to land it. The update shipmill printed could fail too, while the marketplace
 clone was behind (fixed in #480).
 

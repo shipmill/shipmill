@@ -5,8 +5,8 @@ serves: G-2
 
 ## Problem
 
-On 2026-10-20 a Claude Code session opened romamo/myfleet#8 with `shipmill gh pr create`,
-run from a checkout of romamo/myfleet. That repo has no `.github/shipmill.toml`, so `_gh()`
+On 2026-10-20 a Claude Code session opened a private repo's pull request with `shipmill gh pr create`,
+run from that repo's checkout. That repo has no `.github/shipmill.toml`, so `_gh()`
 in `src/shipmill/cli.py` ran `gh` with the host's login: the pull request was authored by
 the maintainer, exit 0, with no warning. The agent expected `shipmill gh` to post as the
 App or refuse (shipmill/shipmill#576).
