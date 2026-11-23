@@ -102,6 +102,11 @@ elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100&filter=all") 
         print(json.dumps(run))
 elif args[:2] == ["issue", "list"] and args[args.index("--label") + 1] == "shipmill-hold":  # spec 079
     print(json.dumps([{{"number": n}} for n in fake["holds"]]))
+elif args[:2] == ["issue", "list"]:  # the open incidents, by the label read from the config (#1481)
+    print(json.dumps(fake["incidents"].get(args[args.index("--label") + 1], [])))
+elif args[0] == "api" and any(re.fullmatch(r"repos/.+/deployments", a) for a in args):  # newest first (#1481)
+    environment = [a for a in args if a.startswith("environment=")][0].partition("=")[2]
+    print(json.dumps(fake["deployments"].get(environment, [])[:1]))
 elif args[:2] == ["pr", "diff"]:
     sys.exit("HTTP 406: Sorry, the diff exceeded the maximum number of files (300)")
 elif args[0] == "api" and any(reviews.fullmatch(a) for a in args):  # the review records (spec 055)
@@ -273,6 +278,8 @@ def run_gate(
     permissions: dict[str, str] | None = None,
     reviews: dict[int, list[dict[str, Any]]] | None = None,
     holds: tuple[int, ...] = (),
+    deployments: dict[str, list[dict[str, Any]]] | None = None,
+    incidents: dict[str, list[dict[str, Any]]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
     are what GitHub's GraphQL answers for the repo demo/app's numbers; base, the base branch head's
@@ -280,7 +287,8 @@ def run_gate(
     and force-pushes as GraphQL answers them (default: none of either); permissions, each login's
     permission on the repo (any other login's read is a 404); reviews, each PR's reviews as the
     REST API lists them (default: a trusted person's approval of HEAD_SHA, spec 055); holds, the
-    open shipmill-hold issues' numbers (spec 079)"""
+    open shipmill-hold issues' numbers (spec 079); deployments, each environment's deployments,
+    newest first; incidents, the open issues each label lists (#1481)"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
@@ -296,6 +304,8 @@ def run_gate(
         "permissions": permissions or {},
         "reviews": {str(n): (reviews or {}).get(n, [APPROVED]) for n in prs},
         "holds": list(holds),
+        "deployments": deployments or {},
+        "incidents": incidents or {},
     }
     data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
@@ -916,6 +926,145 @@ def test_s079_12_a_revert_level_outside_the_three_stops_the_gate(tmp_path: Path)
     assert "[autonomy] revert must be one of ['observe', 'propose', 'act'], got 'auto'" in proc.stderr
 
 
+# #1481: an open incident on the latest deploy holds every merge but a revert's or a hotfix's
+
+ENVIRONMENTS = '[environments.production]\nworkflow = "deploy.yml"\n'
+DEPLOYED = "2026-11-01T09:00:00Z"  # when the latest deploy started, an hour before OPENED
+LATEST = {"id": 12, "ref": "v1.2.0", "sha": "c0ffee1234567890", "created_at": DEPLOYED}
+DEPLOYS = {"production": [LATEST]}
+
+
+def incident(number: int, tag: str, created: str, to: str = "-") -> dict[str, Any]:
+    """An incident issue as `shipmill operate` opens it: its title and hidden line name the bad tag"""
+    body = f"<!-- shipmill:incident env=production tag={tag} to={to} state=failing -->\n**production** failed.\n"
+    title = f"Incident: production fails its health checks on {tag}"
+    return {"number": number, "title": title, "body": body, "createdAt": created}
+
+
+ON_LATEST = incident(42, "v1.2.0", "2026-11-01T09:20:00Z")
+INCIDENT_HELD = "  incident: #42 is open on production's latest deploy, v1.2.0: only a revert or a hotfix lands"
+
+
+def incident_base(tmp_path: Path, config: str = "") -> Path:
+    return checkout(tmp_path, {".github/shipmill.toml": ENVIRONMENTS + config})
+
+
+def test_1481_an_open_incident_naming_the_latest_deploys_tag_holds_the_pr(tmp_path: Path) -> None:
+    work = incident_base(tmp_path)
+    proc = run_gate(
+        tmp_path, work, {7: pr()}, "--bot-login", BOT, deployments=DEPLOYS, incidents={"incident": [ON_LATEST]}
+    )
+    assert proc.returncode == gate.BLOCKED == 4, proc.stdout + proc.stderr
+    assert proc.stdout == MAIN_BLOCKED + INCIDENT_HELD + "\n"
+
+
+def test_1481_an_incident_opened_after_the_latest_deploy_started_holds_it_though_it_names_no_tag(
+    tmp_path: Path,
+) -> None:
+    work = incident_base(tmp_path)
+    by_hand = {"number": 43, "title": "Checkout is down", "body": "500s since 09:30", "createdAt": OPENED}
+    proc = run_gate(
+        tmp_path, work, {7: pr(body="Fixes #7", login="amy")}, deployments=DEPLOYS, incidents={"incident": [by_hand]}
+    )
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == INCIDENT_HELD.replace("#42", "#43")
+
+
+def test_1481_an_incident_a_rollback_left_open_still_names_the_rolled_back_to_tag(tmp_path: Path) -> None:
+    """The rollback deployed v1.2.0 again after the v1.3.0 incident opened: its hidden line's
+    to= names the latest deploy's tag, so the fault it records is still open there"""
+    work = incident_base(tmp_path)
+    rolled = incident(44, "v1.3.0", "2026-11-01T08:00:00Z", to="v1.2.0")
+    proc = run_gate(
+        tmp_path, work, {7: pr(body="Fixes #7", login="amy")}, deployments=DEPLOYS, incidents={"incident": [rolled]}
+    )
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == INCIDENT_HELD.replace("#42", "#44")
+
+
+def test_1481_an_open_incident_from_an_earlier_deploy_does_not_hold(tmp_path: Path) -> None:
+    work = incident_base(tmp_path)
+    earlier = [incident(40, "v1.1.0", "2026-10-30T12:00:00Z"), incident(41, "v1.2.01", "2026-10-31T12:00:00Z")]
+    proc = run_gate(tmp_path, work, {7: pr()}, "--bot-login", BOT, deployments=DEPLOYS, incidents={"incident": earlier})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (gate.READY, MAIN_READY, "")
+
+
+@pytest.mark.parametrize(
+    ("data", "config"),
+    [
+        pytest.param(pr(body="Fixes #7", login="amy", title='Revert "Change the app"'), "", id="a Revert title"),
+        pytest.param({**pr(), "baseRefName": "hotfix/checkout"}, "", id="a hotfix/* base"),
+        pytest.param({**pr(), "baseRefName": "release/1.2"}, "[lanes.hotfix]\n", id="the hotfix lane's branch"),
+    ],
+)
+def test_1481_a_revert_or_a_hotfix_lands_through_an_open_incident(
+    tmp_path: Path, data: dict[str, Any], config: str
+) -> None:
+    work = incident_base(tmp_path, config)
+    proc = run_gate(
+        tmp_path, work, {7: data}, "--bot-login", BOT, deployments=DEPLOYS, incidents={"incident": [ON_LATEST]}
+    )
+    assert (proc.returncode, proc.stderr) == (gate.READY, ""), proc.stdout
+    assert proc.stdout.splitlines()[0].startswith("#7 READY "), proc.stdout
+    assert "deployments" not in calls_of(tmp_path)  # it isn't read for a PR that lands through it
+
+
+def test_1481_the_apps_revert_lands_through_an_open_incident(tmp_path: Path) -> None:
+    work = incident_base(tmp_path, '\n[autonomy]\nrevert = "act"\n')
+    proc = run_gate(
+        tmp_path,
+        work,
+        {7: pr(body=REVERT_BODY)},
+        "--bot-login",
+        BOT,
+        base=RED_BASE,
+        deployments=DEPLOYS,
+        incidents={"incident": [ON_LATEST]},
+    )
+    assert (proc.returncode, proc.stdout, proc.stderr) == (gate.READY, MAIN_READY + REPAIRS + "\n", "")
+
+
+def test_1481_a_release_branch_without_the_hotfix_lane_is_held(tmp_path: Path) -> None:
+    work = incident_base(tmp_path)
+    data = {**pr(), "baseRefName": "release/1.2"}
+    proc = run_gate(
+        tmp_path, work, {7: data}, "--bot-login", BOT, deployments=DEPLOYS, incidents={"incident": [ON_LATEST]}
+    )
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+
+
+def test_1481_the_incidents_carry_the_configs_incident_label(tmp_path: Path) -> None:
+    work = incident_base(tmp_path, '\n[operate]\nincident_label = "sev"\n')
+    found = {"incident": [], "sev": [ON_LATEST]}
+    proc = run_gate(tmp_path, work, {7: pr()}, "--bot-login", BOT, deployments=DEPLOYS, incidents=found)
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == INCIDENT_HELD
+
+
+def test_1481_no_deploy_yet_holds_nothing(tmp_path: Path) -> None:
+    work = incident_base(tmp_path)
+    proc = run_gate(tmp_path, work, {7: pr()}, "--bot-login", BOT, incidents={"incident": [ON_LATEST]})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (gate.READY, MAIN_READY, "")
+
+
+def test_1481_a_repo_without_environments_reads_no_deploys_nor_incidents(tmp_path: Path) -> None:
+    work = checkout(tmp_path, {".github/shipmill.toml": "[lanes.stable]\n"})
+    proc = run_gate(
+        tmp_path, work, {7: pr()}, "--bot-login", BOT, deployments=DEPLOYS, incidents={"incident": [ON_LATEST]}
+    )
+    assert (proc.returncode, proc.stdout, proc.stderr) == (gate.READY, MAIN_READY, "")
+    assert not {"deployments", "issue list"} & set(calls_of(tmp_path))
+
+
+def test_1481_the_deploys_and_incidents_are_read_once_for_every_pr(tmp_path: Path) -> None:
+    work = incident_base(tmp_path)
+    prs = {7: pr(), 8: pr(body=PLAN.replace("Fixes #7", "Fixes #8"))}
+    proc = run_gate(tmp_path, work, prs, "--bot-login", BOT, deployments=DEPLOYS, incidents={"incident": [ON_LATEST]})
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    kinds = calls_of(tmp_path)
+    assert (kinds.count("deployments"), kinds.count("issue list")) == (1, 1), kinds
+
+
 def test_963_the_base_is_read_once_for_prs_that_share_it(tmp_path: Path) -> None:
     proc = run_gate(
         tmp_path, None, {7: pr(login="amy"), 8: pr(login="amy")}, base={"check_runs": [base_run("failure")]}
@@ -1103,10 +1252,13 @@ def spec_pr(body: str = SPEC_BODY, files: tuple[str, ...] = (SPEC,), **kw: Any) 
 def calls_of(tmp_path: Path) -> list[str]:
     """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), `thread` (the PR's
     thread and its issues', #1309), any other `graphql`, the base head's `status` and `check-runs`
-    (D-75), or the review records' `reviews` (spec 055)"""
+    (D-75), the review records' `reviews` (spec 055), or an environment's `deployments` (#1481)"""
     kinds = []
     for call in gh_calls(tmp_path):
         args = call["args"]
+        if any(a.startswith("repos/") and a.endswith("/deployments") for a in args):
+            kinds.append("deployments")
+            continue
         base = [
             a.rsplit("/", 1)[-1].split("?")[0]
             for a in args
