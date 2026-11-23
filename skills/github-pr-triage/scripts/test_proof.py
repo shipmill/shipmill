@@ -36,7 +36,8 @@ refactor checks, in order:
 
 --plan-file is a file holding the pull request's body: its `## Plan` section's
 `Tests changed:` line names files exempt from fix's check 4 and refactor's check 2, each in
-backticks followed by `: ` and its reason, entries separated by `;`.
+backticks followed by `: ` and its reason, entries separated by `;`; a line whose first word
+is `none` (`Tests changed: none; only new tests`) and that holds no backticks names no file.
 
 Output: `test_proof: <VERDICT> (<kind>)`, then one `ok:` or `fail:` line per check, and under
 a failed or unexpectedly passing run its last 40 output lines. --json prints one object.
@@ -72,6 +73,10 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _TESTS_CHANGED = re.compile(r"^\s*(?:[-*]\s+)?Tests changed:(.*)$")
 _ENTRY = re.compile(r"`([^`]+)`(?::(.*))?")
+# `none` as the line's first word, alone or followed by prose; `none.py` or `nonesuch` is not it
+_NONE = re.compile(r"none(?:$|[\s;,:()-]|\.(?!\w))", re.IGNORECASE)
+# a backticked span after `none` may be an entry, with or without its reason: read the line as entries
+_ENTRY_SHAPE = re.compile(r"`[^`]+`")
 
 
 class Stop(Exception):
@@ -216,12 +221,16 @@ def tests_changed(body: str) -> dict[str, str]:
     exempt: dict[str, str] = {}
     if not lines or not lines[0].strip():
         return exempt
-    for entry in (part.strip() for part in lines[0].split(";")):
+    value = lines[0].strip()
+    if _NONE.match(value) and not _ENTRY_SHAPE.search(value):
+        return exempt
+    for entry in (part.strip() for part in value.split(";")):
         found = _ENTRY.fullmatch(entry)
         if found is None:
             raise Stop(
                 f"`Tests changed:` entry {entry!r} is not a backticked path and its reason; "
-                "write it as `path`: reason, entries separated by `;`"
+                "write it as `path`: reason, entries separated by `;`, or the line as `none` when no "
+                "existing test file changed"
             )
         reason = (found.group(2) or "").strip()
         if not reason:

@@ -203,6 +203,54 @@ def test_s076_3_a_tests_changed_line_outside_the_plan_exempts_nothing() -> None:
     assert proof.tests_changed(body) == {"tests/a.py": "why", "t/c.py": "so"}
 
 
+# #1507: `Tests changed: none` is the line agents write when no existing test file changed
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["none", "None", "NONE", "none; only new tests", "none (only new tests)", "none, only new tests", "none."],
+)
+def test_1507_tests_changed_none_exempts_nothing(value: str) -> None:
+    assert proof.tests_changed(f"## Plan\n\n- Kind: fix\n- Tests changed: {value}\n") == {}
+
+
+def test_1507_a_path_named_none_is_still_an_entry() -> None:
+    body = "## Plan\n\n- Tests changed: `tests/none.py`: the helper moved\n"
+    assert proof.tests_changed(body) == {"tests/none.py": "the helper moved"}
+
+
+@pytest.mark.parametrize("value", ["none, `tests/a.py`: x", "none; `tests/a.py`: x", "nonesuch", "none.py"])
+def test_1507_none_mixed_with_an_entry_or_a_longer_word_exits_2(value: str) -> None:
+    with pytest.raises(proof.Stop) as raised:
+        proof.tests_changed(f"## Plan\n\n- Tests changed: {value}\n")
+    assert "`path`: reason" in str(raised.value)
+    assert "`none`" in str(raised.value)
+
+
+@pytest.mark.parametrize("value", ["none; `tests/a.py`", "none - `tests/a.py`"])
+def test_1507_none_with_a_path_and_no_reason_exits_2(value: str) -> None:
+    with pytest.raises(proof.Stop, match="`none`"):
+        proof.tests_changed(f"## Plan\n\n- Tests changed: {value}\n")
+
+
+def test_1507_two_none_lines_still_exit_2() -> None:
+    with pytest.raises(proof.Stop, match="2 `Tests changed:` lines"):
+        proof.tests_changed("## Plan\n\n- Tests changed: none\n- Tests changed: none\n")
+
+
+def test_1507_an_empty_value_still_exempts_nothing() -> None:
+    assert proof.tests_changed("## Plan\n\n- Tests changed:\n") == {}
+
+
+def test_1507_a_plan_file_with_tests_changed_none_is_proven(repo: Path, tmp_path: Path) -> None:
+    fixed(repo)
+    plan = tmp_path / "body.md"
+    plan.write_text("## Plan\n\n- Kind: fix\n- Tests changed: none\n", encoding="utf-8")
+    proc = run(repo, "fix", "--plan-file", str(plan))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[0] == "test_proof: PROVEN (fix)"
+
+
 # S-076-4
 
 
