@@ -558,8 +558,16 @@ run of its workflow on the tag (still queued, or failed before its deploy job ma
 deployment); a failed one is not retried. Approve a proposal with `gh workflow run operate.yml -f
 approve=<environment> -f dry-run=false`: it deploys the proposed tag once and closes the
 issue, under `propose` or `observe`, but not while a hold is open. A proposal also closes,
-with a comment, once the environment runs its tag (or a later one), whoever deployed it. The
-run summary lists
+with a comment, once the environment runs its tag (or a later one), whoever deployed it.
+
+The workflow token opens the proposal, as `github-actions[bot]`, which the maintainer queue
+(`fleet.py queue`, spec 069) doesn't trust. With `[agents] app_id` set, pass the App's
+private key to operate.yml as its optional `SHIPMILL_OPERATE_KEY` secret (`secrets:
+SHIPMILL_OPERATE_KEY: ${{ secrets.SHIPMILL_OPERATE_KEY }}` on the job that calls it) and the
+proposal is opened and updated as the App, with a token limited to the repository and
+`issues: write`, so the queue shows it as a `PROMOTION` row. Everything else stays with the
+workflow token; a key without `[agents] app_id`, or one that mints no token, fails the run.
+The run summary lists
 each environment's tag, health, and what the run did; `shipmill operate --dry-run` shows the
 same and changes nothing.
 

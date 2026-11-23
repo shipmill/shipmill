@@ -1637,7 +1637,8 @@ def main(
         elif args.approve_rollback:
             report = approve_rollback(policy, operated, args.approve_rollback, args.dry_run) + "\n"
         else:
-            reports = operate(policy, git, operated, http or UrllibHttp(), _now(args.now), args.dry_run)
+            proposer = _proposer(root, env, policy.changelog)
+            reports = operate(policy, git, operated, http or UrllibHttp(), _now(args.now), args.dry_run, proposer)
             report = summary(reports, args.dry_run)
         sys.stdout.write(report)
         if args.step_summary is not None:
@@ -3855,6 +3856,19 @@ def _land_app(root: Path, key: Path, environ: Mapping[str, str], api: Api | None
             " nothing was pushed"
         )
     return mint_land(app_id, repo, key.expanduser(), dt.datetime.now(dt.UTC), signer or Openssl(), api or UrllibApi())
+
+
+PROPOSAL_TOKEN = "SHIPMILL_PROPOSAL_TOKEN"
+
+
+def _proposer(root: Path, environ: Mapping[str, str], changelog: str) -> GitHub | None:
+    """operate's deploy proposals as the App (#1371): gh with operate.yml's App token, limited
+    to issues: write, in GH_TOKEN; None when the token is unset or empty, so the workflow
+    token opens them"""
+    token = environ.get(PROPOSAL_TOKEN, "")
+    if not token:
+        return None
+    return GhCli(root, changelog=changelog, env=as_app(environ, token))
 
 
 def _origin_repo(root: Path) -> str | None:

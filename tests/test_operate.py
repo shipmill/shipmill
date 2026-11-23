@@ -292,6 +292,22 @@ def test_propose_opens_one_issue_and_keeps_it(setup: tuple[Repo, FakeHttp]) -> N
     assert len(repo.github.issues) == 1 and repo.github.edits == 0
 
 
+def test_a_proposer_opens_the_proposal_and_nothing_else(setup: tuple[Repo, FakeHttp]) -> None:
+    """#1371: with the App's token (operate.yml's SHIPMILL_PROPOSAL_TOKEN), the "Ready to
+    promote" issue is opened through it, so it is the App's and reaches the maintainer queue;
+    the statuses, deploys, and every other read stay with the workflow token's client"""
+    repo, http = setup
+    configure(repo, 'deploy.production = "propose"\n')
+    app = FakeGitHub()
+    repo.github.now = minutes(61)
+    reports = operate(repo.policy, repo.git, repo.github, http, minutes(61), False, proposer=app)
+    [issue] = app.issues.values()
+    assert issue.title == "Ready to promote v1.1.0rc1 to production"
+    assert app.labels[issue.number] == (PROPOSAL_LABEL,)
+    assert repo.github.issues == {} and app.status_writes == [] and app.dispatched == []
+    assert {r.environment: r for r in reports}["production"].action.startswith(f"proposal #{issue.number} opened")
+
+
 def test_observe_only_reports(setup: tuple[Repo, FakeHttp]) -> None:
     repo, http = setup
     configure(repo, 'deploy.production = "observe"\n')

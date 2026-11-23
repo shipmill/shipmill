@@ -641,6 +641,31 @@ def test_s069_9_an_outsiders_item_is_in_no_row(
     assert [line.split()[2] for line in out.splitlines()] == ["#3"]
 
 
+def test_s069_5_a_promotion_the_app_opened_is_a_row(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1371: operate.yml opens its "Ready to promote" issue as the App when the caller passes
+    its key, so the proposal is the --bot-login's and a PROMOTION row; one the workflow token
+    opened stays out, as S-069-9 and D-30 keep github-actions[bot] untrusted"""
+    fake = FakeGh(
+        watch={
+            "o/r": [
+                watch_row("PROMOTION_DUE", "production", "#20 v1.2.0: gh workflow run operate.yml -f approve=prod"),
+                watch_row("PROMOTION_DUE", "staging", "#21 v1.2.0rc1: gh workflow run operate.yml -f approve=staging"),
+            ]
+        },
+        github={
+            "o/r": {
+                20: item(20, "Ready to promote v1.2.0 to production", author=BOT, association="NONE"),
+                21: item(21, "Ready to deploy v1.2.0rc1 to staging", author="github-actions[bot]", association="NONE"),
+            }
+        },
+    )
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 1
+    assert [line.split()[1:3] for line in out.splitlines()] == [["PROMOTION", "#20"]]
+
+
 def test_s069_10_a_failed_repo_is_one_repo_error_line_and_the_rest_print(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

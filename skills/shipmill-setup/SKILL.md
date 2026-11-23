@@ -255,7 +255,12 @@ and gets an `incident` issue, which holds the rc and stable lanes until closed. 
 production should deploy by itself after the bake (the default) or wait for approval
 (`deploy.production = "propose"` in `[autonomy]`, approved with `gh workflow run
 operate.yml -f approve=production -f dry-run=false`), and the same for rollbacks
-(`rollback = "propose"`, approved with `-f approve-rollback=production`). Point the user at
+(`rollback = "propose"`, approved with `-f approve-rollback=production`). Under `propose`,
+with `[agents] app_id` set, offer to add the App's private key as the repository secret
+`SHIPMILL_OPERATE_KEY` and pass it on the job that calls operate.yml (`secrets:
+SHIPMILL_OPERATE_KEY: ${{ secrets.SHIPMILL_OPERATE_KEY }}`): the proposal is then opened as
+the App, so the maintainer queue shows it; without it, the workflow token opens it as
+`github-actions[bot]`, which the queue leaves out. Point the user at
 `.github/workflows/operate.yml` as an extra scheduled workflow, and skip it for a
 library with no environments.
 

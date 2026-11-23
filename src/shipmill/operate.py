@@ -1215,6 +1215,7 @@ def _close_deployed(github: GitHub, seen: Observed, dry_run: bool) -> str | None
 def _act(
     policy: Policy,
     github: GitHub,
+    proposer: GitHub,
     env: Environment,
     wanted: Wanted,
     hold: Hold,
@@ -1232,15 +1233,28 @@ def _act(
         return f"would deploy {wanted.tag.tag} ({wanted.why}), but {cause}"
     if dry_run:
         return f"would propose {wanted.tag.tag} ({wanted.why}): {cause}"
-    fix = f"grant `issues: write` to the job that calls operate.yml in {OPERATE_CALLER}"
+    if proposer is github:
+        fix = f"grant `issues: write` to the job that calls operate.yml in {OPERATE_CALLER}"
+    else:
+        fix = "give the App in [agents] app_id Issues: write on this repository"
     number, outcome = upsert(
-        github, deploy_marker(env.name), proposal_title(env, wanted), proposal_body(env, wanted, cause), fix
+        proposer, deploy_marker(env.name), proposal_title(env, wanted), proposal_body(env, wanted, cause), fix
     )
     return f"proposal #{number} {outcome}: {wanted.tag.tag} ({cause})"
 
 
-def operate(policy: Policy, git: Git, github: GitHub, http: Http, now: dt.datetime, dry_run: bool) -> list[Report]:
-    """One run over every environment; git is operate's checkout, which holds the release tags"""
+def operate(
+    policy: Policy,
+    git: Git,
+    github: GitHub,
+    http: Http,
+    now: dt.datetime,
+    dry_run: bool,
+    proposer: GitHub | None = None,
+) -> list[Report]:
+    """One run over every environment; git is operate's checkout, which holds the release tags.
+    proposer, when given, opens and updates the deploy proposals (the App's token, so the
+    maintainer queue trusts them, #1371); github does everything else"""
     environments = policy.environments
     tags = git.tags()
     hold = Hold.read(github) if environments else Hold()
@@ -1297,7 +1311,7 @@ def operate(policy: Policy, git: Git, github: GitHub, http: Http, now: dt.dateti
             )
         else:
             waits = True
-            actions.append(_act(policy, github, seen.env, wanted, hold, dry_run))
+            actions.append(_act(policy, github, proposer or github, seen.env, wanted, hold, dry_run))
         if not waits and (closed := _close_deployed(github, seen, dry_run)) is not None:
             actions.append(closed)
         tag = seen.tag.tag if seen.tag else (seen.current.ref if seen.current else "-")
