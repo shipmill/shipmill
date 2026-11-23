@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -806,3 +807,122 @@ def test_a_bot_login_that_isnt_a_login_is_refused(fl: ModuleType, tmp_path: Path
     with pytest.raises(SystemExit) as refused:
         fl.main(["queue", "--fleet", str(path), "--bot-login", "not a login"], runner=FakeGh(), clock=lambda: NOW)
     assert refused.value.code == 2
+
+
+# -- fleet.py overview (#1479): the report and the queue in one pass, one clone per repo ----------
+
+
+def overview_fake(**kw: Any) -> FakeGh:
+    """Two repos with an action row, a report-only row, two questions, and a person's item"""
+    return FakeGh(
+        watch={
+            "o/r": [watch_row("NEEDS_DECISION", "o/r", "#1"), watch_row("PRS_OPEN", "o/r", "#4")],
+            "o/s": [watch_row("NEEDS_DECISION", "o/s", "#2")],
+        },
+        triage={"o/s": [person(7, "WITH_PERSON", ["maint"], ago(days=2))]},
+        github={
+            "o/r": {1: asked(1, "Pick a name", ago(hours=5))},
+            "o/s": {2: asked(2, "Pick a port", ago(days=1)), 7: item(7, "Item 7")},
+        },
+        **kw,
+    )
+
+
+def run_overview(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], fake: FakeGh, *flags: str
+) -> tuple[int, str]:
+    path = tmp_path / "fleet.toml"
+    path.write_text(FLEET, encoding="utf-8")
+    code = fl.main(["overview", "--fleet", str(path), "--bot-login", BOT, *flags], runner=fake, clock=lambda: NOW)
+    return code, capsys.readouterr().out
+
+
+def test_1479_overview_prints_the_reports_rows_and_the_queues_items_as_the_two_commands_apart(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "fleet.toml"
+    path.write_text(FLEET, encoding="utf-8")
+    fl.main(["report", "--fleet", str(path), "--json"], runner=overview_fake(), clock=lambda: NOW)
+    report = json.loads(capsys.readouterr().out)
+    _, queue = run_queue(fl, tmp_path, capsys, overview_fake(), "--json", "--bot-login", BOT)
+    code, both = run_overview(fl, tmp_path, capsys, overview_fake(), "--json")
+    assert json.loads(both) == {"report": report, "queue": json.loads(queue)}
+    assert code == 1
+    assert [i["number"] for i in json.loads(queue)["items"]] == [7, 2, 1]  # oldest first across repos
+    assert [r["repo"] for r in report["repos"]] == ["o/r", "o/s"]
+
+
+def test_1479_overview_clones_each_repo_once_and_runs_both_watches_on_that_clone(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = overview_fake()
+    code, out = run_overview(fl, tmp_path, capsys, fake)
+    assert code == 1
+    clones = [c for c in fake.calls if c[:3] == ["gh", "repo", "clone"]]
+    assert sorted(c[3] for c in clones) == ["o/r", "o/s"]
+    for clone in clones:
+        watches = [c for c in fake.calls if c[1] == str(fl.WATCH_STATE) and c[2] == clone[3]]
+        assert len(watches) == 2  # the report's full watch and the queue's trusted one: the PR's open point
+        assert all(w[w.index("--repo-dir") + 1] == clone[4] for w in watches)
+        assert sum("--trusted-only" in w for w in watches) == 1
+    assert out.splitlines() == [
+        "o/r NEEDS_DECISION o/r              #1",
+        "o/s NEEDS_DECISION o/s              #2",
+        "o/r PRS_OPEN       o/r              #4",
+        "",
+        "o/s YOUR_ITEM     #7     do your item: Item 7 (2d 0h)",
+        "o/s QUESTION      #2     answer the needs-decision question: Pick a port (1d 0h)",
+        "o/r QUESTION      #1     answer the needs-decision question: Pick a name (5h)",
+    ]
+
+
+def test_1479_a_repo_whose_read_fails_gets_its_error_rows_and_the_others_print(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = overview_fake(failing={"o/s": ("clone", "GraphQL: Could not resolve to a Repository\nmore")})
+    code, out = run_overview(fl, tmp_path, capsys, fake)
+    assert code == 2
+    assert out.splitlines() == [
+        "o/r NEEDS_DECISION o/r              #1",
+        "o/s REPO_ERROR     gh repo clone    GraphQL: Could not resolve to a Repository",
+        "o/r PRS_OPEN       o/r              #4",
+        "",
+        "o/r QUESTION      #1     answer the needs-decision question: Pick a name (5h)",
+        "o/s REPO_ERROR gh repo clone: GraphQL: Could not resolve to a Repository",
+    ]
+    assert sorted(c[3] for c in fake.calls if c[:3] == ["gh", "repo", "clone"]) == ["o/r", "o/s"]  # o/s's once
+
+
+@dataclass
+class Gated(FakeGh):
+    """o/r's clone waits until o/s's last read has ended: o/s is read first, yet o/r prints first"""
+
+    later: threading.Event = field(default_factory=threading.Event)
+
+    def __call__(self, cmd: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        cmd = list(cmd)
+        if cmd[:4] == ["gh", "repo", "clone", "o/r"]:
+            assert self.later.wait(10), "o/s was never read while o/r waited: the repos aren't read concurrently"
+        found = super().__call__(cmd, cwd)
+        if cmd[:3] == ["gh", "api", "graphql"] and "name=s" in cmd and "pullRequests(" in cmd[4]:
+            self.later.set()  # o/s's open pull requests: its last read
+        return found
+
+
+def test_1479_repos_are_read_concurrently_and_printed_in_the_fleet_files_order(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = overview_fake()
+    fake = Gated(watch=base.watch, triage=base.triage, github=base.github)
+    code, out = run_overview(fl, tmp_path, capsys, fake, "--jobs", "2", "--json")
+    assert code == 1
+    assert [c[3] for c in fake.calls if c[:3] == ["gh", "repo", "clone"]] == ["o/s", "o/r"]  # o/r's waited for o/s
+    found = json.loads(out)
+    assert [r["repo"] for r in found["report"]["repos"]] == ["o/r", "o/s"]
+    assert [i["number"] for i in found["queue"]["items"]] == [7, 2, 1]
+
+
+def test_1479_the_fleet_section_documents_the_overview(fl: ModuleType) -> None:
+    skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "`scripts/fleet.py overview --fleet <file>" in skill
+    assert "--jobs" in skill

@@ -6,6 +6,8 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -652,6 +654,44 @@ def test_s001_3_the_report_refuses_a_malformed_fleet_file_with_exit_2(tmp_path: 
     assert done.returncode == 2
     assert done.stdout == ""
     assert done.stderr == f"error: {path}: repos[0]: repo 'shipmill' is not in owner/name form\n"
+
+
+# -- fleet.py overview (#1479): the repos read concurrently, at most --jobs at once ---------------
+
+
+def test_1479_the_overview_reads_at_most_jobs_repos_at_once_and_keeps_their_order(fl: ModuleType) -> None:
+    lock = threading.Lock()
+    running = [0]
+    peak = [0]
+
+    def read(n: int) -> int:
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.02 * (6 - n))  # the first repo is the slowest
+        with lock:
+            running[0] -= 1
+        return n * 10
+
+    assert fl.in_order(read, [1, 2, 3, 4, 5], 2) == [10, 20, 30, 40, 50]
+    assert peak[0] == 2
+
+
+def test_1479_a_read_that_stops_the_run_stops_the_overview(fl: ModuleType) -> None:
+    def read(n: int) -> int:
+        if n == 2:
+            raise fl.Refused("error: watch_state.py for o/s printed 'x', not a row")
+        return n
+
+    with pytest.raises(fl.Refused, match="not a row"):
+        fl.in_order(read, [1, 2, 3], 2)
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1", "x"])
+def test_1479_jobs_must_be_a_positive_number(fl: ModuleType, tmp_path: Path, jobs: str) -> None:
+    with pytest.raises(SystemExit) as refused:
+        fl.main(["overview", "--fleet", str(write(tmp_path, FLEET)), "--jobs", jobs], runner=Fake())
+    assert refused.value.code == 2
 
 
 # -- the skill documents the fleet --------------------------------------------------------
