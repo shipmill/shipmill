@@ -7,6 +7,13 @@ name: shipmill operate
 # failing [operate] rollback_after checks in a row is rolled back and gets an incident issue.
 # With `approve`, it deploys the tag proposed for that environment, once, instead; with
 # `approve-rollback`, it starts the rollback an incident proposes for it, once.
+#
+# With the caller passing SHIPMILL_OPERATE_KEY, the private key of the App in [agents] app_id,
+# the deploy proposal ("Ready to promote") is opened and updated as the App, with a token
+# limited to this repository and issues: write (D-90), so the maintainer queue, which trusts
+# the App and not github-actions[bot] (S-069-9), shows it (#1371). Everything else, the
+# proposal's closing included, stays with the workflow token. Without the secret, the
+# workflow token opens the proposal too.
 
 on:
   workflow_call:
@@ -26,6 +33,10 @@ on:
         description: "Where uvx installs shipmill from"
         type: string
         default: "git+https://github.com/shipmill/shipmill@v0"
+    secrets:
+      SHIPMILL_OPERATE_KEY:
+        description: "The private key of the App in [agents] app_id, which opens the deploy proposal; absent: the workflow token"
+        required: false
 
 # No permissions here or on the job: it runs with the caller's grant, as a reusable job that
 # asks for more than its caller grants fails to start. It needs contents: read, deployments:
@@ -48,9 +59,53 @@ jobs:
         with:
           version: "0.13.7"
 
+      # The secret, masked line by line before anything prints, in a file only this job's user
+      # reads and removed once the token is minted; the token, masked, is the step's only
+      # output. Without the secret the step mints nothing and operate opens the proposal with
+      # the workflow token; a key without [agents] app_id, or one that mints no token, fails
+      # the run here, before operate writes anything
+      - name: Mint the App's token for the proposals
+        id: app
+        shell: bash
+        env:
+          KEY: ${{ secrets.SHIPMILL_OPERATE_KEY }}
+          TOOL: ${{ inputs.tool }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "no SHIPMILL_OPERATE_KEY: the deploy proposal is opened with the workflow token"
+            exit 0
+          fi
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<<"$KEY"
+          if ! [ -f .github/shipmill.toml ]; then
+            echo "::error::shipmill operate: SHIPMILL_OPERATE_KEY is set, but there is no .github/shipmill.toml on the default branch to read [agents] app_id from; add [agents] app_id, or stop passing the secret"
+            exit 1
+          fi
+          app_id=$(python3 -c 'import tomllib; print(tomllib.load(open(".github/shipmill.toml", "rb")).get("agents", {}).get("app_id", ""))')
+          if ! [[ "$app_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::shipmill operate: SHIPMILL_OPERATE_KEY is set, but .github/shipmill.toml sets no [agents] app_id, the App whose key it is; set it, or stop passing the secret"
+            exit 1
+          fi
+          key="$RUNNER_TEMP/shipmill-operate-key.pem"
+          (umask 077; printf '%s\n' "$KEY" > "$key")
+          chmod 600 "$key"
+          if ! token=$(uvx --from "$TOOL" shipmill app-token "$GITHUB_REPOSITORY" \
+            --permission issues=write --app-id "$app_id" --app-key "$key"); then
+            rm -f "$key"
+            echo "::error::shipmill operate: the App $app_id minted no token with SHIPMILL_OPERATE_KEY (its error above says why); check the secret is that App's private key and the App is installed on $GITHUB_REPOSITORY with Issues: write, or stop passing the secret"
+            exit 1
+          fi
+          rm -f "$key"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+          echo "the deploy proposal is opened as the App $app_id"
+
       - name: Operate
         env:
           GH_TOKEN: ${{ github.token }}
+          # empty without the App: the proposal goes with GH_TOKEN
+          SHIPMILL_PROPOSAL_TOKEN: ${{ steps.app.outputs.token }}
           TOOL: ${{ inputs.tool }}
           APPROVE: ${{ inputs.approve }}
           APPROVE_ROLLBACK: ${{ inputs.approve-rollback }}
