@@ -573,6 +573,53 @@ def test_1492_a_merged_closer_with_every_hold_closed_still_reads_done_not_closed
         assert found == ("DONE_NOT_CLOSED", "#8:merged")
 
 
+HELD = ("2026-10-19T10:00:00Z", "Triage: **postpone**. On hold: waits on o/r#337.")
+REDECIDED = ("2026-11-23T10:19:00Z", "Triage: **postpone**. Keep it on hold, waiting on the maintainer.")
+CLOSED_337 = {("o", "r", 337): "2026-11-19T10:00:00Z"}
+
+
+def read_held(ts: ModuleType, item: dict[str, Any], closes: dict[Any, str]) -> tuple[str, str]:
+    states = {("o", "r", 337): "CLOSED"}
+    found: tuple[str, str] = ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT, closes)
+    return found
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        (("blocked",), ("BLOCKED", "labelled blocked")),
+        (("postponed",), ("POSTPONED", "")),
+        ((), ("TRIAGED", "")),
+    ],
+)
+def test_1493_a_hold_closed_before_the_newest_triage_comment_holds_nothing(
+    ts: ModuleType, labels: tuple[str, ...], expected: tuple[str, str]
+) -> None:
+    # #338's shape: its hold on #337 closed, then a newer triage comment decided it again
+    assert read_held(ts, issue(HELD, REDECIDED, labels=labels), CLOSED_337) == expected
+
+
+def test_1493_a_hold_closed_after_the_newest_triage_comment_still_unblocks(ts: ModuleType) -> None:
+    assert read_held(ts, issue(HELD, labels=("blocked",)), CLOSED_337) == ("UNBLOCKED", "o/r#337:closed")
+    # a close time nobody read keeps today's reading
+    assert read_held(ts, issue(HELD, REDECIDED, labels=("blocked",)), {}) == ("UNBLOCKED", "o/r#337:closed")
+
+
+def test_1493_a_spec_merged_after_the_triage_comment_unblocks_its_feature_issue(ts: ModuleType) -> None:
+    item = issue(("2026-11-01T10:00:00Z", "Triage: **feature**. The spec waits on #40."))
+    states, closes = {("o", "r", 40): "MERGED"}, {("o", "r", 40): "2026-11-05T10:00:00Z"}
+    found = ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT, closes)
+    assert found == ("UNBLOCKED", "o/r#40:merged")
+
+
+def test_1493_children_closed_before_the_newest_triage_comment_still_count(ts: ModuleType) -> None:
+    item = issue(("2026-11-01T10:00:00Z", "Triage: **implement**"), REDECIDED)
+    node = {"number": 13, "state": "CLOSED", "closedAt": "2026-11-05T10:00:00Z", "repository": {"nameWithOwner": "o/r"}}
+    item["subIssues"] = {"nodes": [node]}
+    found = ts.classify_open(item, "Triage:", "postponed", {}, None, REPO, BOT, {})
+    assert found == ("UNBLOCKED", "children 1/1 closed o/r#13:closed(child)")
+
+
 def test_416_github_s_link_and_part_of_anywhere_still_link(ts: ModuleType) -> None:
     # a cross-repo or full-URL closer reaches triage as GitHub's willCloseTarget
     linked = {"number": 8, "state": "MERGED", "title": "x", "body": "Fixes https://github.com/o/r/issues/12"}
