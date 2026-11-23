@@ -30,8 +30,9 @@ secret_files = ["~/work/acme-rocket/.env"]
 Both keys are optional. With no file, no term is checked, and the secrets come from the
 checkout alone. A file shipmill can't read as this (an unknown key, a wrong type, a term
 under 3 characters, a file that isn't TOML, or a `secret_files` path it can't read) stops
-every check that reads it: each agent write and push is refused, with exit 2 naming the key
-and the file, until you fix it.
+every check that reads it: each agent write and push is refused, with exit 2 naming the file
+and the problem, until you fix it. An unknown key is named by its line, never its text, since
+a misplaced term can be one.
 
 Never put these in `.github/shipmill.toml` or any file of a repo: a public repo's config
 would publish the very names it hides. The file's path is fixed: no environment variable,

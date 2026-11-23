@@ -62,6 +62,8 @@ _DOTENV_LINE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*)"
 _URL_PASSWORD = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]*:([^\s/@]+)@")
 _TEMPLATED = frozenset("${<*")  # a password holding one is a placeholder, such as ${TOKEN}
 _EDGE = r"[^\W_]"  # a letter or a digit, in any script
+# a TOML key's first part: basic-quoted, literal-quoted, or bare
+_KEY_PART = re.compile(r"""[ \t]*(?:"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[A-Za-z0-9_-]+)""")
 
 
 def account_home() -> Path:
@@ -104,9 +106,9 @@ class Private:
 
     @classmethod
     def load(cls, home: Path) -> Private:
-        """The private file under home; one with no file holds nothing. An unknown key, a wrong
-        type, a term under 3 characters, or a file that isn't TOML exits 2 naming the key and
-        the file (Q-1)"""
+        """The private file under home; one with no file holds nothing. An unknown key (by its
+        line), a wrong type (by its key), a term under 3 characters, or a file that isn't TOML
+        exits 2 naming the file (Q-1)"""
         path = home / PRIVATE_FILE
         try:
             raw = path.read_bytes()
@@ -127,10 +129,11 @@ class Private:
             data = tomllib.loads(text)
         except tomllib.TOMLDecodeError as exc:
             raise ReleaseError(f"{path} isn't valid TOML at line {exc.lineno}, column {exc.colno}; {refuses}") from None
-        unknown = sorted(set(data) - _KEYS)
-        if unknown:
+        # An unknown key is named by its line, never its text, which may be a private term (#1416)
+        if set(data) - _KEYS:
             raise ReleaseError(
-                f"{path} has the unknown key {unknown[0]!r}; it takes only terms and secret_files (spec 081)"
+                f"{path} has an unknown key at line {_unknown_line(text)}; "
+                "it takes only terms and secret_files (spec 081)"
             )
         listed = _strings(data, "terms", path)
         short = next((text for text in listed if len(text.strip()) < TERM_MIN), None)
@@ -142,6 +145,80 @@ class Private:
         terms = tuple(Term.of(text.strip()) for text in listed)
         files = tuple((given, _expanded(given, home)) for given in _strings(data, "secret_files", path))
         return cls(path, True, terms, files)
+
+
+def _unknown_line(text: str) -> int:
+    """The line of text's first top-level key outside terms and secret_files: a table header's
+    first part or a root key's. tomllib gives no positions, so this scans text, which has
+    already parsed, statement by statement, stepping over strings, comments, and arrays"""
+    position, line, root = 0, 1, True
+    while position < len(text):
+        while position < len(text) and text[position] in " \t\r":
+            position += 1
+        if position == len(text):
+            break
+        if text[position] in "#\n":
+            position, line = _statement_end(text, position, 0, line)
+            continue
+        depth = 0
+        if text[position] == "[":
+            depth = 2 if text.startswith("[[", position) else 1
+            position += depth
+            root = False
+        part = _KEY_PART.match(text, position)
+        if part is None:
+            raise ValueError(f"no key at line {line} of text that parsed as TOML")
+        if (depth or root) and _key_name(part.group().strip()) not in _KEYS:
+            return line
+        position, line = _statement_end(text, part.end(), depth, line)
+    raise ValueError("no unknown top-level key in text that has one")
+
+
+def _key_name(part: str) -> str:
+    """A key part as TOML reads it: a quoted part with its escapes decoded"""
+    return next(iter(tomllib.loads(f"{part} = 0")))
+
+
+def _statement_end(text: str, position: int, depth: int, line: int) -> tuple[int, int]:
+    """The position past the newline that ends the statement going on at position, at depth
+    brackets open, and the line it starts"""
+    while position < len(text):
+        char = text[position]
+        if char == "\n":
+            position, line = position + 1, line + 1
+            if depth == 0:
+                return position, line
+        elif char == "#":
+            newline = text.find("\n", position)
+            position = len(text) if newline < 0 else newline
+        elif char in "\"'":
+            end = _string_end(text, position)
+            line += text.count("\n", position, end)
+            position = end
+        else:
+            depth += (char in "[{") - (char in "]}")
+            position += 1
+    return position, line
+
+
+def _string_end(text: str, position: int) -> int:
+    """The position past the string that opens at position: basic or literal, on one line or
+    many; a multi-line one may end in up to two more quotes than its delimiter"""
+    quote = text[position]
+    delimiter = quote * 3 if text.startswith(quote * 3, position) else quote
+    position += len(delimiter)
+    while position < len(text):
+        if quote == '"' and text[position] == "\\":
+            position += 2
+        elif text.startswith(delimiter, position):
+            position += len(delimiter)
+            extra = 0
+            while len(delimiter) == 3 and extra < 2 and text.startswith(quote, position):
+                position, extra = position + 1, extra + 1
+            return position
+        else:
+            position += 1
+    raise ValueError("an unclosed string in text that parsed as TOML")
 
 
 def _expanded(given: str, home: Path) -> Path:
