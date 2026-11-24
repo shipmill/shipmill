@@ -932,6 +932,112 @@ def issue_updates(repo: str, numbers: Iterable[int], graphql: GraphQL) -> dict[i
     return found
 
 
+# spec 089: a session that leaves a subject unchanged because it waits on another item names it
+# in a comment on the subject whose first line is this marker, posted as the --bot-login
+WAITED_REPO = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+"  # owner/name, safe inside a query
+WAITS_ON = re.compile(rf"<!-- shipmill:waits-on ({WAITED_REPO})#([1-9]\d*) -->")
+WAIT_COMMENTS = 50  # the newest comments of a subject read for its marker
+
+
+@dataclass(frozen=True, slots=True)
+class Waited:
+    """The item a subject's newest waits-on marker names: its repo (owner/name) and number"""
+
+    repo: str
+    number: int
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(WAITED_REPO, self.repo) is None or self.number < 1:
+            raise ValueError(f"a waited item is owner/name#N, got {self.repo!r}#{self.number!r}")
+
+    @property
+    def named(self) -> str:
+        return f"{self.repo}#{self.number}"
+
+
+def waits_query(numbers: Sequence[int]) -> str:
+    """One query for these subjects' newest comments, with their authors (spec 089)"""
+    comments = f"comments(last: {WAIT_COMMENTS}) {{ nodes {{ author {{ __typename login }} body }} }}"
+    aliases = " ".join(
+        f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {comments} }} ... on PullRequest {{ {comments} }} }}"
+        for n in numbers
+    )
+    return f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
+
+
+def by_bot(author: object, bot: str) -> bool:
+    """A comment's GraphQL author is the --bot-login: an App's login as GraphQL spells it, without
+    the [bot] its REST login carries, or the login itself"""
+    if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+        return False
+    login = author["login"]
+    return login == bot or (author.get("__typename") == "Bot" and f"{login}[bot]" == bot)
+
+
+def waits_on(repo: str, numbers: Iterable[int], bot: str, graphql: GraphQL) -> dict[int, Waited]:
+    """Spec 089 (S-089-12): each subject's newest comment by the bot whose first line is a
+    waits-on marker, and the item it names; a subject without one is left out, and a marker
+    by anyone else counts for nothing. One query per PAGE of subjects"""
+    owner, _, name = repo.partition("/")
+    wanted = sorted(set(numbers))
+    found: dict[int, Waited] = {}
+    for start in range(0, len(wanted), PAGE):
+        chunk = wanted[start : start + PAGE]
+        data = repository(graphql(waits_query(chunk), {"owner": owner, "name": name}), "the subjects' comments")
+        for n in chunk:
+            node = data.get(f"i{n}")
+            if node is None:
+                continue
+            for comment in reversed(nodes_of(node, "comments")):
+                if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+                    raise ReleaseError(f"gh api graphql printed a comment on #{n} without a body: {str(comment)[:200]}")
+                marker = WAITS_ON.fullmatch(comment["body"].partition("\n")[0].strip())
+                if marker is not None and by_bot(comment.get("author"), bot):
+                    found[n] = Waited(marker[1], int(marker[2]))
+                    break
+    return found
+
+
+def waited_query(items: Sequence[Waited]) -> str:
+    """One query for these items' updatedAt, each in its own repo"""
+    updated = "... on Issue { updatedAt } ... on PullRequest { updatedAt }"
+    aliases = " ".join(
+        f'w{i}: repository(owner: "{w.repo.partition("/")[0]}", name: "{w.repo.partition("/")[2]}") '
+        f"{{ issueOrPullRequest(number: {w.number}) {{ {updated} }} }}"
+        for i, w in enumerate(items)
+    )
+    return f"query {{ {aliases} }}"
+
+
+def waited_updates(items: Iterable[Waited], graphql: GraphQL) -> dict[Waited, dt.datetime]:
+    """The updatedAt of the items markers name, one query per PAGE of them; an item GitHub
+    answers null for (gone, or a repo the token can't read) is left out: nothing woke"""
+    wanted = sorted(set(items), key=lambda w: (w.repo, w.number))
+    found: dict[Waited, dt.datetime] = {}
+    for start in range(0, len(wanted), PAGE):
+        chunk = wanted[start : start + PAGE]
+        answer = graphql(waited_query(chunk), {})
+        data = answer.get("data") if isinstance(answer, dict) else None
+        if not isinstance(data, dict):
+            raise ReleaseError(f"gh api graphql printed no data for the items subjects wait on: {str(answer)[:300]}")
+        for i, w in enumerate(chunk):
+            repo = data.get(f"w{i}")
+            node = repo.get("issueOrPullRequest") if isinstance(repo, dict) else None
+            if node is None:
+                continue
+            if not isinstance(node, dict) or "updatedAt" not in node:
+                raise ReleaseError(f"gh api graphql printed {str(node)[:200]} for {w.named}, not its updatedAt")
+            found[w] = moment(node["updatedAt"], f"{w.named}'s updatedAt")
+    return found
+
+
+def waits(repo: str, numbers: Iterable[int], bot: str, graphql: GraphQL) -> dict[int, dt.datetime]:
+    """Spec 089: for each subject whose newest bot marker names an item, that item's updatedAt"""
+    marked = waits_on(repo, numbers, bot, graphql)
+    updated = waited_updates(marked.values(), graphql) if marked else {}
+    return {n: updated[w] for n, w in marked.items() if w in updated}
+
+
 def queued(changes: Changes, label: str) -> bool:
     """Whether an open non-draft pull request the change check read carries the land window's
     queued_label (spec 056): its labels are in the same query, so this reads nothing more"""
@@ -1025,20 +1131,22 @@ def last_landed(default: Mapping[str, Any]) -> Landed | None:
 
 
 class Source(Protocol):
-    """Where a walk reads the state: the change check, one tier, the sweep, and the updatedAt
-    of issue subjects past retry_hours (spec 061)"""
+    """Where a walk reads the state: the change check, one tier, the sweep, the updatedAt of
+    issue subjects past retry_hours (spec 061), and, for subjects past it, the updatedAt of the
+    item each one's newest waits-on marker by the bot names (waited, spec 089)"""
 
     def changes(self, since: dt.datetime | None) -> Changes: ...
     def tier(self, number: int, changes: Changes) -> list[Finding]: ...
     def sweep(self, changes: Changes) -> list[Finding]: ...
     def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]: ...
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class Rows:
     """A source of rows read whole, as a test hands them: every tick is a change, a tier is its
     rows (with NEEDS_DECISION in the waiting tier), and the sweep the timed sections' rows; it
-    knows no subject's updatedAt, so none reads idle"""
+    knows no subject's updatedAt, so none reads idle, and no marker"""
 
     rows: tuple[Finding, ...]
 
@@ -1046,6 +1154,9 @@ class Rows:
         return Changes("rows", forced=True)
 
     def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+        return {}
+
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
         return {}
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
@@ -1089,6 +1200,12 @@ def idle(hand: Hand, number: int, pulls: Mapping[int, Pull], issues: Mapping[int
     return updated is not None and untouched(hand, updated)
 
 
+def woken(hand: Hand, waited: dt.datetime | None) -> bool:
+    """Spec 089 (S-089-12): the item the subject's newest waits-on marker by the bot names was
+    updated after the hand, so the subject is no longer idle; False with no such marker"""
+    return waited is not None and waited > hand.at
+
+
 def untouched(hand: Hand, updated: dt.datetime) -> bool:
     """A subject's updatedAt earlier than its hand's at less CURSOR_OVERLAP: nobody wrote on it
     since the hand"""
@@ -1116,9 +1233,10 @@ def walk(
     retry, as a handed.json from before spec 061 holds it; else it is the item cut to its
     subjects not taken, a subject taken when handed within retry or idle past it, and no item
     when every one is; a hand of the dead session (dead, a capped one whose hands handed keeps)
-    is never idle (spec 061), nor is one whose session ended anything but ok (S-089-3). The
-    updatedAt of a tier's issue subjects past retry is read once for the tier, in one query
-    per PAGE, and not at all when it has none"""
+    is never idle (spec 061), nor is one whose session ended anything but ok (S-089-3), nor one
+    whose newest waits-on marker by the bot names an item updated since the hand (S-089-12). The
+    updatedAt of a tier's issue subjects past retry, and the markers of its subjects past retry,
+    are each read once for the tier, in one query per PAGE, and not at all when it has none"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand, str | None] | None = None
@@ -1138,6 +1256,7 @@ def walk(
         mine = [f for f in found if tier_of(f) == number or (f in own and tier_of(f) < number)]
         items = order(f for f in mine if (f.agent and f.state not in LANDING) or (lands and f.state in LANDING))
         issues = source.issues(past) if (past := past_issues(items, changes, handed, now, retry)) else {}
+        woke = source.waited(late) if (late := past_subjects(items, handed, now, retry)) else {}
         for item in items:
             hand = handed.taken(item, now, retry)
             numbers = subjects(item)
@@ -1157,7 +1276,12 @@ def walk(
                     left.append(n)
                 elif now - given.at < retry:
                     first = first or (key, given)
-                elif given.ended in (None, End.OK) and given.session != dead and idle(given, n, changes.pulls, issues):
+                elif (
+                    given.ended in (None, End.OK)
+                    and given.session != dead
+                    and idle(given, n, changes.pulls, issues)
+                    and not woken(given, woke.get(n))
+                ):
                     marked.append(key)
                     first = first or (key, replace(given, idle=True))
                 else:
@@ -1200,6 +1324,21 @@ def unmet(handed: Handed, met: set[str], changes: Changes) -> list[str]:
         if changes.forced or number in changes.updated or moved:
             found.append(key)
     return found
+
+
+def past_subjects(items: Sequence[Finding], handed: Handed, now: dt.datetime, retry: dt.timedelta) -> list[int]:
+    """The subjects, issues and pull requests, of a tier's items whose hands are past retry and
+    could read idle (their session ended ok, or has no end), not taken whole: the ones whose
+    waits-on marker the walk reads (spec 089)"""
+    found = set()
+    for item in items:
+        if handed.taken(item, now, retry) is not None:
+            continue
+        for n in subjects(item) or ():
+            hand = handed.hands.get(subject_key(item, n))
+            if hand is not None and now - hand.at >= retry and hand.ended in (None, End.OK):
+                found.add(n)
+    return sorted(found)
 
 
 def past_issues(

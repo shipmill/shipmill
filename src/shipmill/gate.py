@@ -116,6 +116,7 @@ from shipmill.walk import (
     malformed,
     queued,
     tier_of,
+    waits,
     walk,
     watched,
     window_change,
@@ -1060,6 +1061,12 @@ class WatchState:
     def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
         """The issue subjects' updatedAt (spec 061): one GraphQL query per 100 of them"""
         return issue_updates(self._repo, numbers, self._graphql)
+
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+        """Spec 089 (S-089-12): for each subject whose newest waits-on marker is by the bot, the
+        updatedAt of the item it names; none without an App's bot, since only its marker counts"""
+        bot = self._read.bot_login
+        return {} if bot is None else waits(self._repo, numbers, bot, self._graphql)
 
 
 def as_source(found: Source | Sequence[Finding]) -> Source:

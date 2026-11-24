@@ -89,6 +89,7 @@ class Source:
     window: bool = False  # spec 056: the land window opened, or its spacing passed, with a queue
     pulls: dict[int, Pull] = field(default_factory=dict)  # spec 061: the open pull requests the change check read
     issued: dict[int, dt.datetime] = field(default_factory=dict)  # spec 061: each issue's updatedAt on GitHub
+    waits: dict[int, dt.datetime] = field(default_factory=dict)  # spec 089: the waited item's updatedAt per subject
 
     def changes(self, since: dt.datetime | None) -> Changes:
         self.reads.append("changes")
@@ -97,6 +98,10 @@ class Source:
     def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
         self.reads.append(f"issues {' '.join(f'#{n}' for n in numbers)}")
         return {n: self.issued[n] for n in numbers if n in self.issued}
+
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+        self.reads.append(f"waited {' '.join(f'#{n}' for n in numbers)}")
+        return {n: self.waits[n] for n in numbers if n in self.waits}
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
         self.reads.append(f"tier {number}")
