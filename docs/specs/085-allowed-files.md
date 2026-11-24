@@ -156,4 +156,8 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 
 ## Issues
 
+- shipmill/shipmill#1523: S-085-1, S-085-2, S-085-3, S-085-4, S-085-5, S-085-6, S-085-7, S-085-8
+- shipmill/shipmill#1525: S-085-9, S-085-10
+- shipmill/shipmill#1527: S-085-11, S-085-12
+
 ## Verification
