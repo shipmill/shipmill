@@ -42,6 +42,15 @@ from shipmill.catch_up import CatchUp
 from shipmill.catch_up import catch_up as fast_forward  # gate's own catch_up names the [agents] key's reader
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
+from shipmill.claude_pause import (
+    CAUSES,
+    Pause,
+    credential_id,
+    load_pause,
+    newest_reset,
+    save_pause,
+)
+from shipmill.claude_pause import LOGIN as LOGIN_CREDENTIAL
 from shipmill.claude_token import Credential, Kind, Token, rejected_fix, session_env
 from shipmill.config import CONFIG_PATH, Table, config_path, loads, read
 from shipmill.environments import OperateConfig
@@ -224,7 +233,8 @@ class Launch:
     for a headless launch (D-17) and None for an interactive one; deaths, the dead sessions in
     a row right before it (#500), None when the one before it ran; item, the item's brief()
     line (`NEW #774`), None in a gate.json written before spec 048 (S-048-14); stopped, when a
-    STALLED tick first sent its process group SIGTERM (spec 048), None while the gate never did"""
+    STALLED tick first sent its process group SIGTERM (spec 048), None while the gate never did;
+    credential, the credential it ran with as its pause names it (spec 089), never the token"""
 
     fingerprint: str
     session: str
@@ -233,8 +243,11 @@ class Launch:
     deaths: Deaths | None = None
     item: str | None = None
     stopped: dt.datetime | None = None
+    credential: str | None = None  # spec 089: credential_id of what it ran with; None before spec 089
 
     def __post_init__(self) -> None:
+        if self.credential is not None and (not isinstance(self.credential, str) or not self.credential):
+            raise ValueError(f"credential must be a non-empty string, got {self.credential!r}")
         if self.item is not None and (not isinstance(self.item, str) or not self.item.strip()):
             raise ValueError(f"item must be a non-empty string, got {self.item!r}")
         if self.stopped is not None and self.process is None:
@@ -380,6 +393,7 @@ class Action(enum.Enum):
     CLAUDE_AUTH = "CLAUDE_AUTH"  # Claude Code can't authenticate on this host: no session starts (#500)
     GITHUB_AUTH = "GITHUB_AUTH"  # the identity sessions write as can't reach the repo: no session starts (spec 048)
     SESSION_DEAD = "SESSION_DEAD"  # the last session ended dead, and another starts (#500)
+    PAUSED = "PAUSED"  # a usage limit or a refused credential pauses the sessions' credential (spec 089)
     LAUNCH = "LAUNCH"
 
 
@@ -1081,7 +1095,8 @@ def load_launch(path: Path) -> Launch | None:
         at = dt.datetime.fromisoformat(data["at"])
         item = data.get("item")  # S-048-14: absent in one written before spec 048
         stopped = _moment(data["stopped"], "stopped") if "stopped" in data else None
-        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item, stopped)
+        credential = data.get("credential")  # spec 089: absent in one written before it
+        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item, stopped, credential)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise malformed(path, exc) from None
 
@@ -1100,6 +1115,8 @@ def save_launch(path: Path, launch: Launch) -> None:
         record["dead"] = {"count": launch.deaths.count, "since": launch.deaths.since.isoformat()}
     if launch.stopped is not None:
         record["stopped"] = launch.stopped.isoformat()
+    if launch.credential is not None:
+        record["credential"] = launch.credential
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1387,13 +1404,7 @@ def session_end(state: Path, last: Launch | None, session: str) -> End:
     if not is_stream_json(log):
         return End.AUTH if AUTH_FAILURE.search(log_tail(log)) is not None else End.ERROR
     lines = tail_lines(log)
-    try:
-        events = [checked_event(found) for line in lines if (found := stream_event(line)) is not None]
-    except ValueError as exc:
-        raise ReleaseError(
-            f"session {session}'s log {log} is malformed: {exc}; shipmill can't tell how the session ended",
-            f"tail -n 20 {log}",
-        ) from None
+    events = log_events(log, session, lines)
     if any(limited(e) for e in events):
         return End.LIMIT
     if any(e.get("api_error_status") == UNAUTHORIZED for e in events) or stream_auth_failed(lines):
@@ -1402,6 +1413,31 @@ def session_end(state: Path, last: Launch | None, session: str) -> End:
         return End.ERROR
     results = [e for e in events if e["type"] == "result"]
     return End.OK if results and results[-1]["is_error"] is False else End.ERROR
+
+
+def log_events(log: Path, session: str, lines: Sequence[str]) -> list[Mapping[str, object]]:
+    """The stream-json events of a log's tail lines, each checked (checked_event); a malformed
+    one fails the tick, its fix reading the log"""
+    try:
+        return [checked_event(found) for line in lines if (found := stream_event(line)) is not None]
+    except ValueError as exc:
+        raise ReleaseError(
+            f"session {session}'s log {log} is malformed: {exc}; shipmill can't tell how the session ended",
+            f"tail -n 20 {log}",
+        ) from None
+
+
+def session_resets(state: Path, session: str) -> dt.datetime | None:
+    """Spec 089 (S-089-5): the newest resetsAt a headless session's log carries, None when its
+    log carries none or isn't stream-json"""
+    log = session_log(state, session)
+    if not log.is_file() or not is_stream_json(log):
+        return None
+    events = log_events(log, session, tail_lines(log))
+    try:
+        return newest_reset(events)
+    except ValueError as exc:
+        raise ReleaseError(f"session {session}'s log {log} is malformed: {exc}", f"tail -n 20 {log}") from None
 
 
 def hand_end(state: Path, last: Launch | None, session: str) -> End | None:
@@ -2604,6 +2640,81 @@ def reached(decision: Decision, github: GitHubPreflight | None, identity: Identi
     )
 
 
+def noted_pause(folder: Path, state: Path, last: Launch | None, dead: Dead | None, dry_run: bool) -> Pause | None:
+    """Spec 089 (S-089-5): the last headless session ended limit or auth, so its credential, the
+    one gate.json recorded it ran with, pauses: the cause, the session, when it ended, and for a
+    limit the newest resetsAt its log carries. Written once per session: while gate.json keeps
+    naming it, a later tick finds the record, lifted or not, and writes nothing. A launch from
+    before spec 089 recorded no credential, so its end pauses none. A dry run writes nothing
+    and returns the pause it would write. None when nothing is written"""
+    if dead is None or dead.end not in CAUSES or last is None or last.credential is None:
+        return None
+    found = load_pause(folder, last.credential)
+    if found is not None and found.session == last.session:
+        return None
+    resets = session_resets(state, last.session) if dead.end is End.LIMIT else None
+    ended = log_written(session_log(state, last.session), last)
+    pause = Pause(dead.end, last.session, ended, resets)
+    if not dry_run:
+        save_pause(folder, last.credential, pause)
+    return pause
+
+
+def paused(
+    folder: Path,
+    credential: str,
+    noted: Pause | None,
+    auth: Callable[[Token | None], ClaudeAuth] | None,
+    token: Token | None,
+    agents: AgentsConfig,
+    notifier: Notifier,
+    repo: str,
+    now: dt.datetime,
+    dry_run: bool,
+) -> Decision | None:
+    """Spec 089 (S-089-6, S-089-9, S-089-10): a tick of any gate on the host reads its
+    credential's pause before it launches; while it holds, the tick starts no session and reads
+    PAUSED, naming the cause and when it ends. A limit pause lifts at its resetsAt, or
+    retry_hours after it began without one; an auth pause on a token file holds until the
+    file's content changes, which names another credential with no pause, and on the login
+    until `claude auth status` (auth) reports one. A lifted pause is kept, marked lifted. An
+    auth pause sends one notification, recorded on the pause, so no later tick of any gate
+    sends another; a failed send is tried again next tick. noted is the pause this tick wrote
+    for the credential, which a dry run didn't write. None when no pause holds"""
+    found = noted if noted is not None else load_pause(folder, credential)
+    if found is None or not found.holds:
+        return None
+    retry = dt.timedelta(hours=agents.retry_hours)
+    lifts = found.lifts_at(retry)
+    if (lifts is not None and now >= lifts) or (
+        found.cause is End.AUTH and credential == LOGIN_CREDENTIAL and auth is not None and auth(None).ok
+    ):
+        if not dry_run:
+            save_pause(folder, credential, found.lifting(now))
+        return None
+    fix = None
+    if found.cause is End.AUTH:
+        fix = AUTH_FIX if token is None else rejected_fix(token.path)
+    until = found.until(credential, retry)
+    cause = "a usage limit" if found.cause is End.LIMIT else "a refused credential"
+    reason = f"{found.cause.value}: {cause} stopped session {found.session}; no session starts until {until}"
+    notice = None
+    if found.cause is End.AUTH and agents.notify and found.notified is None:
+        body = f"Claude Code's credential was refused: {fix}; the gate starts no session until then"
+        if dry_run:
+            notice = "would notify"
+        else:
+            try:
+                notifier.send(f"shipmill {repo}", body)
+            except NotifyFailed as exc:
+                notice = f"notify failed: {exc}"
+            else:
+                notice = "notified"
+                save_pause(folder, credential, found.noticed(now))
+    reason = reason if fix is None else f"{reason}; fix: {fix}"
+    return Decision(Action.PAUSED, reason, (), auth_notice=notice)
+
+
 def relaunching(decision: Decision) -> Decision:
     """#500: a LAUNCH after a session that ended dead reads SESSION_DEAD, naming the dead one,
     so sessions that die one after another read as one failure, not LAUNCH after LAUNCH"""
@@ -2710,6 +2821,7 @@ def gate(
     upgrades: Upgrader | None = None,
     verify: Planner | None = None,
     permissions: Seams | None = None,
+    pauses: Path | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -2893,6 +3005,7 @@ def gate(
             upgrades=upgrades,
             verify=verify,
             permissions=permissions,
+            pauses=pauses,
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -2956,6 +3069,7 @@ def decided(
     upgrades: Upgrader | None = None,
     verify: Planner | None = None,
     permissions: Seams | None = None,
+    pauses: Path | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -3012,6 +3126,15 @@ def decided(
             f"set [agents] app_id in {CONFIG_PATH}, or drop --app-key",
         )
     headless = agents.mode is Mode.HEADLESS
+    # spec 089: a limit or auth end pauses its credential, and a paused credential starts nothing,
+    # in either mode, before the App's check or any state read: it counts no attempt
+    current = None if pauses is None else credential_id(token)
+    if pauses is not None and current is not None:
+        noted = noted_pause(pauses, state, last, dead, dry_run)
+        mine = noted if last is not None and last.credential == current else None
+        stopped_by = paused(pauses, current, mine, auth, token, agents, notifier, repo, now, dry_run)
+        if stopped_by is not None:
+            return replace(stopped_by, mode=agents.mode, detached=detached, dead=dead, credential=kind), None, waiting
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and
     # its bot's needs-decision questions read as questions (D-21, #206)
     try:
@@ -3036,7 +3159,8 @@ def decided(
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
     retry = dt.timedelta(hours=agents.retry_hours)
     levels = Levels(agents.autonomy, on_hold)
-    capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the item again
+    # retry_hours holds the item again; a limit or auth end is no attempt, its pause the wait (S-089-6)
+    capped = dead is not None and dead.end not in CAUSES and dead.deaths.count >= DEAD_STREAK
     source = as_source(findings(read))
     proposal = None if upgrades is None else partial(sweep_upgrades, upgrades, identity, repo, dry_run)
     # spec 060: the item goes to the users the maintainer role resolves to on this tick
@@ -3122,15 +3246,18 @@ def decided(
     pulls = ticked.changes.pulls
     # the run of dead sessions is this item's: another item starts its own (S-046-15)
     deaths = None if dead is None or last is None or item_key(item) != last.fingerprint else dead.deaths
+    if dead is not None and dead.end in CAUSES and deaths is not None:  # S-089-6: no attempt counted
+        deaths = None if last is None else last.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
-        save_launch(record, Launch(item_key(item), launched, now, None, deaths, item.brief()))
+        save_launch(record, Launch(item_key(item), launched, now, None, deaths, item.brief(), credential=current))
         settled(ticked.handed.handing(item, launched, now, pulls))
         return decision, launched, waiting
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token, maintainer=host)
-    save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths, item.brief()))
+    process = Process(pid, started(pid))
+    save_launch(record, Launch(item_key(item), str(session_id), now, process, deaths, item.brief(), credential=current))
     settled(ticked.handed.handing(item, str(session_id), now, pulls))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting
 
