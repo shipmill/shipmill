@@ -185,4 +185,10 @@ order, and the run exits 2. `skills/github-ship-watch/SKILL.md`'s Fleet section 
 
 ## Issues
 
+- shipmill/shipmill#1526: S-086-1, S-086-2, S-086-3
+- shipmill/shipmill#1529: S-086-4, S-086-5, S-086-6, S-086-7
+- shipmill/shipmill#1530: S-086-8
+- shipmill/shipmill#1532: S-086-9, S-086-10, S-086-11, S-086-12
+- shipmill/shipmill#1533: S-086-13, S-086-14
+
 ## Verification
