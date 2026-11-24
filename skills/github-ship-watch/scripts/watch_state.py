@@ -200,7 +200,8 @@ Intake (github-issue-triage's triage_state.py):
                   (WITH_PERSON, spec 017) names them, then its roles' teams (spec 036),
                   which may stand alone: WITH_PERSON #N (@login ... @org/team ...). An
                   upstream report, which waits outside (spec 038), is listed here only, as
-                  UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row. With
+                  UPSTREAM #N, or UPSTREAM_UNOWNED #N when nobody linked or took it
+                  (#1487): never in ISSUES, NEEDS_DECISION, or an agent row. With
                   [agents], an open direction issue (spec 034: labelled shipmill-direction,
                   <!-- shipmill-direction --> as its body's first line, opened by an OWNER,
                   MEMBER, or COLLABORATOR or the --bot-login, which triage_state.py marks

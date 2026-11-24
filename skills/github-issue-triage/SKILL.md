@@ -64,7 +64,7 @@ git worktree list
 gh label list -R <owner/repo>
 ```
 
-With `[agents] app_id` set, the first line is `triage_state.py <owner/repo> --closed 40 --bot-login '<slug>[bot]'` ([Judgment versus scripts](#judgment-versus-scripts)). In a component (its config sets `[product] home`), add `--home <owner/home>`, as the gate's watch does.
+With `[agents] app_id` set, the first line is `triage_state.py <owner/repo> --closed 40 --bot-login '<slug>[bot]'` ([Judgment versus scripts](#judgment-versus-scripts)). In a component (its config sets `[product] home`), add `--home <owner/home>`, and in the home repo (its config sets `[product] repos`) `--home <owner/repo>` naming the repo itself, as the gate's watch does.
 
 Also check:
 - The release phase: `git for-each-ref --sort=-creatordate --count=3 refs/tags` and the version in the manifest. It sets the bar in the rubric
@@ -174,7 +174,7 @@ Work that spans issues, repos, and people is a chain: each item waits on the one
 
 ## Reports from other repos
 
-A fault an agent traced to a module another repo owns, or a dependency on another repo's work, is a report in the waiting repo: an issue labelled `upstream`, which the agent files in its own repo and holds its issue on with `chains.py link --blocked-by` ([comments.md](references/comments.md), Upstream report; github-issue-resolve, Phase 2). `triage_state.py` reads it UPSTREAM, never an action (spec 038). Without a coordinator it waits for the maintainer, who reports it where it belongs and closes it by hand.
+A fault an agent traced to a module another repo owns, or a dependency on another repo's work, is a report in the waiting repo: an issue labelled `upstream`, which the agent files in its own repo and holds its issue on with `chains.py link --blocked-by` ([comments.md](references/comments.md), Upstream report; github-issue-resolve, Phase 2). `triage_state.py` reads it UPSTREAM, never an action (spec 038). Without a coordinator it waits for the maintainer, who reports it where it belongs and closes it by hand; while nobody linked it to another repo's issue or took it, it reads UPSTREAM_UNOWNED and is on the maintainer's queue (#1487).
 
 The coordinator is the gate session of the product's home repo, whose config has `[product] repos` and `[agents] app_id` (D-47). Its second token, over the product's repos, has issues write and contents and pull requests read only; every write with it runs as `shipmill gh --product <owner/repo> <the same arguments>`, run as rule 12 runs `shipmill gh`, and a `shipmill gh` that exits 2 is a stop there too. For each row of `upstream_state.py`:
 
