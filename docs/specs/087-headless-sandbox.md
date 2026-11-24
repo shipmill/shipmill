@@ -308,4 +308,11 @@ confined.
 
 ## Issues
 
+- shipmill/shipmill#1524: S-087-1
+- shipmill/shipmill#1528: S-087-9, S-087-11
+- shipmill/shipmill#1531: S-087-2, S-087-3, S-087-4, S-087-5, S-087-6, S-087-7, S-087-8, S-087-12, S-087-19
+- shipmill/shipmill#1534: S-087-10, S-087-13, S-087-17, S-087-18
+- shipmill/shipmill#1535: S-087-14, S-087-15, S-087-16
+- shipmill/shipmill#1536: S-087-20, S-087-21
+
 ## Verification
