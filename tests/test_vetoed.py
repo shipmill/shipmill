@@ -143,6 +143,93 @@ def test_s030_14_vetoed_is_read_right_after_decided_and_before_any_other_state(t
     assert ts.gated(outsiders, BOT, True)[0] == "UNTRUSTED"
 
 
+# -- #1482: a maintainer's veto relayed by a session through the App (D-103)
+
+MAINTAINERS = frozenset({"amy"})  # as the --role maintainer=amy flag gives them
+
+
+def relay(answer: str, named: str = "amy", by: str = BOT) -> dict[str, Any]:
+    """A session's relay of a person's answer (D-93), as `shipmill gh` posts it"""
+    body = f"Decision by `@{named}`, relayed by Claude Code\n\n{answer}\n\n<!-- shipmill:agent -->\n"
+    return comment(body, by=by, association="NONE")
+
+
+def relayed_state(ts: ModuleType, item: dict[str, Any], maintainers: frozenset[str] = MAINTAINERS) -> tuple[str, str]:
+    """As triage_state.py's main reads an open issue with --role maintainer=amy"""
+    found: tuple[str, str] = ts.gated(item, BOT, False, maintainers=maintainers) or ts.classify_open(
+        item, "Triage:", "postponed", {}, None, REPO, BOT
+    )
+    return found
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "own: veto keep it open, it is not a duplicate",
+        "own: veto",
+        "OWN: Veto.",
+        "Veto: keep it open",
+        "Answered in the session: own: veto keep it open",
+        "own: veto keep it open\nBasis: item\nNote: said in the session",
+    ],
+)
+def test_1482_a_relayed_veto_naming_the_maintainer_reads_vetoed(ts: ModuleType, answer: str) -> None:
+    assert relayed_state(ts, issue(decided(), relay(answer))) == ("VETOED", "vetoed by @amy")
+    # the maintainer named in any case
+    assert relayed_state(ts, issue(decided(), relay(answer, named="Amy"))) == ("VETOED", "vetoed by @Amy")
+
+
+def test_1482_a_relayed_veto_reads_vetoed_on_a_closed_issue_and_a_pull_request(ts: ModuleType) -> None:
+    data = {"vetoable": {"nodes": [closed(9, decided(), relay("own: veto"))]}, "closed": {"nodes": []}}
+    rows = ts.closed_rows(data, 20, "release-blocker", "incident", BOT, maintainers=MAINTAINERS)
+    assert rows == [
+        {"number": 9, "state": "VETOED", "title": "issue 9", "note": "closed, vetoed by @amy", "closed": True}
+    ]
+    relayed = (BOT, "NONE", relay("own: veto")["body"])
+    assert ts.vetoed([*DECIDED_PR, relayed], BOT, MAINTAINERS) == "amy"
+    assert ts.unhandled_veto([*DECIDED_PR, relayed], BOT, MAINTAINERS) == 1
+
+
+def test_1482_a_newer_veto_handled_marker_answers_a_relayed_veto(ts: ModuleType) -> None:
+    handled = comment(HANDLED, by=BOT, association="NONE")
+    assert relayed_state(ts, issue(decided(), relay("own: veto"), handled))[0] == "NEEDS_PR"
+    assert relayed_state(ts, issue(decided(), relay("own: veto"), handled, relay("own: veto again")))[0] == "VETOED"
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        pytest.param((relay("own: veto"), decided()), id="a relay before the decided marker"),
+        pytest.param((decided(), relay("own: veto", named="eve")), id="a relay naming no maintainer"),
+        pytest.param((decided(), relay("own: veto", by="other-app[bot]")), id="a relay by another bot"),
+        pytest.param((decided(), relay("own: veto", by="eve")), id="a relay-shaped comment by a user"),
+        pytest.param((decided(), relay("own: veto\nA paragraph out of the grammar")), id="out of the grammar"),
+        pytest.param((decided(), relay("own: keep it open")), id="own words that are no veto"),
+        pytest.param((decided(), relay("1. Close it as a duplicate")), id="an option"),
+        pytest.param((decided(), relay("own: I would veto this")), id="veto mid-line"),
+        pytest.param((decided(), relay("")), id="no answer line"),
+        pytest.param(
+            (decided(), comment("Relaying it:\nDecision by `@amy`, relayed by Claude Code\nown: veto", by=BOT)),
+            id="the header past the first line",
+        ),
+        pytest.param((decided(), comment("Veto\n\n<!-- shipmill:agent -->", by=BOT)), id="the bot's own veto"),
+    ],
+)
+def test_1482_a_relay_out_of_d_103_is_no_veto(ts: ModuleType, comments: tuple[dict[str, Any], ...]) -> None:
+    assert relayed_state(ts, issue(*comments))[0] == "NEEDS_PR"
+
+
+def test_1482_without_a_maintainer_given_no_relay_is_a_veto(ts: ModuleType) -> None:
+    assert relayed_state(ts, issue(decided(), relay("own: veto")), frozenset())[0] == "NEEDS_PR"
+    assert state(ts, issue(decided(), relay("own: veto")))[0] == "NEEDS_PR"  # gated's default
+
+
+def test_1482_the_maintainers_come_from_the_role_flags(ts: ModuleType) -> None:
+    roles = ts.parse_roles(["maintainer=Amy,@o/core", "ops=bob"])
+    assert ts.maintainers_of(roles) == frozenset({"amy"})
+    assert ts.maintainers_of(None) == frozenset()
+
+
 # -- S-030-15: a closed issue
 
 

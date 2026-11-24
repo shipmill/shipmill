@@ -4025,6 +4025,70 @@ def test_1330_an_unhandled_veto_in_a_cut_off_thread_reads_as_before(tmp_path: Pa
     assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + VETOED_LINE + "\n"), proc.stderr
 
 
+# #1482: a maintainer's veto relayed by a session through the App (D-103)
+RELAY_HEADER = "Decision by `@romamo`, relayed by Claude Code"
+RELAYED_VETO = relay(RELAY_HEADER, "own: veto keep the old workflow")
+
+
+@pytest.mark.parametrize("where", [7, 12], ids=["on the PR", "on the issue it closes"])
+@pytest.mark.parametrize("answer", ["own: veto keep the old workflow", "own: veto", "Veto: keep the old workflow"])
+def test_1482_a_relayed_veto_naming_the_maintainer_blocks_the_merge(tmp_path: Path, where: int, answer: str) -> None:
+    comments = (decided_by_app(), relay(RELAY_HEADER, answer))
+    threads = {7: thread(*comments) if where == 7 else thread()}
+    issues = {12: thread(*comments) if where == 12 else thread()}
+    data = pr(body="Fixes #12", login="amy")
+    proc = run_gate(
+        tmp_path, None, {7: data}, "--bot-login", BOT, threads=threads, issues=issues, permissions={"romamo": "admin"}
+    )
+    assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + VETOED_LINE + "\n"), proc.stderr
+
+
+def test_1482_a_relayed_veto_in_a_cut_off_thread_blocks_the_merge(tmp_path: Path) -> None:
+    cut = thread(comment("an earlier note", at(11)), RELAYED_VETO, whole=False)
+    proc = veto_gate(tmp_path, issues={12: cut}, permissions={"romamo": "admin"})
+    line = CUT_OFF_LINE.format(n=12)
+    assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + line + "\n"), proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("comments", "permissions"),
+    [
+        pytest.param((decided_by_app(), RELAYED_VETO, HANDLED), {"romamo": "admin"}, id="handled"),
+        pytest.param((decided_by_app(), RELAYED_VETO), {"romamo": "write"}, id="naming no maintainer"),
+        pytest.param((decided_by_app(), RELAYED_VETO), {}, id="a permission it can't read"),
+        pytest.param((RELAYED_VETO, decided_by_app(at(13))), {"romamo": "admin"}, id="before the decided marker"),
+        pytest.param(
+            (decided_by_app(), relay(RELAY_HEADER, "own: veto\nA paragraph out of the grammar")),
+            {"romamo": "admin"},
+            id="out of the grammar",
+        ),
+        pytest.param((decided_by_app(), relay(RELAY_HEADER, "1. Land it")), {"romamo": "admin"}, id="an option"),
+        pytest.param(
+            (decided_by_app(), {**RELAYED_VETO, "author": {"login": "other-app", "__typename": "Bot"}}),
+            {"romamo": "admin"},
+            id="another bot",
+        ),
+    ],
+)
+def test_1482_a_relay_out_of_d_103_keeps_the_verdict(
+    tmp_path: Path, comments: tuple[dict[str, Any], ...], permissions: dict[str, str]
+) -> None:
+    proc = veto_gate(tmp_path, issues={12: thread(*comments)}, permissions=permissions)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_1482_a_listed_maintainer_needs_no_permission_read(tmp_path: Path) -> None:
+    """with [agents.roles] maintainer listing the login, the relay counts without a permission read"""
+    work = roles_checkout(tmp_path, '["romamo"]')
+    data = pr(body="Fixes #12", login="amy")
+    threads = {7: thread()}
+    issues = {12: thread(decided_by_app(), RELAYED_VETO)}
+    proc = run_gate(tmp_path, work, {7: data}, "--bot-login", BOT, threads=threads, issues=issues)
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    assert VETOED_LINE in proc.stdout.splitlines()
+    assert permission_reads(tmp_path) == []
+
+
 def test_1309_a_vetoed_pr_reads_blocked_over_a_decision_or_red_ci(tmp_path: Path, directed: Path) -> None:
     """a vetoed PR waits on the veto's take-up first, even when a decision or red CI holds it too"""
     data = pr(files=("src/land.py",))

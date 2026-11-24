@@ -175,6 +175,11 @@ For each open issue:
                    MEMBER, or COLLABORATOR other than the --bot-login whose first word is
                    "veto" in any case; an outsider's, a deleted account's, one carrying
                    the agent marker, or a "veto" further into a comment never counts.
+                   A relay counts as the veto of the maintainer it names (D-103, #1482):
+                   a comment by the --bot-login whose first line is `Decision by @<login>`
+                   naming a user the --role maintainer flag gives, in retro.py's relay
+                   grammar (D-93), whose answer line is `own: veto [<text>]` or starts with
+                   the word veto; its note names that login. Without --role, no relay counts.
                    Read right after DECIDED, before any other state; an
                    item labelled decided without such a veto reads its usual state
   UNTRUSTED       with --trusted-only, an issue whose author is neither an OWNER,
@@ -372,7 +377,7 @@ import re
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
@@ -1414,17 +1419,20 @@ def until_time(text: str, number: int) -> dt.datetime:
     fail(f"pull request #{number}'s decided comment has until={text}, not a UTC time such as 2026-10-20T14:00:00Z")
 
 
-def window_hold(pull: dict[str, Any], bot_login: str | None, now: dt.datetime) -> str | None:
+def window_hold(
+    pull: dict[str, Any], bot_login: str | None, now: dt.datetime, maintainers: Container[str] = frozenset()
+) -> str | None:
     """What a merged spec pull request approved at notify (an accepted-spec decided comment,
     spec 067) holds its build issues on, or None once nothing does. An unanswered trusted veto
-    holds them whenever it came: a veto never releases them, its take-up closes them. Else its
-    veto window holds them, veto_hours from its merge: the newest such comment's until= less
-    its post time is veto_hours, run from the merge, and never ending before until= itself"""
+    (a maintainer's relayed one too, D-103) holds them whenever it came: a veto never releases
+    them, its take-up closes them. Else its veto window holds them, veto_hours from its merge:
+    the newest such comment's until= less its post time is veto_hours, run from the merge, and
+    never ending before until= itself"""
     marks = accepted_spec_marks(pull, bot_login)
     if not marks:
         return None  # approved at ask or by a person's merge: nothing to wait for
     number = pull["number"]
-    who = vetoed(comment_tuples(pull), bot_login)
+    who = vetoed(comment_tuples(pull), bot_login, maintainers)
     if who is not None:
         return f"#{number} vetoed by @{who}"
     comment, text = marks[-1]
@@ -1444,10 +1452,12 @@ def veto_windows(
     bot_login: str | None,
     now: dt.datetime | None = None,
     run: Runner = gh_graphql,
+    maintainers: Container[str] = frozenset(),
 ) -> dict[int, str]:
     """Spec 067 (S-067-9): each open build issue held by its spec's approval at notify, as its
     BLOCKED note. The decided pull requests are read once, and only when an open issue is a
-    build issue; ``now`` (default: the clock) is when the windows are read"""
+    build issue; ``now`` (default: the clock) is when the windows are read; ``maintainers``,
+    whom a relayed veto may name (D-103)"""
     builds = {issue["number"]: build_spec(issue) for issue in issues}
     if not any(builds.values()):
         return {}
@@ -1455,7 +1465,7 @@ def veto_windows(
     holds: dict[str, list[str]] = {}
     pulls = fetch_decided_prs(repo, bot_login, moment, run)
     for pull in sorted(pulls, key=lambda p: (p["mergedAt"], p["number"])):
-        hold = window_hold(pull, bot_login, moment)
+        hold = window_hold(pull, bot_login, moment, maintainers)
         if hold is None:
             continue
         for path in dict.fromkeys(str(f["path"]) for f in pull["files"]["nodes"]):
@@ -2641,18 +2651,57 @@ def vetoes(comment: tuple[str, str, str], bot_login: str | None) -> bool:
     return by_person(author, association, body, bot_login) and VETO.match(first_line(body)) is not None
 
 
-def vetoed(comments: list[tuple[str, str, str]], bot_login: str | None) -> str | None:
+def relayed_veto(comment: tuple[str, str, str], bot_login: str | None, maintainers: Container[str]) -> str | None:
+    """D-103 (#1482): the maintainer a relayed veto names, or None. A relayed veto is a comment by
+    the --bot-login whose first line is the relay `Decision by @<login>` (D-61) naming a login in
+    maintainers (lowercased), read by retro.py's parse_relay (D-93) as counted, whose answer line is
+    `own: veto` or `own: veto <text>`, or starts with the word veto; a relay out of the grammar,
+    naming anyone else, or without --bot-login is none"""
+    author, _, body = comment
+    if bot_login is None or not same_login(author, bot_login):
+        return None
+    found = DECISION_BY.match(first_line(body))
+    if found is None:
+        return None
+    relay = retro_module().parse_relay(body)
+    if relay.refused is not None or VETO.match(relay.answer) is None:
+        return None
+    named = str(found[1] or found[2])
+    # asked last: pr_gate.py's maintainers may read a permission from GitHub (spec 055)
+    return named if named.lower() in maintainers else None
+
+
+def maintainers_of(roles: Roles | None) -> frozenset[str]:
+    """The maintainer's users the --role flags give, lowercased, as relayed_veto reads them; none
+    without the flags, so no relay is a veto then"""
+    return frozenset() if roles is None else frozenset(u.lower() for u in roles[MAINTAINER][0])
+
+
+def vetoed(
+    comments: list[tuple[str, str, str]], bot_login: str | None, maintainers: Container[str] = frozenset()
+) -> str | None:
     """Who vetoed a decided item and is still unanswered, or None; comments are (login, author
-    association, body), oldest first, as unhandled_veto reads them"""
-    veto = unhandled_veto(comments, bot_login)
-    return None if veto is None else comments[veto][0]
+    association, body), oldest first, as unhandled_veto reads them. A relayed veto's is the
+    maintainer it names, not the bot (D-103)"""
+    veto = unhandled_veto(comments, bot_login, maintainers)
+    if veto is None:
+        return None
+    return relayed_veto(comments[veto], bot_login, maintainers) or comments[veto][0]
 
 
-def unhandled_veto(comments: list[tuple[str, str, str]], bot_login: str | None) -> int | None:
+def vetoes_or_relays(comment: tuple[str, str, str], bot_login: str | None, maintainers: Container[str]) -> bool:
+    """A veto (vetoes) or a maintainer's relayed veto (relayed_veto, D-103)"""
+    return vetoes(comment, bot_login) or relayed_veto(comment, bot_login, maintainers) is not None
+
+
+def unhandled_veto(
+    comments: list[tuple[str, str, str]], bot_login: str | None, maintainers: Container[str] = frozenset()
+) -> int | None:
     """The index of the newest veto of a decided item still unanswered, or None; comments are
     (login, author association, body), oldest first. A veto counts after the first decided marker
     (its first line, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, as D-29's markers),
-    until a newer veto-handled marker by such an author answers it. pr_gate.py reads it too (#1309)"""
+    until a newer veto-handled marker by such an author answers it; a relay of a maintainer's veto
+    counts as theirs (relayed_veto, D-103). pr_gate.py reads it too (#1309)"""
     marks = (
         i
         for i, (author, association, body) in enumerate(comments)
@@ -2666,7 +2715,7 @@ def unhandled_veto(comments: list[tuple[str, str, str]], bot_login: str | None) 
         author, association, body = comments[i]
         if VETO_HANDLED_MARKER.match(first_line(body)) and trusted(author, association, bot_login):
             handled = i
-        elif vetoes(comments[i], bot_login):
+        elif vetoes_or_relays(comments[i], bot_login, maintainers):
             veto = i
     if veto is None or handled > veto:
         return None
@@ -2681,10 +2730,13 @@ def comment_tuples(issue: dict[str, Any]) -> list[tuple[str, str, str]]:
     ]
 
 
-def closed_vetoed(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
+def closed_vetoed(
+    issue: dict[str, Any], bot_login: str | None, maintainers: Container[str] = frozenset()
+) -> tuple[str, str] | None:
     """VETOED for a closed issue labelled decided (the query picks those updated in the veto
-    window) that holds an unanswered trusted veto; None otherwise, which reports nothing"""
-    who = vetoed(comment_tuples(issue), bot_login)
+    window) that holds an unanswered trusted veto, a maintainer's relayed one too (D-103); None
+    otherwise, which reports nothing"""
+    who = vetoed(comment_tuples(issue), bot_login, maintainers)
     return None if who is None else ("VETOED", f"closed, vetoed by @{who}")
 
 
@@ -2887,13 +2939,18 @@ def home_repo(text: str) -> bool:
 
 
 def gated(
-    issue: dict[str, Any], bot_login: str | None, trusted_only: bool, home: str | None = None
+    issue: dict[str, Any],
+    bot_login: str | None,
+    trusted_only: bool,
+    home: str | None = None,
+    maintainers: Container[str] = frozenset(),
 ) -> tuple[str, str] | None:
     """UNTRUSTED (with trusted_only), then UPSTREAM, then NEEDS_DECISION or DECIDED, then
     VETOED, each read before any other state; None when none holds, and the issue reads as
     classify_open says. DECIDED comes first so the reply is acted on, whatever its text links
     (#309). An upstream report waits outside whatever its labels and holds (spec 038); ``home``
-    words its note. VETOED is an item labelled decided with an unanswered veto (spec 030)"""
+    words its note. VETOED is an item labelled decided with an unanswered veto (spec 030), a
+    relayed one naming one of ``maintainers`` too (D-103)"""
     author, association = login(issue.get("author")), str(issue.get("authorAssociation") or "NONE")
     if trusted_only and not trusted(author, association, bot_login) and not workflow_upgrade(issue):
         return "UNTRUSTED", f"opened by @{author} ({association.lower()})"
@@ -2910,7 +2967,7 @@ def gated(
             # it no longer waits, so it has a question and a reply after it: the newest reply
             reply = next(c for c in reversed(comments) if replies(c, bot_login))
             return "DECIDED", f"answered by @{reply[0]}"
-        who = vetoed(comments, bot_login)
+        who = vetoed(comments, bot_login, maintainers)
         if who is not None:
             return "VETOED", f"vetoed by @{who}"
     return None
@@ -3012,7 +3069,12 @@ def classify_closed(
 
 
 def closed_rows(
-    data: dict[str, Any], closed: int, hold: str, incident: str, bot_login: str | None
+    data: dict[str, Any],
+    closed: int,
+    hold: str,
+    incident: str,
+    bot_login: str | None,
+    maintainers: Container[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """The lines of closed issues: each closed issue labelled decided in the veto window reads
     VETOED, marked "closed", or nothing (spec 030); VETOED, read right after DECIDED, comes
@@ -3021,7 +3083,7 @@ def closed_rows(
     rows: list[dict[str, Any]] = []
     vetoed_closed: set[int] = set()
     for issue in data["vetoable"]["nodes"]:
-        verdict = closed_vetoed(issue, bot_login)
+        verdict = closed_vetoed(issue, bot_login, maintainers)
         if verdict is not None:
             vetoed_closed.add(issue["number"])
             row = {"number": issue["number"], "state": verdict[0], "title": issue["title"], "note": verdict[1]}
@@ -3244,11 +3306,14 @@ def main() -> int:
     people: set[int] = set()
     busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
     issues: list[dict[str, Any]] = data["open"]["nodes"]
-    gates = {issue["number"]: gated(issue, args.bot_login, args.trusted_only, args.home) for issue in issues}
+    maintainers = maintainers_of(roles)  # whom a relayed veto may name (D-103)
+    gates = {
+        issue["number"]: gated(issue, args.bot_login, args.trusted_only, args.home, maintainers) for issue in issues
+    }
     untrusted = {n for n, verdict in gates.items() if verdict is not None and verdict[0] == "UNTRUSTED"}
     loops = cycles(issues, (owner, name), args.marker, untrusted)
     # Spec 067: the build issues of a spec approved at notify wait out its veto window
-    windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql)
+    windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql, maintainers=maintainers)
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(
@@ -3317,7 +3382,7 @@ def main() -> int:
             row["assignees"] = assignees(issue)
             row["teams"] = list(resolve(issue, roles)[1])
         rows.append(row)
-    rows += closed_rows(data, args.closed, args.hold_label, args.incident_label, args.bot_login)
+    rows += closed_rows(data, args.closed, args.hold_label, args.incident_label, args.bot_login, maintainers)
 
     order = [
         "SUSPECT_CLOSE",
