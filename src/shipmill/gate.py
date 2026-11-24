@@ -2711,7 +2711,8 @@ def paused(
     fix = None
     if found.cause is End.AUTH:
         fix = AUTH_FIX if token is None else rejected_fix(token.path)
-    until = found.until(credential, retry)
+    # a full window holds whatever the clock says, so PAUSED names no time it lifts at (S-089-7)
+    until = "/usage shows room" if room is False else found.until(credential, retry)
     cause = "a usage limit" if found.cause is End.LIMIT else "a refused credential"
     reason = f"{found.cause.value}: {cause} stopped session {found.session}; no session starts until {until}"
     if found.cause is End.LIMIT and usage is not None:

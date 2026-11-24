@@ -154,3 +154,12 @@ def test_s089_7_an_auth_pause_runs_no_probe(checkout: Git, folder: Path) -> None
     gate.logged_in = False
     gate.usage = probe = Probe()
     assert gate.tick(NOW).action is Action.PAUSED and probe.tokens == []
+
+
+def test_s089_7_a_full_window_names_no_clock_the_pause_wont_lift_at(checkout: Git, folder: Path) -> None:
+    limited(folder)
+    gate = Gate(checkout, folder)
+    gate.usage = Probe(False)
+    reason = gate.tick(RESETS + dt.timedelta(hours=1)).reason
+    assert RESETS.isoformat(timespec="minutes") not in reason  # passed, and a full window holds past it
+    assert reason.endswith("no session starts until /usage shows room; /usage shows a window full")
