@@ -124,13 +124,15 @@ list bullet) add up; without such a comment, or with one that has no `Files:` li
 declares none. When an issue declares one, the files API is read: each changed path, and a renamed
 file's old path, is covered when it equals an allowed path, sits under one ending in `/`, or matches
 one by spec 061's grammar (metrics.py's covered), or sits directly inside the default branch config's
-`[changelog] fragments` folder. A path none covers reads NEEDS_DECISION, `  files: <path> is outside
+`[changelog] fragments` folder. A path none covers reads NEEDS_DECISION, exit 5, `  files: <path> is outside
 what #A allows` (`#A, #B allow` naming every issue declaring one), 20 such lines and then `  files: and
 <k> more outside the allowed files`. It fails closed, NEEDS_DECISION, with `  files: #N's allowed files
 can't be read: <why>` for a counting `Files:` line naming no backticked path or an empty, absolute, or
 `..` one, and `  files: the thread of #N is cut off at 100 comments: its allowed files can't be read,
-so a person looks` when #N's newest 100 comments hold no counting one and older ones went unread. A
-person's PR, and an agent's whose issues declare none or that names no issue, is judged as before.
+so a person looks` when #N's newest 100 comments hold no counting one and older ones went unread. The
+maintainer's answer above lifts the `files:` lines with the other asks, for the heads it covers; a
+verdict written after the PR opened widens nothing. A person's PR, and an agent's whose issues
+declare none or that names no issue, is judged as before.
 
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.

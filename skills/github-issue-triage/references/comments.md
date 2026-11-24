@@ -25,12 +25,15 @@ The plan:
 
 - {change 1}
 - {change 2}
+- Files: `{path}`, `{glob}`, `{folder/}`
 
 {Only for a contract change (design-gate.md):}
 **Design.** {The contract change exactly: flag, field and type, default.} {Why this over the alternative.} {Compatibility: who breaks, and the migration.} {Relies on D-n.} {How it's tested.}
 
 {What is deliberately left out, and where it went (a postponed issue, 1.1).} I'll link the PR here.
 ```
+
+**The allowed files** (spec 085). The plan's `- Files:` line names every file the work may touch, each in backticks, relative to the repo's root: a path, a glob in spec 061's grammar (`**` any run of characters, `/` included; `*` any run without `/`; `?` one character other than `/`), or a folder ending in `/` for everything under it. A spec's build issue lists its spec file, `docs/specs/NNN-<slug>.md`, since the build issue that ends the spec fills in its Issues and Verification. The changelog fragment needn't be listed. `pr_gate.py` holds an agent's pull request that changes a file outside this line, NEEDS_DECISION, until the maintainer accepts the wider change; it reads only a verdict written before the pull request opened, so list what the work needs now rather than widening it later. A verdict with no `Files:` line declares no allowance, and the gate checks none.
 
 Write the decision block for the person who owes the answer, not for the implementer: no file, function, or permission names in the question or the options unless the answer turns on them, and then say what each one means. Name the effect instead ("repos without ship-watch stay stuck until someone notices"). Keep the options to the ones you'd accept, two or three, the recommended one first. The same block, under the same heading, asks a PR's "decisions for you" on the pull request (design-gate.md, step 3).
 
