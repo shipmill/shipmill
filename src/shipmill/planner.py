@@ -368,7 +368,9 @@ class Planner:
                 found = self.milestone_verdict(candidate, head)
                 return found.reason if found.done else found
             if milestone is not None and milestone.open_issues:
-                return milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
+                held = milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
+                if held is not None:
+                    return held
         return self._expedited(lane, candidate)
 
     def _expedited(self, lane: Lane, candidate: _Candidate) -> str | None:

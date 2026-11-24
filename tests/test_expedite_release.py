@@ -12,7 +12,7 @@ import pytest
 
 from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
-from shipmill.github import Closing, IssueComment, Outcome, ShippedPull, parse_expedite_outcomes
+from shipmill.github import Closing, IssueComment, Milestone, Outcome, ShippedPull, parse_expedite_outcomes
 from shipmill.planner import BREAKING, Decision, Event
 from shipmill.walk import EXPEDITED, TIERS, order, tier_of
 
@@ -82,6 +82,17 @@ def test_s070_7_an_opportunity_with_no_sub_issue_is_complete_once_its_own_pull_r
 ) -> None:
     repo, merge = stable
     repo.github.outcomes = [outcome(issue=closing(40, merge))]
+    assert _plan(repo).reason == "stable 1.0.1: 1 pending entries; expedite #40 complete"
+
+
+def test_s070_7_an_open_milestone_with_work_open_does_not_stop_the_expedite_trigger(
+    tmp_path: Path, repos: Repos
+) -> None:
+    """A lane with milestone = true whose milestone has open issues that aren't holds is no
+    gate: the outcome still makes it due, as quiet time would"""
+    repo, merge = repos.after(tmp_path, _stable, STABLE + "milestone = true\n" + AGENTS, "Fixed")
+    repo.github.milestones["1.0.1"] = Milestone(1, 1)
+    _due(repo, merge)
     assert _plan(repo).reason == "stable 1.0.1: 1 pending entries; expedite #40 complete"
 
 
