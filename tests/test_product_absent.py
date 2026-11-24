@@ -20,6 +20,7 @@ from shipmill.cli import main
 from shipmill.gate import state_dir
 from shipmill.gitrepo import Git
 
+from .conftest import guarded_home
 from .test_agent_marker import sent
 from .test_app import APP_ID, BOT_PATH, REPO, FakeApi, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, gh
@@ -59,7 +60,7 @@ def host(tmp_path: Path) -> Host:
     for folder in (fakes, record, home):
         folder.mkdir()
     executable(fakes / "gh", FAKE_GH)
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(home))
 
 
 @pytest.fixture(scope="module")

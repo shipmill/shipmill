@@ -43,7 +43,7 @@ from shipmill.credit import (
 from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, GhCli
 
-from .conftest import POLICY, Repo
+from .conftest import POLICY, Repo, guarded_home
 from .test_app import APP_ID, REPO, FakeSigner
 from .test_app_gh_merge import CODE, DIRECTION, FULL, FakeGate, FakeReads, Reader, connected, pinned_to
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -170,15 +170,13 @@ def gh(
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     executable(fakes / "gh", FAKE_GH)
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
     return main(
         ["--repo", str(repo.root), "gh", "--app-key", str(key), *args],
         api=api if api is not None else MintApi(),
         signer=FakeSigner(),
         stdin=io.StringIO(stdin),
         environ={"PATH": f"{fakes}:/usr/bin:/bin"},
-        home=home,
+        home=guarded_home(tmp_path / "home"),
         gh_runner=runner,
         merge_reader=Reader(FakeReads(files) if merge is None else merge),
         merge_gate=FakeGate(),

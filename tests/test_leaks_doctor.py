@@ -73,6 +73,16 @@ def test_s081_15_terms_off_warns_when_the_repo_is_public(
     assert seen in found[0].detail
 
 
+@pytest.mark.parametrize("visibility", [Visibility.PUBLIC, None, Visibility.PRIVATE])
+def test_s081_19_a_missing_file_names_the_touch_step(
+    agents_repo: Repo, tmp_path: Path, visibility: Visibility | None
+) -> None:
+    """D-102: shipmill gh refuses a public write from an [agents] checkout until the file exists"""
+    (first, *_) = block(agents_repo, probe(tmp_path / "home", visibility))
+    assert "shipmill gh refuses every write to a public repo" in first.detail
+    assert "touch ~/.config/shipmill/private.toml` (an empty one is enough)" in first.detail
+
+
 def test_s081_15_a_file_with_no_terms_reads_as_off(agents_repo: Repo, tmp_path: Path) -> None:
     home = tmp_path / "home"
     private(home, "terms = []\n")

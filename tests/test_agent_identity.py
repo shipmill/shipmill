@@ -25,7 +25,7 @@ from shipmill.app import Answer
 from shipmill.doctor import Check, doctor, identity_on_host
 from shipmill.errors import ReleaseError
 
-from .conftest import POLICY
+from .conftest import POLICY, guarded_home
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, checkout, outside
 from .test_app_install import CHECK_APP, CHECK_PAGE
@@ -60,9 +60,7 @@ def host(tmp_path: Path) -> Host:
     executable(fakes / "gh", FAKE_GH)
     record = tmp_path / "record"
     record.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(tmp_path / "home"))
 
 
 def config(root: Path, text: str) -> Path:

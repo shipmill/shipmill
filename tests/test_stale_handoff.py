@@ -18,6 +18,7 @@ from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.walk import TIERS
 
+from .conftest import guarded_home
 from .test_app import REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -197,9 +198,7 @@ def host(tmp_path: Path) -> Host:
     executable(fakes / "gh", FAKE_GH)
     record = tmp_path / "record"
     record.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(tmp_path / "home"))
 
 
 def close(

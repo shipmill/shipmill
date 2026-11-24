@@ -37,6 +37,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import Action, gate, state_dir
 from shipmill.gitrepo import Git
 
+from .conftest import guarded_home
 from .test_agent_marker import AGENTS, Current, sent
 from .test_app import APP_ID, BOT, BOT_ID, BOT_PATH, GRANTED, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
@@ -104,7 +105,7 @@ def host(tmp_path: Path) -> Host:
     for folder in (fakes, record, home):
         folder.mkdir()
     executable(fakes / "gh", FAKE_GH)
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(home))
 
 
 def token(root: Path, tmp_path: Path, repo: str, api: Api, host: Host, *extra: str) -> int:
@@ -569,7 +570,10 @@ def test_s038_29_a_home_reports_body_edit_runs_under_its_childs_product_token(tm
         gh_capture=current,
     )
     assert code == 7
-    [(read, read_env)] = current.calls
+    # the leak check reads the repo the body names, and so the write's own (S-081-18)
+    reads = [argv for argv, _ in current.calls if "--jq" in argv]
+    assert [argv[2] for argv in reads] == [f"repos/{REPO}", "repos/romamo/api"]
+    [(read, read_env)] = [(argv, env) for argv, env in current.calls if "--jq" not in argv]
     assert read == [host.gh, "api", f"repos/{REPO}/issues/3"]  # the current body, read with the product token
     [(argv, env)] = runner.calls
     assert argv[:4] == [host.gh, "api", "-X", "PATCH"] and argv[4] == f"repos/{REPO}/issues/3"

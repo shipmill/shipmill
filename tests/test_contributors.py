@@ -28,7 +28,7 @@ from shipmill.gate import ClaudeCli
 from shipmill.gitrepo import Git
 from shipmill.init import init
 
-from .conftest import Repo
+from .conftest import Repo, guarded_home
 from .test_app import APP_ID, BOT_ID, REPO, FakeApi, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -567,9 +567,7 @@ def host(tmp_path: Path) -> Host:
     executable(fakes / "gh", FAKE_GH)
     record = tmp_path / "record"
     record.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(tmp_path / "home"))
 
 
 def test_s033_11_gh_takes_the_key_from_shipmill_app_key(tmp_path: Path, host: Host) -> None:

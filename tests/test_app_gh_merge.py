@@ -15,7 +15,7 @@ from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, MergeMethods, PullChange, RunAttempt, RunJob, SpecIssue
 
-from .conftest import POLICY, Repo
+from .conftest import POLICY, Repo, guarded_home
 from .test_agent_marker import HOST_IDENTITY, sent
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -147,14 +147,12 @@ def gh(
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     executable(fakes / "gh", FAKE_GH)
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
     return main(
         ["--repo", str(repo.root), "gh", *([] if key is None else ["--app-key", str(key)]), *args],
         api=MintApi() if api is None else api,
         signer=FakeSigner(),
         environ={"PATH": f"{fakes}:/usr/bin:/bin", **(environ or {})},
-        home=home,
+        home=guarded_home(tmp_path / "home"),
         gh_runner=runner,
         merge_reader=reader,
         merge_gate=FakeGate() if gate is None else gate,
