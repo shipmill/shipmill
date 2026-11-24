@@ -17,7 +17,9 @@ name: Move the major tag
 # the App would start every `on: push` tag workflow. The marketplace commit, pushed as the App,
 # starts the `on: push` workflows on the default branch (ci.yml, release.yml), as land's commits
 # do (spec 054). Before the major tag moves, a dry-run push as the App proves its token, so a
-# bad key or an App that can't push fails with nothing pushed (#1188). land starts this
+# bad key or an App that can't push fails with nothing pushed (#1188); before that check, the
+# job waits, bounded, until PyPI's index serves the release's shipmill, which can lag the upload
+# by minutes, so the index's lag fails as itself and not as a bad key (#1470). land starts this
 # workflow with the tag alone, so the input's default is what a release gets: keep it the
 # land-environment of release.yml's land job. Empty, both pushes go with the workflow token, as
 # before.
@@ -109,6 +111,30 @@ jobs:
           echo "path=$key" >> "$GITHUB_OUTPUT"
           echo "app-id=$app_id" >> "$GITHUB_OUTPUT"
 
+      # PyPI's simple index can list a release minutes after publish.yml's upload passed (#1470),
+      # and the token's check below resolves the release's shipmill inside git's credential
+      # helper, where uv's "no version" would read as a bad key. So the version resolves here
+      # first, past uv's cache (a restored one may predate the release), every 20 s for up to 10
+      # minutes: the references move only once PyPI serves it (D-50), and out of time the step
+      # fails naming the index, with nothing pushed
+      - name: Wait for PyPI to serve the release
+        if: inputs.land-environment != '' && steps.check.outputs.newest == 'true'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version="${TAG#v}"
+          for waited in $(seq 0 20 600); do
+            if [ "$waited" -gt 0 ]; then sleep 20; fi
+            if uvx --refresh-package shipmill --from "shipmill==$version" shipmill --version; then
+              echo "PyPI serves shipmill $version"
+              exit 0
+            fi
+            echo "PyPI's index doesn't serve shipmill $version yet (${waited} s of 600 waited)"
+          done
+          echo "::error::move-major-tag: PyPI's index doesn't serve shipmill $version yet, after 10 minutes of trying. Nothing was pushed: rerun this workflow once it does"
+          exit 1
+
       # git's settings for the marketplace push, written to a file the App's step hands on, and
       # proved here, before the major tag moves (#1188): a dry-run push to the default branch
       # with these settings alone, in this one command's environment, asks GitHub for the push
@@ -118,8 +144,9 @@ jobs:
       # cleared (an empty value resets the list), and the App's credential helper replaces any
       # other. The helper mints the token, limited to this repository and contents write (D-90,
       # #1189), so the check proves the same token the push uses, from the release's own
-      # shipmill, which PyPI serves (D-50); git runs it through sh, so its words are quoted as
-      # shlex quotes them. The settings name the key's path and hold no token
+      # shipmill, which the wait above saw PyPI serve (D-50), read past uv's cache as the wait
+      # reads it (#1470); git runs it through sh, so its words are quoted as shlex quotes them.
+      # The settings name the key's path and hold no token
       - name: Check the App's token
         id: app
         if: inputs.land-environment != '' && steps.check.outputs.newest == 'true'
@@ -131,7 +158,7 @@ jobs:
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           helper="!$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' \
-            uvx --from "shipmill==${TAG#v}" shipmill app-token "$GITHUB_REPOSITORY" \
+            uvx --refresh-package shipmill --from "shipmill==${TAG#v}" shipmill app-token "$GITHUB_REPOSITORY" \
             --permission contents=write --app-id "$APP_ID" --app-key "$APP_KEY" --git-credential)"
           config="$RUNNER_TEMP/shipmill-app-git.env"
           {
@@ -148,7 +175,7 @@ jobs:
             export GIT_TERMINAL_PROMPT=0
             git push --dry-run --force -q origin "HEAD:refs/heads/$BRANCH"
           ); then
-            echo "::error::move-major-tag: the App $APP_ID can't push to $BRANCH with SHIPMILL_LAND_KEY (git's error above says why); check the secret is that App's private key, the App is installed on $GITHUB_REPOSITORY with Contents: write, and PyPI serves shipmill ${TAG#v}, or dispatch with an empty land-environment. Nothing was pushed"
+            echo "::error::move-major-tag: the App $APP_ID can't push to $BRANCH with SHIPMILL_LAND_KEY (git's error above says why); check the secret is that App's private key, the App is installed on $GITHUB_REPOSITORY with Contents: write, or dispatch with an empty land-environment. Nothing was pushed"
             exit 1
           fi
           echo "config=$config" >> "$GITHUB_OUTPUT"
