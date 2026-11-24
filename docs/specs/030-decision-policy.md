@@ -232,6 +232,15 @@ prompt names, as for a needs-decision question, so GitHub notifies them.
 **The work doesn't wait.** The session goes on at once, and a pull request carrying a
 `notify` decision merges when it is otherwise ready, inside the window too.
 
+**A known vulnerability is asked (D-104).** A decision on an issue or pull request whose
+body or comments name a CVE or GitHub advisory id (`CVE-\d{4}-\d{4,}` or
+`GHSA(-[23456789cfghjmpqrvwx]{4}){3}`, in any case) is asked with the needs-decision
+question, whatever the zone's level. `shipmill gh` refuses with exit 2 a comment holding the
+decided marker on such an item (`issue|pr comment`, `issue|pr close|reopen --comment`, `gh
+api`'s POST on its comments, or an edit writing the marker into an issue comment), reading
+the item's body and comments first and refusing too when they can't be read; its error
+points to the needs-decision question instead.
+
 **A rule goes to the log.** When the decision sets something later work must respect (a
 format chosen for a new output, a reading of a criterion the next pull request relies on),
 the session also records it with `decisions.py add --zone <id>`, which writes a `- Zone:
@@ -387,6 +396,7 @@ changelog says so under `Changed`:
 - S-030-22: The eval suite (spec 025) holds cases where a session meets an `implementation` decision and goes on without a question, an `interpretation` decision and posts a decided comment and goes on, a `contract-change` and asks, and an approved `never` change in chat and still leaves the merge to the maintainer
 - S-030-23: `shipmill gh pr merge <n>` and `shipmill gh api -X PUT repos/<o>/<r>/pulls/<n>/merge`, as the App, exit 2 without running `gh` when pull request `n` carries the `needs-decision` label, in any case, naming the label and saying its question is answered and the label removed first, and run `gh` as before for a pull request without it
 - S-030-24: `shipmill gh pr merge` with a `--match-head-commit <v>` or `--match-head-commit=<v>`, and the merge API `PUT` with a `sha=<v>` field (`-f`, `-F`, `--field`, `--raw-field`), exit 2 before any token is minted, as the App or the host, when `v` isn't 40 hex characters, naming `v` and `gh pr view <n> --json headRefOid -q .headRefOid`; a full SHA or none runs `gh` as before
+- S-030-25: `shipmill gh issue comment`, `pr comment` (by number, URL, or branch), `issue|pr close --comment`, the `gh api` POST on `repos/<o>/<r>/issues/<n>/comments`, and the `gh api -X PATCH` of an issue comment, with `--body`, `--body-file`, or stdin, exit 2 without running `gh`, as the App or the host, when the comment holds the decided marker and the item's body, its comments, or the comment itself name a `CVE-` or `GHSA-` id in any case, naming the id, D-104, and the needs-decision question; an item whose body or comments can't be read exits 2 too; an item naming neither, and a comment without the marker, post as before
 
 ## Out of scope
 
@@ -427,6 +437,7 @@ changelog says so under `Changed`:
 - shipmill/shipmill#611: S-030-19, S-030-20
 - shipmill/shipmill#613: S-030-21, S-030-22
 - shipmill/shipmill#960: S-030-23, S-030-24
+- shipmill/shipmill#1483: S-030-25
 
 ## Verification
 
@@ -454,3 +465,4 @@ changelog says so under `Changed`:
 - S-030-22: the cases `evals/github-issue-resolve/implementation-goes-on`, `interpretation-notifies`, `contract-change-asks`, and `evals/github-pr-triage/never-approved-in-chat`, registered in `evals/cases.toml`; `shipmill evals check` passes, and `test_s030_22_*` in `tests/test_who_decides.py` check each case's graders against the writes they must pass and fail, and that the `never` case's fixture answers every read `shipmill decide classify --pr 893` makes and reads `direction` at `never`; their pass rate is the `evals` check's to measure on this pull request (D-37)
 - S-030-23: `test_s030_23_*` in `tests/test_app_gh_merge.py` (`shipmill gh pr merge` and the merge API `PUT` exit 2 without running gh for a pull request labelled `needs-decision` or `Needs-Decision`, and run gh for one with other labels); `test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch` in `tests/test_decide_cli.py` reads the labels in the same call as the head; pass
 - S-030-24: `test_s030_24_*` in `tests/test_app_gh_merge.py` (a short, long, or non-hex `--match-head-commit` in both forms and a short `sha` field in each flag form exit 2 with no token minted, no read, and no gh run, as the App and as the host; a full SHA, an upper-case one, or none runs gh as before); pass
+- S-030-25: `test_s030_25_*` in `tests/test_app_gh_decided.py` (a decided comment in each command form, on an item whose body, comments, or the comment itself name a CVE or GHSA id, exits 2 with no gh run, as the App and as the host; an unreadable thread and a pull request comment naming no item exit 2; an item naming neither posts, a comment without the marker reads nothing; the id grammar); pass
