@@ -2050,7 +2050,8 @@ def tick_walk(
     ended = False  # spec 089: a hand whose session didn't end ok drops, a change
     if ends is not None:
         recorded_ends = handed.ending(ends)
-        handed = recorded_ends.ended_ok(dead.session if dead is not None and capped else None)
+        fresh = [k for k, h in handed.hands.items() if h.ended is None]  # a held hand's end drops it no later tick
+        handed = recorded_ends.ended_ok(dead.session if dead is not None and capped else None, fresh)
         ended = len(handed.hands) < len(recorded_ends.hands)
     if dead is not None and not capped:
         handed = handed.without(dead.session)

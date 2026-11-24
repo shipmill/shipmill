@@ -498,15 +498,21 @@ class Handed:
             {k: h if h.ended is not None else replace(h, ended=ends[h.session]) for k, h in self.hands.items()}
         )
 
-    def ended_ok(self, held: str | None = None) -> Handed:
+    def ended_ok(self, held: str | None = None, recorded: Iterable[str] | None = None) -> Handed:
         """Spec 089 (S-089-4): the hands whose session runs or ended ok; one whose session
-        ended limit, auth, or error drops, whichever session gate.json names by then, save
-        the hands of held, a capped dead session's, which DEAD_STREAK holds for retry_hours"""
+        ended limit, auth, or error drops on the tick that records its end (recorded, the keys
+        whose end this tick recorded; None, every one), whichever session gate.json names by
+        then, save the hands of held, a capped dead session's, which DEAD_STREAK holds for
+        retry_hours: kept with their end, they stay held once a later session runs, and are
+        handed again past retry_hours, never idle (S-089-3)"""
+        now = None if recorded is None else set(recorded)
         return Handed(
             {
                 k: h
                 for k, h in self.hands.items()
-                if h.ended in (None, End.OK) or (held is not None and h.session == held)
+                if h.ended in (None, End.OK)
+                or (held is not None and h.session == held)
+                or (now is not None and k not in now)
             }
         )
 

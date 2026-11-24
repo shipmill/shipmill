@@ -13,7 +13,7 @@ from shipmill.agents import Mode
 from shipmill.findings import Finding
 from shipmill.gate import RECORD, Action, Launch, Process, save_launch, session_log, state_dir
 from shipmill.gitrepo import Git
-from shipmill.walk import HANDED, Changes, End, Hand, Handed, Head, Pull, Swept, walk
+from shipmill.walk import HANDED, Changes, End, Hand, Handed, Head, Pull, Swept, item_key, walk
 
 from .test_gate import FakeClaude, checkout
 from .test_gate_headless import PID, STARTED
@@ -187,6 +187,27 @@ def test_s089_4_a_capped_dead_sessions_hands_still_hold_its_item() -> None:
     )
     assert set(hands.ended_ok("dead").hands) == {"PRS_OPEN #3", "PRS_OPEN #5", "PRS_OPEN #6"}
     assert set(hands.ended_ok().hands) == {"PRS_OPEN #5", "PRS_OPEN #6"}
+
+
+CAPPED = "33333333-3333-4333-8333-333333333333"
+NEXT = "44444444-4444-4444-8444-444444444444"
+
+
+def test_s089_4_a_capped_hold_outlives_a_later_session_on_another_item(checkout: Git) -> None:
+    """The capped session's hand, its end recorded on the tick that capped it, still holds its
+    item for retry_hours once gate.json names a session on another item: dropping it then would
+    hand it again with a fresh run of deaths, never capped while two items take turns dying"""
+    capped_at = NOW - dt.timedelta(hours=1)
+    later = NOW - dt.timedelta(minutes=30)
+    hands = {item_key(INCIDENT): Hand(CAPPED, capped_at, ended=End.ERROR), "PRS_OPEN #3": Hand(NEXT, later, HEAD)}
+    Handed(hands).save(state_dir(checkout) / HANDED)
+    logged(checkout, CAPPED, *ENDS[End.ERROR], at=capped_at)
+    logged(checkout, NEXT, *ENDS[End.ERROR], at=later)
+    launched(checkout, NEXT, later, "PRS_OPEN #3")
+    source = Source({1: [INCIDENT], 3: [prs(3)]}, pulls=unchanged(3, at=later))
+    decision = tick(checkout, source, NOW, cfg(Mode.HEADLESS), FakeClaude())
+    assert decision.work == (prs(3),)  # the dead session's own item again, not the held one
+    assert handed(checkout)[item_key(INCIDENT)]["session"] == CAPPED
 
 
 # -- S-089-14: an ok end that wrote nothing, as before
