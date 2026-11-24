@@ -148,12 +148,13 @@ def test_s030_5_levels_json_names_every_zone_with_its_level_floor_and_source(
     rows = {r["zone"]: r for r in found["zones"]}
     assert list(rows) == [
         "direction", "decision-policy", "scope", "accepted-spec", "rule-departure", "contract-change",
-        "contract-addition", "security", "deploy-step", "protected", "interpretation", "triage-verdict",
-        "implementation", "unknown",
+        "contract-addition", "security", "deploy-step", "protected", "area-record", "interpretation",
+        "triage-verdict", "implementation", "unknown",
         "release", "breaking-release", "deploy", "rollback", "intake", "upgrade", "triage", "fix", "land",
     ]  # fmt: skip
-    assert all(set(r) == {"zone", "level", "floor", "source", "paths"} for r in found["zones"])  # S-057-1
-    rows = {zone: {k: v for k, v in r.items() if k != "paths"} for zone, r in rows.items()}
+    keys = {"zone", "level", "floor", "source", "paths", "earned"}  # S-057-1, S-083-1
+    assert all(set(r) == keys for r in found["zones"])
+    rows = {zone: {k: v for k, v in r.items() if k not in ("paths", "earned")} for zone, r in rows.items()}
     assert rows["direction"] == {"zone": "direction", "level": "ask", "floor": "ask", "source": "config"}
     assert rows["contract-addition"] == {"zone": "contract-addition", "level": "act", "floor": None, "source": "config"}
     assert rows["scope"] == {"zone": "scope", "level": "ask", "floor": "ask", "source": "default"}
@@ -197,9 +198,47 @@ def test_s030_5_levels_text_form(repo: Repo, capsys: pytest.CaptureFixture[str])
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "veto_hours: 24"
     assert out[1].split() == ["direction", "never", "floor", "ask", "default"]
-    assert len(out) == 1 + 23
+    assert len(out) == 1 + 24
     assert out[4].split() == ["accepted-spec", "ask", "floor", "notify", "default"]
     assert out[-1].split() == ["land", "ask", "floor", "none", "autonomy"]
+
+
+def test_s083_1_levels_json_gives_each_zone_its_earned_bound_or_null(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = POLICY + '\n[decisions]\nclean_releases = 2\n\n[decisions.earned]\nprotected = "act"\nmax_lines = 200\n'
+    commit(repo, config)
+    found = run(repo, capsys, "levels")
+    assert set(found) == {"veto_hours", "zones", "refused"}  # only the rows gain a key
+    earned = {r["zone"]: r["earned"] for r in found["zones"]}
+    assert earned["protected"] == "act"
+    assert all(bound is None for zone, bound in earned.items() if zone != "protected")
+    rows = {r["zone"]: r for r in found["zones"]}
+    assert (rows["protected"]["level"], rows["protected"]["source"]) == ("ask", "default")  # the level stays
+    commit(repo)  # no [decisions.earned]: every row null
+    assert all(r["earned"] is None for r in run(repo, capsys, "levels")["zones"])
+
+
+def test_s083_1_levels_text_shows_a_bound_under_its_zone(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    commit(repo, POLICY + '\n[decisions.earned]\nprotected = "act"\nsecurity = "notify"\n')
+    assert main(["--repo", str(repo.root), "decide", "levels"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 1 + 24 + 2
+    security = out.index(next(line for line in out if line.startswith("security ")))
+    assert out[security + 1] == "  earned notify  config [decisions.earned]"
+    protected = out.index(next(line for line in out if line.startswith("protected ")))
+    assert out[protected + 1] == "  earned act  config [decisions.earned]"
+
+
+def test_s083_3_levels_list_area_record_after_protected_at_act(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    commit(repo)
+    names = [r["zone"] for r in run(repo, capsys, "levels")["zones"]]
+    assert names[names.index("protected") + 1] == "area-record"
+    row = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}["area-record"]
+    assert (row["level"], row["floor"], row["source"], row["earned"]) == ("act", None, "default", None)
+    commit(repo, POLICY + '\n[decisions]\narea-record = "ask"\n')
+    row = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}["area-record"]
+    assert (row["level"], row["source"]) == ("ask", "config")
 
 
 def test_s067_1_levels_json_lists_accepted_spec_right_after_scope_at_ask_with_floor_notify(
@@ -214,6 +253,7 @@ def test_s067_1_levels_json_lists_accepted_spec_right_after_scope_at_ask_with_fl
         "level": "ask",
         "floor": "notify",
         "source": "default",
+        "earned": None,
     }
 
 
@@ -223,9 +263,9 @@ def test_s040_12_levels_list_triage_fix_and_land_from_autonomy_mapped_as_release
     commit(repo)  # no [autonomy]: act, act, propose
     rows = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}
     assert [rows[z] for z in ("triage", "fix", "land")] == [
-        {"zone": "triage", "level": "act", "floor": None, "source": "autonomy", "paths": []},
-        {"zone": "fix", "level": "act", "floor": None, "source": "autonomy", "paths": []},
-        {"zone": "land", "level": "ask", "floor": None, "source": "autonomy", "paths": []},
+        {"zone": "triage", "level": "act", "floor": None, "source": "autonomy", "paths": [], "earned": None},
+        {"zone": "fix", "level": "act", "floor": None, "source": "autonomy", "paths": [], "earned": None},
+        {"zone": "land", "level": "ask", "floor": None, "source": "autonomy", "paths": [], "earned": None},
     ]
     commit(repo, POLICY + '\n[autonomy]\ntriage = "observe"\nfix = "propose"\nland = "act"\nrelease = "propose"\n')
     rows = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}

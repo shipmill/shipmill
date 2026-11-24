@@ -103,6 +103,17 @@ def test_s030_21_the_zone_table_names_every_zone_decisions_py_knows() -> None:
         assert f"`{zone}`" in who, zone
 
 
+def test_the_flow_zone_table_names_every_zone_with_its_default_and_floor() -> None:
+    """docs/flow.md's Who decides table lists decisions.py's zones, in order, with their defaults
+    and floors, so a new zone (spec 083's area-record) can't miss the maintainer's docs"""
+    decisions = load("shipmill_decisions_flow", SKILLS / "github-issue-triage" / "scripts" / "decisions.py")
+    who = section((ROOT / "docs" / "flow.md").read_text(encoding="utf-8"), "## Who decides")
+    rows = re.findall(r"^\| `([a-z-]+)` \| .+ \| `([a-z]+)` \| (?:`([a-z]+)`|none) \|$", who, re.MULTILINE)
+    assert [(zone, default, floor or None) for zone, default, floor in rows] == [
+        (zone, default, floor) for zone, (default, floor) in decisions.ZONES.items()
+    ]
+
+
 def test_s040_12_decisions_py_refuses_the_agent_stages_in_decisions_as_the_package_does() -> None:
     decisions = load("shipmill_decisions_660", SKILLS / "github-issue-triage" / "scripts" / "decisions.py")
     assert sorted(decisions.RELEASE_ZONES) == sorted(ReleaseZone)

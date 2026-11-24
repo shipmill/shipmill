@@ -71,6 +71,7 @@ class Zone(StrEnum):
     SECURITY = "security"
     DEPLOY_STEP = "deploy-step"
     PROTECTED = "protected"
+    AREA_RECORD = "area-record"
     INTERPRETATION = "interpretation"
     TRIAGE_VERDICT = "triage-verdict"
     IMPLEMENTATION = "implementation"
@@ -181,6 +182,98 @@ class VetoHours:
         return self.hours
 
 
+CLEAN_RELEASES_KEY = "clean_releases"
+_CLEAN_LOW = 1
+_CLEAN_HIGH = 20
+_CLEAN_DEFAULT = 3
+
+
+@dataclass(frozen=True, slots=True)
+class CleanReleases:
+    """How many clean releases clear a raised area (spec 083), 1 to 20"""
+
+    count: int = _CLEAN_DEFAULT
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.count, int)
+            or isinstance(self.count, bool)
+            or not _CLEAN_LOW <= self.count <= _CLEAN_HIGH
+        ):
+            raise ReleaseError(f"{CLEAN_RELEASES_KEY} must be in {_CLEAN_LOW}..{_CLEAN_HIGH}, got {self.count!r}")
+
+    def __int__(self) -> int:
+        return self.count
+
+
+# -- the earned level: [decisions.earned] (spec 083, D-101) -------------------------------------
+
+EARNED_KEY = "earned"
+MAX_LINES_KEY = "max_lines"
+# The zones a pull request may earn a lower level in
+EARNED_ZONES = (Zone.PROTECTED, Zone.SECURITY)
+_TAKES_EARNED = "only protected and security do"
+_LINES_LOW = 1
+_LINES_HIGH = 10000
+_LINES_DEFAULT = 200
+
+
+@dataclass(frozen=True, slots=True)
+class Earned:
+    """[decisions.earned]: per zone that may earn, the lowest level a pull request may earn there,
+    never below the zone's floor, and the most lines (added plus deleted) a change may hold to
+    earn"""
+
+    bounds: Mapping[Zone, Level] = field(default_factory=dict)
+    max_lines: int = _LINES_DEFAULT
+
+    def __post_init__(self) -> None:
+        for zone, level in self.bounds.items():
+            if zone not in EARNED_ZONES:
+                raise ReleaseError(f"[decisions.earned] {zone} takes no earned level: {_TAKES_EARNED}")
+            problem = _part_floor_problem(zone, level)
+            if problem is not None:
+                raise ReleaseError(f"[decisions.earned] {zone} {problem}")
+        lines = self.max_lines
+        if not isinstance(lines, int) or isinstance(lines, bool) or not _LINES_LOW <= lines <= _LINES_HIGH:
+            raise ReleaseError(
+                f"[decisions.earned] {MAX_LINES_KEY} must be an integer from {_LINES_LOW} to {_LINES_HIGH},"
+                f" got {lines!r}"
+            )
+
+    @classmethod
+    def parse(cls, where: str, raw: object) -> Earned:
+        """The table, every refusal naming the key and its fix (S-083-1)"""
+        if not isinstance(raw, dict):
+            raise ReleaseError(f"{where}: {EARNED_KEY} must be a table, [decisions.earned], got {raw!r}")
+        bounds: dict[Zone, Level] = {}
+        for key, value in raw.items():
+            if key == MAX_LINES_KEY:
+                continue
+            if key not in EARNED_ZONES:
+                raise ReleaseError(f"{where}: [decisions.earned] {key} takes no earned level: {_TAKES_EARNED}")
+            if not isinstance(value, str) or value not in set(Level):
+                raise ReleaseError(
+                    f"{where}: [decisions.earned] {key} must be one of {[lv.value for lv in Level]}, got {value!r}"
+                )
+            zone, level = Zone(key), Level(value)
+            problem = _part_floor_problem(zone, level)
+            if problem is not None:
+                raise ReleaseError(f"{where}: [decisions.earned] {key} {problem}")
+            bounds[zone] = level
+        lines = raw.get(MAX_LINES_KEY, _LINES_DEFAULT)
+        if not isinstance(lines, int) or isinstance(lines, bool) or not _LINES_LOW <= lines <= _LINES_HIGH:
+            raise ReleaseError(
+                f"{where}: [decisions.earned] {MAX_LINES_KEY} must be an integer from {_LINES_LOW} to"
+                f" {_LINES_HIGH}, got {lines!r}"
+            )
+        return cls(bounds, lines)
+
+    def bound(self, zone: Zone) -> Level | None:
+        """The lowest level a pull request may earn in the zone, or None: it earns nothing there"""
+        return self.bounds.get(zone)
+
+
 # -- parts: a zone's paths with their own level (spec 057) --------------------------------------
 
 PATHS_KEY = "paths"
@@ -245,11 +338,14 @@ class Part:
 @dataclass(frozen=True, slots=True)
 class DecisionPolicy:
     """The [decisions] section: the levels the config sets, over each zone's default, and the
-    parts of the zones code detects by path (spec 057)"""
+    parts of the zones code detects by path (spec 057); earned is [decisions.earned], None
+    without the table, when no pull request earns anything (spec 083, D-63)"""
 
     configured: Mapping[Zone, Level] = field(default_factory=dict)
     veto_hours: VetoHours = VetoHours()
     parts: Mapping[Zone, tuple[Part, ...]] = field(default_factory=dict)
+    earned: Earned | None = None
+    clean_releases: CleanReleases = CleanReleases()
 
     def __post_init__(self) -> None:
         if Zone.DECISION_POLICY in self.configured:
@@ -264,14 +360,17 @@ class DecisionPolicy:
     def parse(cls, t: Table) -> DecisionPolicy:
         configured: dict[Zone, Level] = {}
         for key in t.raw:
-            if key in (VETO_HOURS_KEY, PATHS_KEY):
+            if key in (VETO_HOURS_KEY, PATHS_KEY, EARNED_KEY, CLEAN_RELEASES_KEY):
                 continue
             zone, level = _zone(t, key), _level(t, key)
             _check_floor(zone, level, t.where)
             configured[zone] = level
         hours = t.integer(VETO_HOURS_KEY, default=_VETO_DEFAULT, low=_VETO_LOW, high=_VETO_HIGH)
         assert hours is not None  # a default is given
-        return cls(configured, VetoHours(hours), _parts(t))
+        clean = t.integer(CLEAN_RELEASES_KEY, default=_CLEAN_DEFAULT, low=_CLEAN_LOW, high=_CLEAN_HIGH)
+        assert clean is not None  # a default is given
+        earned = Earned.parse(t.where, t.raw[EARNED_KEY]) if EARNED_KEY in t.raw else None
+        return cls(configured, VetoHours(hours), _parts(t), earned, CleanReleases(clean))
 
     def level(self, zone: Zone) -> Level:
         """The zone's level: the config's, or the zone's default"""
@@ -284,6 +383,11 @@ class DecisionPolicy:
     def parts_of(self, zone: Zone) -> tuple[Part, ...]:
         """The zone's parts, in the config's order; none for a zone without them"""
         return self.parts.get(zone, ())
+
+    def bound(self, zone: Zone) -> Level | None:
+        """The lowest level a pull request may earn in the zone (spec 083), or None: it earns
+        nothing there, as in every zone without [decisions.earned]"""
+        return None if self.earned is None else self.earned.bound(zone)
 
     @property
     def levels(self) -> Mapping[Zone, Level]:
@@ -372,13 +476,15 @@ class Source(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ZoneLevel:
     """One row of `decide levels`: a zone, its level (None: agents take no part, as under
-    [autonomy] observe), its floor, where the level comes from, and its parts (spec 057)"""
+    [autonomy] observe), its floor, where the level comes from, its parts (spec 057), and the
+    bound [decisions.earned] sets it (spec 083; None: a pull request earns nothing there)"""
 
     zone: Zone | ReleaseZone
     level: Level | None
     floor: Level | None
     source: Source
     parts: tuple[Part, ...] = ()
+    earned: Level | None = None
 
     def record(self) -> dict[str, object]:
         return {
@@ -387,13 +493,16 @@ class ZoneLevel:
             "floor": None if self.floor is None else self.floor.value,
             "source": self.source.value,
             "paths": [part.record() for part in self.parts],  # S-057-1: [] for a zone without parts
+            "earned": None if self.earned is None else self.earned.value,  # S-083-1: null without a bound
         }
 
     def text(self) -> str:
-        """The zone's line, then one line per part under it"""
+        """The zone's line, its bound's line, then one line per part under it"""
         level = "none" if self.level is None else self.level.value
         floor = "none" if self.floor is None else self.floor.value
         lines = [f"{self.zone.value:<18} {level:<7} floor {floor:<7} {self.source.value}"]
+        if self.earned is not None:
+            lines.append(f"  earned {self.earned.value}  {Source.CONFIG.value} [decisions.{EARNED_KEY}]")
         return "\n".join(lines + [part.text() for part in self.parts])
 
 
@@ -421,7 +530,10 @@ def levels(decisions: DecisionPolicy, autonomy: AutonomyPolicy) -> tuple[ZoneLev
             source = Source.FIXED
         else:
             source = Source.CONFIG if decisions.is_configured(zone) else Source.DEFAULT
-        rows.append(ZoneLevel(zone, decisions.level(zone), rule.floor, source, decisions.parts_of(zone)))
+        row = ZoneLevel(
+            zone, decisions.level(zone), rule.floor, source, decisions.parts_of(zone), decisions.bound(zone)
+        )
+        rows.append(row)
     deploy = max(autonomy.deploy.values(), key=_HELD.index, default=Autonomy.ACT)
     stages = {
         ReleaseZone.RELEASE: autonomy.release,

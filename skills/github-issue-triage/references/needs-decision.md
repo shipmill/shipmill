@@ -25,6 +25,7 @@ Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate ses
 | `security` | `.github/**`, a secret or credential, a token's or a workflow's permissions, the delivery hooks' rules, the gate's tool allowlist |
 | `deploy-step` | a change to a deploy workflow's job (one an `[environments]` table names, or with an `environment:` key) that no run named on the pull request's `Proof:` line ran at its content (spec 063) |
 | `protected` | a file a `REVIEW.md` Protected areas glob covers |
+| `area-record` | a change that touches a raised area: the parent directory of a path a release `shipmill operate` marked failed changed, until `[decisions] clean_releases` clean releases clear it (spec 083); its default is `act`, so nothing waits on it until `[decisions]` sets it higher |
 | `interpretation` | choosing between readings of an approved spec, a `D-n`, or an issue, where each reading meets the criteria |
 | `triage-verdict` | won't fix, duplicate, postpone, or close as done on an issue |
 | `implementation` | work order, how a change splits into pull requests, internal design, refactors, tests, docs of existing behaviour |

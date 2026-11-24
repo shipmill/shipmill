@@ -83,6 +83,7 @@ ZONES: dict[str, tuple[str, str | None]] = {
     "security": ("ask", "notify"),
     "deploy-step": ("ask", None),  # spec 063: a changed deploy job no run covers
     "protected": ("ask", None),
+    "area-record": ("act", None),  # spec 083: a change that touches a raised area
     "interpretation": ("notify", None),
     "triage-verdict": ("notify", None),
     "implementation": ("act", None),
@@ -107,6 +108,14 @@ VETO_HOURS = 24
 PATHS = "paths"
 PART_ZONES = ("direction", "security", "protected")
 TAKES_PATHS = "only direction, security, and protected are detected by path"
+# [decisions.earned] (spec 083): the lowest level a pull request may earn in protected and
+# security, and the most lines it may change to earn; clean_releases clears a raised area
+EARNED = "earned"
+EARNED_ZONES = ("protected", "security")
+TAKES_EARNED = "only protected and security do"
+MAX_LINES = (1, 10000, 200)
+CLEAN_RELEASES = "clean_releases"
+CLEAN = (1, 20, 3)
 CONFIG = Path(".github/shipmill.toml")
 ZONE_LINE = re.compile(r"^([a-z][a-z-]*) \(notify, veto until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\)$")
 UNTIL = "%Y-%m-%dT%H:%M:%SZ"
@@ -142,11 +151,16 @@ class LogError(Exception):
 class Policy:
     """Each zone's level and the notify window, as a repo's [decisions] table sets them, and
     the parts of the zones detected by path: each zone's (glob, level) pairs in the config's
-    order (spec 057); a part leaves its zone's level as it is"""
+    order (spec 057); a part leaves its zone's level as it is. earned holds [decisions.earned]'s
+    bounds, None without the table, and max_lines its size limit (spec 083); neither changes a
+    zone's level"""
 
     levels: dict[str, str]
     veto_hours: int = VETO_HOURS
     parts: dict[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
+    earned: dict[str, str] | None = None
+    max_lines: int = MAX_LINES[2]
+    clean_releases: int = CLEAN[2]
 
 
 def policy(path: Path) -> Policy:
@@ -171,8 +185,13 @@ def policy_from(table: dict[str, object], path: Path) -> Policy:
     hours = table.get("veto_hours", VETO_HOURS)
     if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 168:
         raise LogError(f"{path}: [decisions] veto_hours must be an integer from 1 to 168, not {hours!r}")
+    clean = table.get(CLEAN_RELEASES, CLEAN[2])
+    if isinstance(clean, bool) or not isinstance(clean, int) or not CLEAN[0] <= clean <= CLEAN[1]:
+        raise LogError(
+            f"{path}: [decisions] {CLEAN_RELEASES} must be an integer from {CLEAN[0]} to {CLEAN[1]}, not {clean!r}"
+        )
     for key, value in table.items():
-        if key in ("veto_hours", PATHS):
+        if key in ("veto_hours", PATHS, EARNED, CLEAN_RELEASES):
             continue
         if key in RELEASE_ZONES:
             raise LogError(f"{path}: [decisions] {key}: {RELEASE_ZONES[key]}")
@@ -186,7 +205,37 @@ def policy_from(table: dict[str, object], path: Path) -> Policy:
         if floor is not None and LEVELS.index(str(value)) < LEVELS.index(floor):
             raise LogError(f"{path}: [decisions] {key} = {value!r} is below its floor {floor}")
         levels[key] = str(value)
-    return Policy(levels, hours, parts_from(table.get(PATHS, {}), path))
+    parts = parts_from(table.get(PATHS, {}), path)
+    if EARNED not in table:
+        return Policy(levels, hours, parts, clean_releases=clean)
+    earned, lines = earned_from(table[EARNED], path)
+    return Policy(levels, hours, parts, earned, lines, clean)
+
+
+def earned_from(earned: object, path: Path) -> tuple[dict[str, str], int]:
+    """[decisions.earned]: the bounds of protected and security and max_lines; refused as the
+    package refuses them (S-083-1)"""
+    if not isinstance(earned, dict):
+        raise LogError(f"{path}: [decisions] earned must be a table, [decisions.earned], not {earned!r}")
+    lines = earned.get("max_lines", MAX_LINES[2])
+    if isinstance(lines, bool) or not isinstance(lines, int) or not MAX_LINES[0] <= lines <= MAX_LINES[1]:
+        raise LogError(
+            f"{path}: [decisions.earned] max_lines must be an integer from {MAX_LINES[0]} to {MAX_LINES[1]},"
+            f" not {lines!r}"
+        )
+    bounds: dict[str, str] = {}
+    for zone, level in earned.items():
+        if zone == "max_lines":
+            continue
+        if zone not in EARNED_ZONES:
+            raise LogError(f"{path}: [decisions.earned] {zone} takes no earned level: {TAKES_EARNED}")
+        if level not in LEVELS:
+            raise LogError(f"{path}: [decisions.earned] {zone} = {level!r}: a level is one of {', '.join(LEVELS)}")
+        floor = ZONES[zone][1]
+        if floor is not None and LEVELS.index(str(level)) < LEVELS.index(floor):
+            raise LogError(f"{path}: [decisions.earned] {zone} = {level!r} is below its floor {floor}")
+        bounds[zone] = str(level)
+    return bounds, lines
 
 
 def parts_from(paths: object, path: Path) -> dict[str, tuple[tuple[str, str], ...]]:
