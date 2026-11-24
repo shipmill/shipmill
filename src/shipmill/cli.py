@@ -263,9 +263,11 @@ from shipmill.app_gh import (
     bundled_repo_flag,
     capture_gh,
     created_body,
+    decided_comment,
     decided_in,
     edited_args,
     feed_gh,
+    hold_decided,
     hold_method,
     hold_relay_mention,
     hold_short_head,
@@ -2145,7 +2147,9 @@ def _gh(
     needs-decision question on a pull request without its head line and a relay out of the relay
     grammar (#1484, D-93, `hold_question`), and a write whose text holds a private term (to a
     public repo), a secret's value, or a known token format exits 2 right before gh would run
-    (spec 081, `_leak_check`)"""
+    (spec 081, `_leak_check`). In every mode a comment holding the decided marker exits 2 before
+    gh runs when its item's body or comments name a CVE or GHSA id, or can't be read (S-030-25,
+    D-104, `hold_decided`)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -2221,6 +2225,9 @@ def _gh(
         origin = _known_origin(top) if top is not None and readable else None
         if edit is not None:
             gh_args = edited_args(edit, _gh_default(environ, origin), binary, env, readers.current)
+        deciding = decided_comment(gh_args, edit)
+        if deciding is not None:  # S-030-25, D-104: a decision on a known vulnerability is asked
+            hold_decided(deciding, _gh_default(environ, origin), binary, env, readers.current)
         sent = _Sent(gh_args, read, readers.stdin, top if readable else None, _gh_default(environ, origin))
         fed = _leak_check(sent, _Reach(binary, env, readers.current), readers.private_home)
         return _run_checked(runner, readers.feed, [str(binary), *gh_args], env, fed)
@@ -2263,6 +2270,9 @@ def _gh(
     if closing is not None:  # #1313: as the App, no parent closes over a person's open sub-issue
         hold_close(closing, _gh_default(environ, _known_origin(top)), binary, as_app(environ, token), readers.current)
     env = as_app(environ, token)
+    deciding = decided_comment(gh_args, edit)
+    if deciding is not None:  # S-030-25, D-104: as the App, before gh runs
+        hold_decided(deciding, _gh_default(environ, _known_origin(top)), binary, env, readers.current)
     # the App's bot login, read once however many readers ask for it
     bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
     if labelled is not None:  # #1312: as the App, before gh runs, by triage_state.py's readers
@@ -2704,6 +2714,9 @@ def _gh_product(
     env = {**as_app(environ, token), "GH_REPO": target}
     if edit is not None:
         gh_args = edited_args(edit, target, binary, env, current)
+    deciding = decided_comment(gh_args, edit)
+    if deciding is not None:  # S-030-25, D-104
+        hold_decided(deciding, target, binary, env, current)
     fed = _leak_check(_Sent(gh_args, read, stdin, top, target), _Reach(binary, env, current), private_home)
     return _run_checked(runner, feed, [str(binary), *gh_args], env, fed)
 

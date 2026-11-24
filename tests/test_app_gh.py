@@ -485,6 +485,7 @@ def test_1491_a_code_span_relay_and_the_comments_that_mention_on_purpose_still_p
         home=host.home,
         gh_runner=runner,
         gh_feed=lambda argv, env, fed: runner(argv, env),
+        gh_capture=lambda argv, env: (0, "a thread naming no advisory\n"),  # S-030-25 reads a decided comment's item
         stdin=stdin,
     )
     assert code == 0

@@ -1726,3 +1726,135 @@ def write_repo(args: Sequence[str], default: str | None) -> str | None:
         return default
     matched = _REPO.fullmatch(given)
     return None if matched is None else matched.group(1)
+
+
+# -- S-030-25, D-104: a decision on a known vulnerability is asked, never decided -----------------
+
+DECIDED_MARK = re.compile(r"<!-- shipmill:decided(?:\s[^>]*)?-->")  # spec 030's decided marker, as veto.py reads it
+# a CVE or GitHub advisory id, in any case: GHSA's three groups of four use GitHub's 32 letters and digits
+ADVISORY = re.compile(r"\b(?:CVE-\d{4}-\d{4,}|GHSA(?:-[23456789cfghjmpqrvwx]{4}){3})\b", re.IGNORECASE)
+_COMMENT_EDIT = re.compile(r"issues/comments/([0-9]+)")  # a BodyEdit's path of an issue's or a pull request's comment
+_ISSUE_OF = re.compile(r".*/repos/[^/]+/[^/]+/issues/([1-9][0-9]*)")  # a comment's issue_url
+_API_ITEM_COMMENTS = re.compile(r"repos/([^/]+/[^/]+)/issues/([0-9]+)/comments/?", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class DecidedComment:
+    """A comment holding spec 030's decided marker that gh's args post or edit in: the command as
+    a refusal names it, the item's repo as the args name it (None for the repo gh picks; gh
+    api's {owner} and {repo} kept), and how the item is found: its number, else a pull
+    request's branch, else the comment an edit names, whose item is read; and the comment's body"""
+
+    what: str
+    repo: str | None
+    number: int | None
+    branch: str | None
+    comment_id: int | None
+    body: str
+
+
+def _target(args: Sequence[str], flags: _Flags) -> tuple[str | None, int | None, str | None]:
+    """The item `gh issue|pr <sub> <target>` names, read with flags: its repo as named (a URL's,
+    else -R's), its number, or a pull request's branch; (repo, None, None) when it names none"""
+    positional, _ = _scan(args[1:], flags.long, flags.short)
+    targets = positional[1:]
+    if len(targets) != 1:
+        return named_repo(args), None, None
+    url = _ITEM_URL.fullmatch(targets[0])
+    if url is not None:
+        return url.group(1), int(url.group(2)), None
+    numbered = _NUMBER.fullmatch(targets[0])
+    if numbered is not None:
+        return named_repo(args), int(numbered.group(1)), None
+    return named_repo(args), None, targets[0] if args[0] == "pr" else None
+
+
+def decided_comment(args: Sequence[str], edit: BodyEdit | None) -> DecidedComment | None:
+    """S-030-25: the decided comment gh's args post once `marked_args` made them (`issue|pr
+    comment`, `issue|pr close|reopen --comment`, `gh api`'s POST on an item's comments), or the
+    issue comment edit writes the marker into; None for every other call"""
+    if edit is not None:
+        found = _COMMENT_EDIT.fullmatch(edit.path)
+        if found is None or DECIDED_MARK.search(edit.body) is None:
+            return None
+        return DecidedComment(edit.what, edit.repo, None, None, int(found.group(1)), edit.body)
+    comment = posted_comment(args)
+    if comment is None or DECIDED_MARK.search(comment.body) is None:
+        return None
+    if args[0] == "api":
+        positional, _ = _scan(args[1:], _API_LONG, _API_SHORT)
+        api = _API_ITEM_COMMENTS.fullmatch(_endpoint(positional[0]))
+        if api is None:  # posted_comment read it as one
+            raise ReleaseError(f"{comment.what}: its item can't be told from {positional[0]!r}")
+        return DecidedComment(comment.what, api.group(1), int(api.group(2)), None, None, comment.body)
+    group = _GROUP_FLAGS[args[0]]
+    sub = _scan(args[1:], group.long, group.short)[0][0]
+    repo, number, branch = _target(args, _CLOSE_FLAGS if (args[0], sub) in _CLOSES else _COMMENT_FLAGS)
+    return DecidedComment(comment.what, repo, number, branch, None, comment.body)
+
+
+def _filled(repo: str | None, default: str | None) -> str | None:
+    """repo with gh api's {owner} and {repo} filled from default, or default when it is None"""
+    if repo is None:
+        return default
+    owner, name = repo.split("/")
+    if PLACEHOLDER[0] not in (owner, name) and PLACEHOLDER[1] not in (owner, name):
+        return repo
+    if default is None:
+        return None
+    default_owner, default_name = default.split("/")
+    return f"{default_owner if owner == PLACEHOLDER[0] else owner}/{default_name if name == PLACEHOLDER[1] else name}"
+
+
+def hold_decided(
+    decided: DecidedComment, default: str | None, binary: Path, env: Mapping[str, str], capture: GhCapture
+) -> None:
+    """S-030-25, D-104: exit 2 before gh runs when the item the decided comment goes on names a
+    CVE or GHSA id in its body, its comments, or the decided comment itself, read through gh
+    with env: such a decision is asked, whatever its zone's level. default is the repo gh works
+    on when the args name none. Fails closed: an item or a thread that can't be read refuses"""
+    head = f"{decided.what} is refused"
+    why = (
+        "shipmill gh reads its item's body and comments for a CVE or GHSA id before a decided comment posts, since "
+        "a decision on a known vulnerability is asked (D-104)"
+    )
+    repo = _filled(decided.repo, default)
+    if repo is None:
+        raise ReleaseError(f"{head}: {why}, and can't tell the item's repo here; name it with -R owner/name")
+
+    def read(argv: list[str], what: str) -> str:
+        code, out = capture([str(binary), *argv], env)
+        if code != 0:
+            raise ReleaseError(f"{head}: {why}, and {what} can't be read (gh {' '.join(argv[:2])} exited {code})")
+        return out
+
+    number = decided.number
+    if decided.comment_id is not None:
+        url = read(["api", f"repos/{repo}/issues/comments/{decided.comment_id}", "--jq", ".issue_url"], "its comment")
+        found = _ISSUE_OF.fullmatch(url.strip())
+        if found is None:
+            raise ReleaseError(f"{head}: {why}, and its comment names no issue or pull request ({url.strip()[:80]!r})")
+        number = int(found.group(1))
+    elif number is None and decided.branch is not None:
+        out = read(
+            ["pr", "view", decided.branch, "-R", repo, "--json", "number", "--jq", ".number"], "its pull request"
+        )
+        if _NUMBER.fullmatch(out.strip()) is None:
+            raise ReleaseError(f"{head}: {why}, and gh named its pull request {out.strip()[:80]!r}, not a number")
+        number = int(out.strip())
+    if number is None:
+        raise ReleaseError(f"{head}: {why}, and the args name no item; name it by its number or URL")
+    item = f"{repo}#{number}"
+    body = read(["api", f"repos/{repo}/issues/{number}", "--jq", '.body // ""'], f"{item}'s body")
+    comments = read(
+        ["api", "--paginate", f"repos/{repo}/issues/{number}/comments", "--jq", '.[] | (.body // "")'],
+        f"{item}'s comments",
+    )
+    named = next((m.group(0) for m in map(ADVISORY.search, (body, comments, decided.body)) if m is not None), None)
+    if named is None:
+        return
+    raise ReleaseError(
+        f"{head}: {item} names {named}, and a decision on a known vulnerability is asked whatever its zone's level "
+        "(D-104, spec 030). Ask it instead: a comment whose first line is `<!-- shipmill:needs-decision -->`, then "
+        "the needs-decision label (github-issue-triage's needs-decision.md, Asking)"
+    )
