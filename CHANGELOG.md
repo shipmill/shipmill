@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.164.0] - 2026-11-24
+
+### Added
+
+- A merge that completes an expedite outcome (the pull request that closed the last open sub-issue of an accepted opportunity whose `expedite` label a person added) makes the stable lane due at once with the reason `expedite #N complete`, or the rc lane when stable promotes, without waiting for `quiet_minutes` or a schedule window; every gate still applies, an outcome a release already shipped makes nothing due again, and a config without `[agents]` reads nothing new (spec 070) (#1253)
+
+### Changed
+
+- `shipmill decide classify --pr` puts a pull request that raises an `[autonomy]` stage's level (observe < propose < act, resolved as `shipmill autonomy` resolves it) in `decision-policy`, so it is `never` and the maintainer merges it by hand, whatever `security` is set to; a change that only lowers or keeps the levels stays `security` (D-99) (#1457)
+
+### Fixed
+
+- `move-major-tag.yml` no longer fails a release whose version PyPI's index lists a few minutes after the upload, with an error blaming `SHIPMILL_LAND_KEY`: before the App's token check it resolves the release's shipmill past uv's cache every 20 s for up to 10 minutes, and out of time fails naming PyPI's index, with nothing pushed; the token check's helper refreshes uv's cache too, and its error no longer names PyPI (#1470)
+- `shipmill gh`: three posts the gate would discard exit 2 before anything reaches GitHub, each naming the fix: adding `needs-decision` to a pull request whose newest question doesn't name its current head on its `<!-- shipmill:head <sha> -->` line, a needs-decision question on a pull request without that line, and a relay out of the relay grammar (D-93), read by `pr_gate.py`'s and `retro.py`'s own readers, so the maintainer no longer answers a question twice (#1484)
+- Triage: a hold that closed before an issue's newest triage comment no longer reads the issue UNBLOCKED on every pass; that comment decided it again, so it reads by its verdict and labels, while a sub-issue's close always counts (#1493)
+
 ## [0.163.2] - 2026-11-24
 
 ### Fixed
@@ -2957,7 +2973,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.163.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.164.0...HEAD
+[0.164.0]: https://github.com/shipmill/shipmill/compare/v0.163.2...v0.164.0
 [0.163.2]: https://github.com/shipmill/shipmill/compare/v0.163.1...v0.163.2
 [0.163.1]: https://github.com/shipmill/shipmill/compare/v0.163.0...v0.163.1
 [0.163.0]: https://github.com/shipmill/shipmill/compare/v0.162.2...v0.163.0
