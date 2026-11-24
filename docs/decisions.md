@@ -845,3 +845,11 @@ entry that supersedes it, never by editing an old one.
 - Why: On 2026-11-24 every agent pull request in shipmill/shipmill waited on nothing for a day: sessions killed by a usage limit left hands that turned idle, since handed.json didn't say the session never ran (#1512). A limit belongs to the account, so each gate and each item learning it alone wastes attempts, and a replaced token cleared nothing. The pause file is the first state shared between gates on a host, kept to the credential's pause
 - Applies to: src/shipmill/gate.py, src/shipmill/walk.py, src/shipmill/status.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/089-gate-wait-by-cause.md, handed.json, [agents] retry_hours
 - Enforced by: tests of spec 089 (test_s089_*), with the implementing PRs
+
+## D-101: A pull request in protected or security may earn a lower level on its evidence, within a bound the maintainer writes
+
+- Decided: 2026-11-24, in shipmill/shipmill#1432
+- Rule: Refines D-48: a zone's level from the base may be lowered for one pull request only to the bound [decisions.earned] sets for protected or security, never below the zone's floor, and only when its four pieces of evidence hold (a required check that proves, at most max_lines changed, no raised area, no ceiling path); a never level, any other zone, a change given as --files, and the [autonomy] land ceiling (D-51) never earn, and a release shipmill operate marks failed raises the areas it touched through the area-record zone until clean_releases clean releases clear them
+- Why: Zone levels set by hand made the maintainer choose between approving every pull request in a zone and trusting every one; evidence read from the forge and the checkout lets a safe change land lower while a bound the maintainer writes and fixed ceiling kinds keep risky ones asking (#1305)
+- Applies to: src/shipmill/decide.py, src/shipmill/classify.py, src/shipmill/earned.py, src/shipmill/area_record.py, src/shipmill/review_record.py, skills/github-issue-triage/scripts/decisions.py, docs/specs/083-earned-landing-level.md, [decisions.earned], [decisions] clean_releases, area-record zone
+- Enforced by: tests of spec 083 (test_s083_*) and tests/landing/seeded.toml, with the implementing PRs

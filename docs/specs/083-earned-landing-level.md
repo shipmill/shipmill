@@ -226,6 +226,13 @@ record`), `src/shipmill/github.py`, `src/shipmill/merge_checks.py` (read),
 
 ## Issues
 
+- shipmill/shipmill#1544: S-083-1, S-083-2, S-083-3
+- shipmill/shipmill#1545: S-083-4, S-083-5
+- shipmill/shipmill#1546: S-083-6, S-083-7
+- shipmill/shipmill#1547: S-083-12
+- shipmill/shipmill#1548: S-083-8, S-083-9, S-083-10
+- shipmill/shipmill#1549: S-083-11, S-083-13
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was

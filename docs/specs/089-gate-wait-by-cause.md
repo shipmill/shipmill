@@ -142,4 +142,12 @@ a coming tick".
 
 ## Issues
 
+- shipmill/shipmill#1550: S-089-1, S-089-2
+- shipmill/shipmill#1551: S-089-3, S-089-4, S-089-14
+- shipmill/shipmill#1552: S-089-5, S-089-6, S-089-9, S-089-10
+- shipmill/shipmill#1553: S-089-7, S-089-8
+- shipmill/shipmill#1554: S-089-11
+- shipmill/shipmill#1555: S-089-12
+- shipmill/shipmill#1556: S-089-13
+
 ## Verification
