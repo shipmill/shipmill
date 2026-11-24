@@ -18,6 +18,7 @@ from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_pause import (
     LOGIN,
     Pause,
+    UsageProbe,
     credential_id,
     load_pause,
     newest_reset,
@@ -79,6 +80,7 @@ class Gate:
         self.agents = cfg(Mode.HEADLESS, **keys)
         self.asked: list[Token | None] = []
         self.logged_in = True
+        self.usage: UsageProbe | None = None  # spec 089's /usage probe; None: the gate runs none
 
     def auth(self, token: Token | None) -> ClaudeAuth:
         self.asked.append(token)
@@ -96,6 +98,7 @@ class Gate:
             pauses=self.folder,
             auth=self.auth,
             credential=None if found is None else (lambda: found),
+            usage=self.usage,
         )
 
 

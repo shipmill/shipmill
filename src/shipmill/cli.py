@@ -306,7 +306,7 @@ from shipmill.classify import (
     policy_at,
 )
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
-from shipmill.claude_pause import pauses_dir
+from shipmill.claude_pause import pauses_dir, usage_probe
 from shipmill.claude_token import FLAG as TOKEN_FLAG
 from shipmill.claude_token import Credential, Token, TokenSource, inspect, read_token
 from shipmill.config import CONFIG_PATH, Table, config_path
@@ -1807,6 +1807,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         # spec 060: the installation read with the notice's own token, written with the gate's
         permissions=Seams(api_reads(args.slug, Openssl(), UrllibApi()), upgrades_as_app),
         pauses=pauses_dir(os.environ, Path.home()),  # spec 089: shared by every gate on the host
+        usage=usage_probe(os.environ, shutil.which("claude", path=os.environ.get("PATH", ""))),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11

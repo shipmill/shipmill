@@ -45,6 +45,7 @@ from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_pause import (
     CAUSES,
     Pause,
+    UsageProbe,
     credential_id,
     load_pause,
     newest_reset,
@@ -2679,11 +2680,15 @@ def paused(
     repo: str,
     now: dt.datetime,
     dry_run: bool,
+    usage: UsageProbe | None = None,
 ) -> Decision | None:
-    """Spec 089 (S-089-6, S-089-9, S-089-10): a tick of any gate on the host reads its
-    credential's pause before it launches; while it holds, the tick starts no session and reads
-    PAUSED, naming the cause and when it ends. A limit pause lifts at its resetsAt, or
-    retry_hours after it began without one; an auth pause on a token file holds until the
+    """Spec 089 (S-089-6 to S-089-10): a tick of any gate on the host reads its credential's
+    pause before it launches; while it holds, the tick starts no session and reads PAUSED,
+    naming the cause and when it ends. While a limit pause holds, each tick probes `/usage`
+    with the sessions' own credential (usage): the first that shows no window full lifts it
+    (S-089-7); one that shows a window full holds it, whatever the clock says; one that can't
+    be read, or fails, lifts it at its resetsAt, or retry_hours after it began without one
+    (S-089-8), as does every tick with no probe given (usage None); an auth pause on a token file holds until the
     file's content changes, which names another credential with no pause, and on the login
     until `claude auth status` (auth) reports one. A lifted pause is kept, marked lifted. An
     auth pause sends one notification, recorded on the pause, so no later tick of any gate
@@ -2694,8 +2699,11 @@ def paused(
         return None
     retry = dt.timedelta(hours=agents.retry_hours)
     lifts = found.lifts_at(retry)
-    if (lifts is not None and now >= lifts) or (
-        found.cause is End.AUTH and credential == LOGIN_CREDENTIAL and auth is not None and auth(None).ok
+    room = None if found.cause is not End.LIMIT or usage is None else usage(token)
+    if (
+        room is True
+        or (room is None and lifts is not None and now >= lifts)
+        or (found.cause is End.AUTH and credential == LOGIN_CREDENTIAL and auth is not None and auth(None).ok)
     ):
         if not dry_run:
             save_pause(folder, credential, found.lifting(now))
@@ -2706,6 +2714,8 @@ def paused(
     until = found.until(credential, retry)
     cause = "a usage limit" if found.cause is End.LIMIT else "a refused credential"
     reason = f"{found.cause.value}: {cause} stopped session {found.session}; no session starts until {until}"
+    if found.cause is End.LIMIT and usage is not None:
+        reason += "; /usage shows a window full" if room is False else "; /usage can't be read"
     notice = None
     if found.cause is End.AUTH and agents.notify and found.notified is None:
         body = f"Claude Code's credential was refused: {fix}; the gate starts no session until then"
@@ -2830,6 +2840,7 @@ def gate(
     verify: Planner | None = None,
     permissions: Seams | None = None,
     pauses: Path | None = None,
+    usage: UsageProbe | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -3014,6 +3025,7 @@ def gate(
             verify=verify,
             permissions=permissions,
             pauses=pauses,
+            usage=usage,
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -3078,6 +3090,7 @@ def decided(
     verify: Planner | None = None,
     permissions: Seams | None = None,
     pauses: Path | None = None,
+    usage: UsageProbe | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -3140,7 +3153,7 @@ def decided(
     if pauses is not None and current is not None:
         noted = noted_pause(pauses, state, last, dead, dry_run)
         mine = noted if last is not None and last.credential == current else None
-        stopped_by = paused(pauses, current, mine, auth, token, agents, notifier, repo, now, dry_run)
+        stopped_by = paused(pauses, current, mine, auth, token, agents, notifier, repo, now, dry_run, usage)
         if stopped_by is not None:
             return replace(stopped_by, mode=agents.mode, detached=detached, dead=dead, credential=kind), None, waiting
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and

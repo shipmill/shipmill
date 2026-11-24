@@ -9,11 +9,13 @@ import datetime as dt
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+import subprocess
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from shipmill.claude_token import Token
+from shipmill.claude_auth import EnvAuthRunner, run_auth_in
+from shipmill.claude_token import Token, session_env
 from shipmill.errors import ReleaseError
 from shipmill.walk import End, malformed, moment, write
 
@@ -153,3 +155,38 @@ def newest_reset(events: list[Mapping[str, object]]) -> dt.datetime | None:
         if info.get("status") == "rejected":
             rejected.append(at)
     return max(rejected or every, default=None)
+
+
+# `claude -p "/usage"` prints one line per usage window, `Current session: 24% used · resets ...`;
+# it calls no model (spec 089)
+USAGE = ("-p", "/usage")
+WINDOW = re.compile(r"^\s*Current ([^:\n]+): (\d+(?:\.\d+)?)% used\b", re.MULTILINE)
+UsageProbe = Callable[[Token | None], bool | None]  # room in every window, or None: unread
+
+
+def usage_room(text: str) -> bool | None:
+    """Whether `/usage`'s output shows no window full: True when every window it names is
+    under 100% used, False when one is at 100% or past it, None when it names none, so its
+    output can't be read (S-089-7, S-089-8)"""
+    windows = WINDOW.findall(text)
+    if not windows:
+        return None
+    return all(float(used) < 100 for _, used in windows)
+
+
+def usage_probe(environ: Mapping[str, str], program: str | None, run: EnvAuthRunner = run_auth_in) -> UsageProbe:
+    """Spec 089 (S-089-7): `claude -p "/usage"` in the env a session gets, so with a token file
+    its token as CLAUDE_CODE_OAUTH_TOKEN and never the host login; program is claude's path on
+    the PATH a session gets. None, the probe failed or its output can't be read, when claude
+    is missing, doesn't answer in 60 s, or exits non-zero (S-089-8). Its output is never shown"""
+
+    def probe(token: Token | None) -> bool | None:
+        if program is None:
+            return None
+        try:
+            proc = run([program, *USAGE], session_env(environ, token))
+        except FileNotFoundError, subprocess.TimeoutExpired:
+            return None
+        return usage_room(proc.stdout) if proc.returncode == 0 else None
+
+    return probe
