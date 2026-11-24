@@ -1335,6 +1335,13 @@ def test_1487_with_a_coordinator_an_unlinked_report_stays_upstream(tmp_path: Pat
     assert read_rows(proc) == [(5, "UPSTREAM", "routed by acme/product")]  # its ROUTE_DUE takes it up
 
 
+def test_1487_in_the_home_repo_an_unlinked_report_stays_upstream(tmp_path: Path) -> None:
+    # the watch and the queue pass a home repo itself as --home: its coordinator routes the report
+    proc = run_script(tmp_path, [upstream_report()], "--home", "o/r")
+    assert proc.returncode == 0, proc.stderr
+    assert read_rows(proc) == [(5, "UPSTREAM", "routed by o/r")]
+
+
 def test_1487_an_unowned_reports_open_question_still_asks_the_maintainer(tmp_path: Path) -> None:
     item = upstream_report()
     item["labels"]["nodes"].append({"name": "needs-decision"})

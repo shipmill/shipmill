@@ -872,6 +872,21 @@ def test_1487_in_a_component_triage_reads_with_the_clones_home(
     assert "--home" not in triage("o/s")  # no [product] home: none
 
 
+def test_1487_in_a_home_repo_triage_reads_with_the_repo_itself_as_home(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the home repo's config sets [product] repos, not home: its coordinator routes its own
+    # reports (upstream_state.py's ROUTE_DUE), so none is the maintainer's UPSTREAM row
+    fake = FakeGh(configs={"o/r": '[product]\nrepos = ["o/s"]\n', "o/s": "[product]\nstandalone = true\n"})
+    run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+
+    def triage(repo: str) -> list[str]:
+        return next(c for c in fake.calls if c[1:3] == [str(fl.WS.TRIAGE_STATE), repo])
+
+    assert triage("o/r")[-2:] == ["--home", "o/r"]
+    assert "--home" not in triage("o/s")  # a repo that stands alone: no coordinator
+
+
 def test_a_bot_login_that_isnt_a_login_is_refused(fl: ModuleType, tmp_path: Path) -> None:
     path = tmp_path / "fleet.toml"
     path.write_text(FLEET, encoding="utf-8")

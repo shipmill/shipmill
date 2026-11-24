@@ -204,6 +204,21 @@ def test_s038_15_the_watch_passes_the_product_home_as_home(ws: ModuleType, tmp_p
 
 
 @pytest.mark.parametrize(
+    ("text", "home"),
+    [
+        ('[product]\nhome = "acme/product"\n', HOME),  # a component: its home routes its reports
+        ('[product]\nrepos = ["acme/api"]\n', "o/r"),  # the home repo: its own coordinator does (#1487)
+        ("[product]\nstandalone = true\n", None),  # stands alone: no coordinator
+        ('[agents]\nprompt = "x"\n', None),  # no [product]: none
+    ],
+)
+def test_1487_triage_reads_with_the_coordinators_repo_as_home(
+    ws: ModuleType, tmp_path: Path, text: str, home: str | None
+) -> None:
+    assert ws.triage_home(text, tmp_path / "shipmill.toml", "o/r") == home
+
+
+@pytest.mark.parametrize(
     "text",
     [
         '[product]\nhome = "acme"\n',
