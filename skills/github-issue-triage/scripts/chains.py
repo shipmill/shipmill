@@ -6,6 +6,10 @@ Usage:
   chains.py link <owner/repo#P> --child <owner/repo#C> [--no-text]
   chains.py link --product <owner/repo#P> --child <owner/repo#C> [--no-text]
   chains.py show <owner/repo#N>... [--json] [--trusted-only] [--bot-login LOGIN]
+  chains.py impact [<owner/repo#N>...] [--repo OWNER/NAME]... [--json] [--trusted-only] [--bot-login LOGIN]
+  chains.py stalled [<owner/repo#N>...] [--repo OWNER/NAME]... [--days N] [--json] [--trusted-only]
+                    [--bot-login LOGIN]
+  chains.py path --repo OWNER/NAME --milestone TITLE [--json] [--trusted-only] [--bot-login LOGIN]
 
 link  writes a link in both forms triage_state.py reads:
       --blocked-by  GitHub's native relation (GraphQL addBlockedBy: N is blocked by M)
@@ -139,6 +143,30 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       an issue it follows with more than 100 labels, assignees, or relations of one kind
       (not paged; an UNTRUSTED one's are never read), a config that can't be parsed, or any gh failure other than an
       unreadable item, a missing config, or a 404 from the collaborator check.
+
+impact, stalled, and path are three views of show's one walk and its rows (spec 086): they
+      take show's --trusted-only and --bot-login, write nothing on GitHub, and exit 2 on what
+      show exits 2 on. --repo OWNER/NAME (repeatable) adds every open issue of the repo as a
+      start, read in pages of 100, beside any references; its repo is an origin as a
+      reference's is. A view's line shows "-" for an idle_days or waiting_for that is null,
+      and no title for an UNTRUSTED or UNREADABLE item.
+      - impact prints the items with held of 1 or more, most held first, then held_direct,
+        then the reference: "<ref> holds <held> (<held_direct> directly), waits for
+        <waiting_for>, idle <d>d", then " milestones: <list>" when it has any, then two spaces
+        and the title. --json prints {"rows": [...]} with show's row fields. Exit 0
+      - stalled prints the heads (an open issue with held of 1 or more whose waiting_for is
+        neither items nor cycle) idle --days N or more (default 7; below 1 exits 2), most
+        held first, then the longest idle, then the reference, in impact's shapes. Exit 1
+        when it prints a row, else 0
+      - path prints a milestone's path to release: every open issue in the open milestone of
+        that exact title in --repo (exactly one, and no references), and every open item they
+        wait on, recursively, each once. decision items first, then maintainer ones, then the
+        rest; within each, by held_in_path (how many items of the path wait on it) most
+        first, then the reference: "<ref> waits for <waiting_for>, holds <n> in the path,
+        idle <d>d", two spaces and the title. --json prints {"milestone": TITLE, "rows":
+        [...]}, show's row fields and held_in_path. No open milestone of that title exits 2,
+        'error: no open milestone "<TITLE>" in OWNER/NAME'; one with nothing open prints
+        "milestone <TITLE>: nothing open". Exit 0
 
 Needs the gh CLI, authenticated, and for link with an [agents] section uvx. Python
 3.10+, standard library only.
@@ -1293,6 +1321,201 @@ def show(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool, n
     return 1 if any(acting) else 0
 
 
+# -- impact, stalled, path (spec 086): three views of show's one walk, reads only -----------
+
+REPO = re.compile(r"^(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)$")
+STALLED_DAYS = 7
+PATH_FIRST = ("decision", "maintainer")  # what waits on the maintainer leads a milestone's path
+OPEN_ISSUES = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { number } }
+  }
+}
+"""
+OPEN_MILESTONES = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    milestones(states: OPEN, first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { number title } }
+  }
+}
+"""
+MILESTONE_ISSUES = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    milestone(number: $number) {
+      issues(states: OPEN, first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { number } }
+    }
+  }
+}
+"""
+
+
+def parse_repo(text: str) -> tuple[str, str]:
+    m = REPO.match(text.strip())
+    if m is None:
+        fail(f"malformed repo {text!r}: want OWNER/NAME")
+    return m["owner"], m["name"]
+
+
+def pages(run: Runner, query: str, variables: Variables, where: str, steps: Sequence[str]) -> list[dict[str, Any]]:
+    """Every node of a connection, a page of 100 at a time: steps lead from the response's
+    data to the connection. Any error, or a step GitHub answers null, exits 2 naming where"""
+    nodes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    asked = dict(variables)
+    while True:
+        response = run(query, asked)
+        errors = errors_of(response)
+        if errors:
+            fail(f"reading {where}: {first_line(errors)}")
+        found: Any = response.get("data")
+        for step in steps:
+            found = (found or {}).get(step)
+        if not isinstance(found, dict):
+            fail(f"reading {where}: GitHub answered no {steps[-1]}")
+        nodes += found["nodes"]
+        cursor = found["pageInfo"]["endCursor"] if found["pageInfo"]["hasNextPage"] else None
+        if cursor is None:
+            return nodes
+        if cursor in seen:
+            fail(f"reading {where}: GitHub reported more, but the page cursor did not advance")
+        seen.add(cursor)
+        asked["cursor"] = cursor
+
+
+def open_issues(run: Runner, owner: str, name: str) -> list[Ref]:
+    """Every open issue of a repo, as --repo spells it"""
+    nodes = pages(
+        run, OPEN_ISSUES, {"owner": owner, "name": name}, f"the open issues of {owner}/{name}", ("repository", "issues")
+    )
+    return [Ref(owner, name, int(n["number"])) for n in nodes]
+
+
+def milestone_issues(run: Runner, owner: str, name: str, title: str) -> list[Ref]:
+    """Every open issue in the open milestone of exactly that title; exit 2 naming it when
+    the repo has none"""
+    variables: Variables = {"owner": owner, "name": name}
+    milestones = pages(
+        run, OPEN_MILESTONES, variables, f"the milestones of {owner}/{name}", ("repository", "milestones")
+    )
+    number = next((int(m["number"]) for m in milestones if m["title"] == title), None)
+    if number is None:
+        fail(f'no open milestone "{title}" in {owner}/{name}')
+    where = f'the open issues of milestone "{title}" in {owner}/{name}'
+    nodes = pages(run, MILESTONE_ISSUES, {**variables, "number": number}, where, ("repository", "milestone", "issues"))
+    return [Ref(owner, name, int(n["number"])) for n in nodes]
+
+
+def walked(
+    reader: Reader, contents: Contents, starts: list[Ref], now: dt.datetime
+) -> tuple[list[tuple[Item, dict[str, Any]]], dict[Key, Item]]:
+    """show's walk and rows, each row beside its item, and every item read"""
+    chain, items = walk(reader, starts)
+    return list(zip(chain, show_rows(chain, items, contents, now), strict=True)), items
+
+
+def idle_text(days: int | None) -> str:
+    return "-" if days is None else f"{days}d"
+
+
+def impact_line(row: dict[str, Any]) -> str:
+    line = (
+        f"{row['ref']} holds {row['held']} ({row['held_direct']} directly), "
+        f"waits for {row['waiting_for'] or '-'}, idle {idle_text(row['idle_days'])}"
+    )
+    if row["milestones"]:
+        line += f" milestones: {', '.join(row['milestones'])}"
+    return line + (f"  {row['title']}" if row["title"] is not None else "")  # an UNTRUSTED item's text never shows
+
+
+def print_rows(rows: list[dict[str, Any]], as_json: bool, line: Callable[[dict[str, Any]], str], **extra: str) -> None:
+    if as_json:
+        print(json.dumps({**extra, "rows": rows}, sort_keys=True))
+    elif rows:
+        print("\n".join(line(row) for row in rows))
+
+
+def impact(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool, now: dt.datetime) -> int:
+    """The items of the walk with held of 1 or more, most held first, then held_direct, then
+    the reference. Exit 0"""
+    pairs, _ = walked(reader, contents, starts, now)
+    chosen = sorted(
+        ((item, row) for item, row in pairs if row["held"] >= 1),
+        key=lambda pair: (-pair[1]["held"], -pair[1]["held_direct"], pair[0].ref.key),
+    )
+    print_rows([row for _, row in chosen], as_json, impact_line)
+    return 0
+
+
+def is_head(item: Item, row: dict[str, Any]) -> bool:
+    """The item a chain waits on first: an open issue others wait on that waits on no item
+    itself (spec 086)"""
+    return item.open_issue and row["held"] >= 1 and row["waiting_for"] not in ("items", "cycle")
+
+
+def stalled(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool, now: dt.datetime, days: int) -> int:
+    """The heads idle days or more, most held first, then the longest idle, then the
+    reference, in impact's shapes. Exit 1 with a row, else 0"""
+    pairs, _ = walked(reader, contents, starts, now)
+    chosen = sorted(
+        ((item, row) for item, row in pairs if is_head(item, row) and row["idle_days"] >= days),
+        key=lambda pair: (-pair[1]["held"], -pair[1]["idle_days"], pair[0].ref.key),
+    )
+    print_rows([row for _, row in chosen], as_json, impact_line)
+    return 1 if chosen else 0
+
+
+def path_line(row: dict[str, Any]) -> str:
+    line = (
+        f"{row['ref']} waits for {row['waiting_for'] or '-'}, holds {row['held_in_path']} in the path, "
+        f"idle {idle_text(row['idle_days'])}"
+    )
+    return line + (f"  {row['title']}" if row["title"] is not None else "")
+
+
+def path(reader: Reader, contents: Contents, owner: str, name: str, title: str, as_json: bool, now: dt.datetime) -> int:
+    """A milestone's path to release: its open issues and every open item they wait on,
+    recursively, each once; decision then maintainer items first, then by how many items of
+    the path wait on each (held_in_path), most first, then the reference. Exit 0"""
+    starts = milestone_issues(reader.run, owner, name, title)
+    if not starts:
+        print(f"milestone {title}: nothing open")
+        return 0
+    pairs, items = walked(reader, contents, starts, now)
+    rows = {item.ref.key: (item, row) for item, row in pairs}
+    on_path: set[Key] = set()
+    frontier = [items[ref.key] for ref in starts]
+    while frontier:
+        later: list[Item] = []
+        for item in frontier:
+            if item.ref.key in on_path:
+                continue
+            on_path.add(item.ref.key)
+            if item.open_issue:
+                later += [
+                    items[hold.key]
+                    for hold, given in item.holds
+                    if hold.key in items and hold_state(items, hold, given) in OPEN_HOLDS
+                ]
+        frontier = later
+    members = [rows[key][0] for key in sorted(on_path)]
+    within = weights(members, {key: item for key, item in items.items() if item.ref.key in on_path})
+
+    def place(item: Item) -> tuple[int, int, Key]:
+        waits = rows[item.ref.key][1]["waiting_for"]
+        first = PATH_FIRST.index(waits) if waits in PATH_FIRST else len(PATH_FIRST)
+        return (first, -within[item.ref.key].held, item.ref.key)
+
+    chosen = []
+    for item in sorted(members, key=place):
+        row = rows[item.ref.key][1]
+        row["held_in_path"] = within[item.ref.key].held
+        chosen.append(row)
+    print_rows(chosen, as_json, path_line, milestone=title)
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     run: Runner = gh_graphql,
@@ -1340,17 +1563,61 @@ def main(
         help="read an issue the starting repos don't trust the author of for its state alone (D-16)",
     )
     show_parser.add_argument("--bot-login", help="the login shipmill's sessions write as, such as <slug>[bot]")
+    walked_by = argparse.ArgumentParser(add_help=False)  # what impact, stalled, and path share with show
+    walked_by.add_argument("--json", action="store_true", help="the rows as one JSON object")
+    walked_by.add_argument(
+        "--trusted-only",
+        action="store_true",
+        help="read an issue the starting repos don't trust the author of for its state alone (D-16)",
+    )
+    walked_by.add_argument("--bot-login", help="the login shipmill's sessions write as, such as <slug>[bot]")
+    walked_by.add_argument(
+        "--repo", action="append", default=[], metavar="OWNER/NAME", help="start from every open issue of the repo"
+    )
+    for view, what in (
+        ("impact", "print the items others wait on, most held first (spec 086)"),
+        ("stalled", "print the heads of chains idle for days, most held first (spec 086)"),
+    ):
+        view_parser = commands.add_parser(view, parents=[walked_by], help=what)
+        view_parser.add_argument("issues", nargs="*", metavar="OWNER/REPO#N", help="an issue to start from")
+        if view == "stalled":
+            view_parser.add_argument("--days", type=int, default=STALLED_DAYS, help="idle for at least N days (7)")
+    path_parser = commands.add_parser(
+        "path", parents=[walked_by], help="print a milestone's open issues and what they wait on (spec 086)"
+    )
+    path_parser.add_argument("issues", nargs="*", help=argparse.SUPPRESS)  # none: refused below
+    path_parser.add_argument("--milestone", required=True, metavar="TITLE", help="the open milestone's exact title")
     args = parser.parse_args(argv)
-    if args.command == "show":
+    if args.command != "link":
         if args.bot_login is not None and not args.bot_login.strip():
             parser.error("--bot-login must not be empty")
         starts = [parse_ref(issue) for issue in args.issues]
+        repos = [parse_repo(repo) for repo in getattr(args, "repo", [])]
+        if args.command == "path" and (len(repos) != 1 or starts):
+            fail("path takes exactly one --repo OWNER/NAME and no references")
+        if args.command in ("impact", "stalled") and not starts and not repos:
+            fail(f"{args.command} needs a reference or --repo OWNER/NAME to start from")
+        if args.command == "stalled" and args.days < 1:
+            fail(f"--days must be 1 or more, not {args.days}")
         origins: dict[str, str] = {}
-        for ref in starts:
-            origins.setdefault(ref.repo.lower(), ref.repo)  # each repo once, as first spelled
+        for owner, name in [(ref.owner, ref.name) for ref in starts] + repos:
+            origins.setdefault(f"{owner}/{name}".lower(), f"{owner}/{name}")  # each repo once, as first spelled
         reader = Reader(run, standing, args.trusted_only, args.bot_login, tuple(origins.values()))
         moment = now if now is not None else dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
-        return show(reader, contents, starts, args.json, moment)
+        if args.command == "show":
+            return show(reader, contents, starts, args.json, moment)
+        if args.command == "path":
+            owner, name = repos[0]
+            return path(reader, contents, owner, name, args.milestone, args.json, moment)
+        known = {ref.key for ref in starts}
+        for owner, name in repos:
+            for ref in open_issues(run, owner, name):
+                if ref.key not in known:
+                    known.add(ref.key)
+                    starts.append(ref)
+        if args.command == "impact":
+            return impact(reader, contents, starts, args.json, moment)
+        return stalled(reader, contents, starts, args.json, moment, args.days)
     target = parse_ref(args.issue)
     other = parse_ref(args.child if args.child is not None else args.blocked_by)
     if args.product and args.child is None:
