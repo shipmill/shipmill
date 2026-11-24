@@ -9,7 +9,9 @@ run per check, every attempt), and, for a red head, the runs and merges behind i
 line is `<STATE> <branch>@<sha7>`:
 
 - GREEN: no completed check on the head failed; a queued, running, cancelled, skipped,
-  neutral, or stale check is not red
+  neutral, or stale check is not red, nor is a job of a workflow the lanes of the head's
+  .github/shipmill.toml name in dispatch or after_publish whose run was dispatched: shipmill
+  dispatches it on the branch for a tag, so it tests the tag, not the head (#1485)
 - PENDING: none failed, and a check is rerunning after a failed attempt on the head, which
   pr_gate.py reads as `base: pending` (#1310): never GREEN while the merge gate waits on the
   rerun. A line `pending: <run URL>` names each such run
@@ -53,6 +55,8 @@ with nothing on stdout (Q-1).
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import importlib.util
 import json
 import re
@@ -188,6 +192,7 @@ class Failed:
     app: int | None = None  # a check run's app
     workflow: int | None = None  # an Actions job's workflow
     attempt: int | None = None  # its workflow run's attempt
+    run: dict = field(default_factory=dict, compare=False, hash=False)  # an Actions job's workflow run
 
 
 @dataclass
@@ -286,7 +291,38 @@ def failed_check(gh: GitHub, entry: dict) -> Failed:
     attempt = int_of(data, "run_attempt", what)
     workflow = int_of(data, "workflow_id", what)
     url = str_of(data, "html_url", what)
-    return Failed(check.name, url, entry, app=app, workflow=workflow, attempt=attempt)
+    return Failed(check.name, url, entry, app=app, workflow=workflow, attempt=attempt, run=data)
+
+
+def not_released(gh: GitHub, sha: str, failed: list[Failed]) -> list[Failed]:
+    """The failed checks but each job of a lane's release workflow dispatched, as pr_gate.py
+    leaves them out of the base (#1485): they test a tag, not the head. The config is read at the
+    head, from GitHub, only when a failed job's run was dispatched; no config leaves none out"""
+    if not any(f.run.get("event") == "workflow_dispatch" for f in failed):
+        return failed
+    text = config_at(gh, sha)
+    if text is None:
+        return failed
+    workflows = gate.release_workflows(text, f"{gate.CONFIG} at {sha[:7]}")
+    return [f for f in failed if not gate.dispatched_release(f.run, workflows)]
+
+
+def config_at(gh: GitHub, sha: str) -> str | None:
+    """The commit's .github/shipmill.toml, None without one: the .github folder is listed first,
+    which a commit a workflow was dispatched on has"""
+    listed = gh.json([f"repos/{{owner}}/{{repo}}/contents/.github?ref={sha}"])
+    if not isinstance(listed, list):
+        raise BaseRedError(f"the .github folder of {sha[:7]} is not a list: {str(listed)[:200]}")
+    if not any(isinstance(i, dict) and i.get("name") == "shipmill.toml" and i.get("type") == "file" for i in listed):
+        return None
+    what = f"{gate.CONFIG} at {sha[:7]}"
+    data = gh.json([f"repos/{{owner}}/{{repo}}/contents/{gate.CONFIG}?ref={sha}"])
+    if str_of(data, "encoding", what) != "base64":
+        raise BaseRedError(f"{what} is not base64: {str(data)[:200]}")
+    try:
+        return base64.b64decode(str_of(data, "content", what)).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise BaseRedError(f"{what} can't be decoded: {exc}") from None
 
 
 def rerunning_url(entry: dict) -> str:
@@ -545,7 +581,7 @@ def read(gh: GitHub, branch: str | None, bot: str | None, limit: int) -> Reading
     except json.JSONDecodeError as exc:
         raise BaseRedError(f"the checks of {branch}'s head are not JSON: {exc}") from None
     red = [e for e in entries if gate.check_of(e).done and gate.check_of(e).conclusion not in gate.NOT_RED]
-    failed = [failed_check(gh, e) for e in red]
+    failed = not_released(gh, sha, [failed_check(gh, e) for e in red])
     reading = Reading("GREEN", branch, sha, failed)
     if not failed:
         reading.pending = [(gate.check_of(e).name, rerunning_url(e)) for e in entries if e.get("rerunning")]

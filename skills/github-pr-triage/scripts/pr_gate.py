@@ -436,6 +436,7 @@ class Base:
     environments: tuple[str, ...] = ()  # the config's [environments], whose latest deploys an incident holds (#1481)
     incident_label: str = INCIDENT_LABEL  # the config's [operate] incident_label
     hotfix_lane: bool = False  # the config has [lanes.hotfix]: a PR into release/X.Y is a hotfix
+    config: str | None = None  # its .github/shipmill.toml, whose lanes' release workflows base_head reads (#1485)
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -774,7 +775,7 @@ def read_base(checkout: str, ref: str) -> Base:
     window = config is not None and has_land_window(config, where)
     revert = REVERT_LEVELS[0] if config is None else revert_level(config, where)
     environments, label, hotfix = ((), INCIDENT_LABEL, False) if config is None else operations(config, where)
-    return Base(ids, reviews, agents, ref, maintainers, window, revert, environments, label, hotfix)
+    return Base(ids, reviews, agents, ref, maintainers, window, revert, environments, label, hotfix, config)
 
 
 def operations(text: str, where: str) -> tuple[tuple[str, ...], str, bool]:
@@ -1436,18 +1437,137 @@ def spec_problems(data: dict, number: int, repo: str | None) -> list[str]:
     return [NO_ISSUE]
 
 
-def base_head(branch: str, number: int, repo: str | None) -> tuple[str, list[dict]]:
+def base_head(branch: str, number: int, repo: str | None, config: str | None = None) -> tuple[str, list[dict]]:
     """The base branch's head commit and its checks, the newest run of each as newest_checks reads
     the PR's (#962): one read of the commit's statuses, which names the commit, then one of its
     check runs, every page, every attempt (filter=all; the default lists only the latest). Each
     check is rollup-shaped, with the URLs a Repairs: line may name, and marked rerunning when it
-    is not done and its previous attempt on the head failed (#1310)"""
+    is not done and its previous attempt on the head failed (#1310). A failed job of a release
+    workflow the default branch's config dispatches is left out (#1485, not_released)"""
 
     def read(args: list[str]) -> str:
         cmd, env = api(args, repo)
         return gh(cmd, number, env)
 
-    return head_checks(branch, read)
+    sha, entries = head_checks(branch, read)
+    return sha, not_released(entries, config, read)
+
+
+RELEASE_KEYS = ("dispatch", "after_publish")  # a lane's workflows shipmill dispatches for a tag
+
+
+def not_released(entries: list[dict], config: str | None, read: Callable[[list[str]], str]) -> list[dict]:
+    """The head's checks but each failed job of a lane's release workflow dispatched (#1485):
+    shipmill dispatches it on the branch for a tag, so GitHub records its run on the head though
+    the run tests the tag; github-ship-watch's release rows report its failure. A failed job's
+    workflow run is read, once, only when the config's lanes name a release workflow"""
+    failed = {run for e in entries if is_red(e) and (run := run_of(e)) is not None}
+    workflows = release_workflows(config, CONFIG) if config is not None and failed else frozenset()
+    if not workflows:
+        return entries
+    runs = {r for r in sorted(failed) if dispatched_release(read_run(r, read), workflows)}
+    return [e for e in entries if not (is_red(e) and run_of(e) in runs)]
+
+
+def read_run(run: int, read: Callable[[list[str]], str]) -> dict:
+    data = json.loads(read([f"repos/{{owner}}/{{repo}}/actions/runs/{run}"]))
+    if not isinstance(data, dict):
+        raise GateError(f"workflow run {run} is not an object: {str(data)[:200]}")
+    return data
+
+
+def is_red(entry: dict) -> bool:
+    """A check that completed failed, as base_failures reads red"""
+    check = check_of(entry)
+    return check.done and check.conclusion not in NOT_RED
+
+
+def run_of(entry: dict) -> int | None:
+    """The workflow run an Actions job's check run belongs to, from its URLs"""
+    for url in entry.get("urls") or ():
+        found = _ACTIONS_URL.fullmatch(url)
+        if found is not None:
+            return int(found.group(1))
+    return None
+
+
+def dispatched_release(run: dict, workflows: frozenset[str]) -> bool:
+    """Whether a workflow run is one of the lanes' release workflows, started by workflow_dispatch:
+    its path is .github/workflows/<the file a lane names>. The same workflow on a push, a pull
+    request, or a schedule tests the head, and so does a dispatched workflow no lane names"""
+    path = run.get("path")
+    if run.get("event") != "workflow_dispatch" or not isinstance(path, str):
+        return False
+    return path.split("@", 1)[0] in {f".github/workflows/{w}" for w in workflows}
+
+
+def release_workflows(text: str, where: str) -> frozenset[str]:
+    """The workflow files the config's lanes name in dispatch or after_publish (#1485). Read with
+    tomllib on 3.11+; on 3.10, plain [lanes.<name>] tables with each key one array of strings,
+    and any other form stops the gate rather than being misread"""
+    ws = watch_state()
+    if ws.tomllib is None:
+        return release_workflows_310(text, where, ws)
+    try:
+        raw = ws.tomllib.loads(text)
+    except ws.tomllib.TOMLDecodeError as exc:
+        raise GateError(f"{where}: {exc}") from None
+    lanes = raw.get("lanes", {})
+    if not isinstance(lanes, dict):
+        raise GateError(f"{where}: lanes is not a table")
+    found: set[str] = set()
+    for name, table in lanes.items():
+        if not isinstance(table, dict):
+            raise GateError(f"{where}: lanes.{name} is not a table")
+        for key in RELEASE_KEYS:
+            value = table.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(w, str) for w in value):
+                raise GateError(f"{where}: lanes.{name} {key} is not an array of workflow files: {value!r}")
+            found.update(value)
+    return frozenset(found)
+
+
+def release_workflows_310(text: str, where: str, ws: ModuleType) -> frozenset[str]:
+    """release_workflows on Python 3.10, without tomllib"""
+    unreadable = GateError(f"{where}: can't read [lanes] on Python 3.10: use 3.11+ or plain [lanes.<name>] tables")
+    tables = ws.toml_tables(text)
+    if re.search(r"^\s*[\"']?lanes[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE) or not ws.blank(
+        tables.get("lanes", "")
+    ):
+        raise unreadable
+    found: set[str] = set()
+    for name, body in tables.items():
+        parts = name.split(".")
+        if parts[0] != "lanes" or len(parts) == 1:
+            continue
+        if len(parts) != 2:
+            raise unreadable
+        for key in RELEASE_KEYS:
+            opened = re.search(rf"^\s*[\"']?{key}[\"']?\s*=\s*\[", body, re.MULTILINE)
+            if opened is None:
+                if re.search(rf"^\s*[\"']?{key}[\"']?\s*=", body, re.MULTILINE):
+                    raise unreadable
+                continue
+            found.update(array_strings(body[opened.end() :], unreadable))
+    return frozenset(found)
+
+
+_ARRAY_TOKEN = re.compile(r"\"([^\"\\\n]*)\"|'([^'\n]*)'|(\])|#[^\n]*|[\s,]+|.")
+
+
+def array_strings(rest: str, unreadable: GateError) -> list[str]:
+    """The strings of a TOML array of plain strings, read from just past its [ to its ]: a
+    comment is skipped, quotes or a ] in it included, and anything else stops the gate"""
+    strings: list[str] = []
+    for token in _ARRAY_TOKEN.finditer(rest):
+        double, single, close = token.groups()
+        if close is not None:
+            return strings
+        if double is not None or single is not None:
+            strings.append(double if double is not None else single)
+        elif not token.group().startswith("#") and token.group().strip(" \t\r\n,"):
+            raise unreadable
+    raise unreadable
 
 
 def head_checks(branch: str, read: Callable[[list[str]], str]) -> tuple[str, list[dict]]:
@@ -2526,7 +2646,7 @@ def main() -> int:
                 if data["state"] == "OPEN":
                     branch = str(data["baseRefName"])
                     if branch not in heads:
-                        heads[branch] = base_head(branch, number, args.repo)
+                        heads[branch] = base_head(branch, number, args.repo, base.config)
                     red, repairs, rerun = base_failures(branch, *heads[branch], str(data.get("body") or ""))
                     judged = replace(judged, base_red=red, base_repairs=repairs, base_pending=rerun)
                 # a review of the merging head (spec 055), before the window: QUEUED only takes READY's place

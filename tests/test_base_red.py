@@ -1,6 +1,7 @@
 """github-pr-triage's base_red.py reads a red default branch and the merges that may have turned
 it red (spec 079), end to end with a stand-in gh on PATH answering as GitHub recorded"""
 
+import base64
 import json
 import os
 import subprocess
@@ -145,6 +146,15 @@ class GitHubAnswers:
     def issues(self, *items: dict[str, Any]) -> None:
         self.lines(f"{API}/issues?state=open&per_page=100", list(items))
 
+    def config(self, text: str | None) -> None:
+        """The head's .github folder, and its shipmill.toml holding text (None: no config there)"""
+        listed = [{"name": "workflows", "type": "dir"}]
+        if text is not None:
+            listed.append({"name": "shipmill.toml", "type": "file"})
+            content = base64.b64encode(text.encode()).decode()
+            self.json(f"{API}/contents/.github/shipmill.toml?ref={HEAD}", {"encoding": "base64", "content": content})
+        self.json(f"{API}/contents/.github?ref={HEAD}", listed)
+
 
 def base_red(tmp_path: Path, github: GitHubAnswers, *args: str) -> subprocess.CompletedProcess[str]:
     fakes = tmp_path / "fakes"
@@ -228,6 +238,69 @@ def test_1310_a_check_rerunning_a_failure_is_never_green(tmp_path: Path) -> None
     github.head([job("failure"), job(None, "in_progress", job_id=911, started="2026-11-19T09:00:00Z")])
     proc = base_red(tmp_path, github)
     assert (proc.returncode, proc.stdout) == (0, f"PENDING main@{at(0)}\npending: {run_url(900)}\n"), proc.stderr
+
+
+# -- #1485: a lane's release workflow dispatched on the branch runs for a tag, not the head ----
+
+RELEASE_CONFIG = '[lanes.stable]\ndispatch = ["publish.yml"]\nafter_publish = ["move-major-tag.yml"]\n'
+CONFIG_READS = [f"{API}/contents/.github?ref={HEAD}", f"{API}/contents/.github/shipmill.toml?ref={HEAD}"]
+
+
+def dispatched(github: GitHubAnswers, run: int, event: str, workflow: str) -> None:
+    """The workflow run a failed job of the head belongs to, on its first attempt"""
+    path = f".github/workflows/{workflow}"
+    github.json(f"{API}/actions/runs/{run}", {**workflow_run(run), "run_attempt": 1, "event": event, "path": path})
+
+
+@pytest.mark.parametrize("workflow", ["publish.yml", "move-major-tag.yml"])
+def test_1485_a_failed_dispatched_release_run_on_the_head_reads_green(tmp_path: Path, workflow: str) -> None:
+    github = GitHubAnswers()
+    github.head([job("failure", name="publish")])
+    dispatched(github, 900, "workflow_dispatch", workflow)
+    github.config(RELEASE_CONFIG)
+    proc = base_red(tmp_path, github)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, GREEN_LINE, "")
+
+
+@pytest.mark.parametrize(
+    ("event", "workflow", "reads"),
+    [
+        pytest.param("push", "publish.yml", [], id="a release workflow on push"),
+        pytest.param("pull_request", "publish.yml", [], id="a release workflow on a pull request"),
+        pytest.param("workflow_dispatch", "nightly.yml", CONFIG_READS, id="a dispatched workflow no lane names"),
+    ],
+)
+def test_1485_any_other_failed_run_on_the_head_stays_red(
+    tmp_path: Path, event: str, workflow: str, reads: list[str]
+) -> None:
+    github = GitHubAnswers()
+    github.head([job("failure")])
+    dispatched(github, 900, event, workflow)
+    github.config(RELEASE_CONFIG)
+    proc = base_red(tmp_path, github)
+    assert (proc.returncode, proc.stdout) == (0, f"RERUN_DUE main@{at(0)}\nrerun: {run_url(900)}\n"), proc.stderr
+    assert [e for e in endpoints(tmp_path) if "/contents/" in e] == reads  # the config only for a dispatched run
+
+
+def test_1485_a_release_run_failing_beside_a_ci_job_leaves_the_ci_job_red(tmp_path: Path) -> None:
+    github = GitHubAnswers()
+    github.head([job("failure"), job("failure", name="publish", run=910, job_id=911)])
+    dispatched(github, 900, "push", "ci.yml")
+    dispatched(github, 910, "workflow_dispatch", "publish.yml")
+    github.config(RELEASE_CONFIG)
+    proc = base_red(tmp_path, github, "--json")
+    assert proc.returncode == 0, proc.stderr
+    reading = json.loads(proc.stdout)
+    assert (reading["state"], reading["failed"]) == ("RERUN_DUE", [{"check": "test", "url": run_url(900)}])
+
+
+def test_1485_a_head_without_the_config_reads_a_dispatched_run_red(tmp_path: Path) -> None:
+    github = GitHubAnswers()
+    github.head([job("failure", name="publish")])
+    dispatched(github, 900, "workflow_dispatch", "publish.yml")
+    github.config(None)
+    proc = base_red(tmp_path, github)
+    assert (proc.returncode, proc.stdout) == (0, f"RERUN_DUE main@{at(0)}\nrerun: {run_url(900)}\n"), proc.stderr
 
 
 # -- S-079-3: CULPRIT, CANDIDATES, and NO_GREEN -----------------------------------------------
