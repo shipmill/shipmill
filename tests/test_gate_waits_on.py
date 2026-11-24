@@ -4,6 +4,7 @@ item in a comment whose first line is `<!-- shipmill:waits-on owner/repo#N -->`,
 updated after the hand. A marker by anyone else counts for nothing"""
 
 import datetime as dt
+import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 import pytest
 
 from shipmill.agents import Mode
+from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
 from shipmill.gate import Action, StateRead, WatchState, state_dir
 from shipmill.gitrepo import Git
@@ -86,13 +88,11 @@ class GraphQL:
             numbers = [int(n) for n in re.findall(r"i(\d+): issueOrPullRequest", query)]
             repo = {f"i{n}": {"comments": {"nodes": self.comments.get(n, [])}} for n in numbers}
             return {"data": {"repository": repo}}
-        found = re.findall(
-            r'(w\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ issueOrPullRequest\(number: (\d+)\)', query
-        )
+        found = re.findall(r'(w\d+): resource\(url: "https://github\.com/([^/"]+/[^/"]+)/issues/(\d+)"\)', query)
         data: dict[str, Any] = {}
-        for alias, owner, name, number in found:
-            at = self.updated.get(f"{owner}/{name}#{number}")
-            data[alias] = {"issueOrPullRequest": None if at is None else {"updatedAt": at}}
+        for alias, repo, number in found:
+            at = self.updated.get(f"{repo}#{number}")
+            data[alias] = None if at is None else {"updatedAt": at}
         return {"data": data}
 
 
@@ -136,3 +136,20 @@ def test_s089_12_a_gate_without_an_apps_bot_reads_no_marker(checkout: Git) -> No
         raise AssertionError("no bot: no marker counts, so nothing is read")
 
     assert WatchState(REPO, checkout.root, StateRead(), state_dir(checkout), NOW, gh).waited([3]) == {}
+
+
+def test_s089_12_a_marker_naming_an_item_the_token_cant_read_wakes_nothing_and_fails_no_tick(checkout: Git) -> None:
+    # gh api graphql exits 1 on any errors entry, as run_command raises: GitHub answers a
+    # repository() or issueOrPullRequest() it can't resolve with a NOT_FOUND error, a resource() with null alone
+    comments = [{"author": APP, "body": marker("other/private#12")}]
+
+    def gh(cmd: list[str], workspace: Path) -> str:
+        query = cmd[cmd.index("-f") + 1]
+        if "comments(last: 50)" in query:
+            return json.dumps({"data": {"repository": {"i3": {"comments": {"nodes": comments}}}}})
+        if "repository(owner:" in query:
+            raise ReleaseError("gh api graphql failed: Could not resolve to a Repository named 'other/private'.")
+        return json.dumps({"data": {"w0": None}})
+
+    read = StateRead(bot_login=BOT)
+    assert WatchState(REPO, checkout.root, read, state_dir(checkout), NOW, gh).waited([3]) == {}

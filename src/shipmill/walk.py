@@ -999,11 +999,14 @@ def waits_on(repo: str, numbers: Iterable[int], bot: str, graphql: GraphQL) -> d
 
 
 def waited_query(items: Sequence[Waited]) -> str:
-    """One query for these items' updatedAt, each in its own repo"""
+    """One query for these items' updatedAt, each in its own repo, read by its URL: GitHub answers
+    a resource() it can't resolve (gone, or a repo the token can't read) with null alone, where a
+    repository() or issueOrPullRequest() it can't resolve adds a NOT_FOUND error, on which gh api
+    graphql exits 1 and the tick would fail on every walk while the marker stands. A URL's owner
+    reads only as GitHub spells it: a marker naming it in another case wakes nothing"""
     updated = "... on Issue { updatedAt } ... on PullRequest { updatedAt }"
     aliases = " ".join(
-        f'w{i}: repository(owner: "{w.repo.partition("/")[0]}", name: "{w.repo.partition("/")[2]}") '
-        f"{{ issueOrPullRequest(number: {w.number}) {{ {updated} }} }}"
+        f'w{i}: resource(url: "https://github.com/{w.repo}/issues/{w.number}") {{ {updated} }}'
         for i, w in enumerate(items)
     )
     return f"query {{ {aliases} }}"
@@ -1021,8 +1024,7 @@ def waited_updates(items: Iterable[Waited], graphql: GraphQL) -> dict[Waited, dt
         if not isinstance(data, dict):
             raise ReleaseError(f"gh api graphql printed no data for the items subjects wait on: {str(answer)[:300]}")
         for i, w in enumerate(chunk):
-            repo = data.get(f"w{i}")
-            node = repo.get("issueOrPullRequest") if isinstance(repo, dict) else None
+            node = data.get(f"w{i}")
             if node is None:
                 continue
             if not isinstance(node, dict) or "updatedAt" not in node:
