@@ -8,6 +8,7 @@ sections it reads from the last sweep (sweep.json), which runs every [agents] sw
 """
 
 import datetime as dt
+import enum
 import hashlib
 import json
 import os
@@ -322,31 +323,47 @@ class Pull:
     asked: bool = False
 
 
+class End(enum.StrEnum):
+    """How a handed session ended, read from its stream-json log once it is gone (spec 089,
+    D-100): ok, its last `result` has is_error false; limit, a usage limit stopped it; auth, its
+    credential was refused; error, anything else"""
+
+    OK = "ok"
+    LIMIT = "limit"
+    AUTH = "auth"
+    ERROR = "error"
+
+
 @dataclass(frozen=True, slots=True)
 class Hand:
     """One hand in handed.json: the session it went to, and when; for a pull request subject
     the head it had then (spec 061); idle once a walk past retry_hours found nothing changed on
-    its subject since"""
+    its subject since; ended, how its session ended, None while it runs (spec 089)"""
 
     session: str
     at: dt.datetime
     head: Head | None = None
     idle: bool = False
+    ended: End | None = None
 
     def record(self) -> dict[str, object]:
         found: dict[str, object] = {"session": self.session, "at": self.at.isoformat()}
         if self.head is not None:
             found |= {"head": self.head.sha, "rollup": self.head.rollup}
-        return found | ({"idle": True} if self.idle else {})
+        found |= {"idle": True} if self.idle else {}
+        return found | ({} if self.ended is None else {"ended": self.ended.value})
 
 
 HAND_KEYS = frozenset({"session", "at"})
 PULL_KEYS = frozenset({"head", "rollup"})
+ENDS = ", ".join(e.value for e in End)
 
 
 def hand_of(key: str, entry: object) -> Hand:
-    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle"}:
-        raise ValueError(f"{key}: expected session and at, head and rollup or neither, and idle or not")
+    """One hand as handed.json holds it; one without ended, as written before spec 089 or
+    while its session runs, loads with ended None (S-089-2)"""
+    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle", "ended"}:
+        raise ValueError(f"{key}: expected session and at, head and rollup or neither, idle or not, and ended or not")
     if not isinstance(entry["session"], str) or not entry["session"]:
         raise ValueError(f"{key}: session must be a non-empty string")
     head = None
@@ -362,7 +379,12 @@ def hand_of(key: str, entry: object) -> Hand:
         raise ValueError(f"{key}: idle must be true or false")
     if idle and SUBJECT_KEY.fullmatch(key) is None:
         raise ValueError(f"{key}: only a subject's hand is idle")
-    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle)
+    ended = None
+    if "ended" in entry:
+        if not isinstance(entry["ended"], str) or entry["ended"] not in End:
+            raise ValueError(f"{key}: ended must be one of {ENDS}, got {entry['ended']!r}")
+        ended = End(entry["ended"])
+    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle, ended)
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,9 +397,11 @@ class Handed:
     `ISSUES VERIFY_DUE #842` or `PRS_OPEN #12` (spec 061). The object holds `session` (the id of
     the session handed it) and `at` (when, an ISO 8601 time with its offset); a pull request
     subject's also `head` (its head SHA) and `rollup` (its head's check rollup state, or null
-    with no checks) from the change check; and `"idle": true` once a walk past retry_hours found
-    its subject unchanged since `at` (absent otherwise). It is a cache of the gate's own
-    launches: deleted, every subject reads not taken and is handed once more"""
+    with no checks) from the change check; `"idle": true` once a walk past retry_hours found
+    its subject unchanged since `at` (absent otherwise); and `ended`, how its session ended (ok,
+    limit, auth, or error), once a tick found the session gone (absent while it runs, spec 089).
+    It is a cache of the gate's own launches: deleted, every subject reads not taken and is
+    handed once more"""
 
     hands: Mapping[str, Hand] = field(default_factory=dict)
 
@@ -461,6 +485,17 @@ class Handed:
             pull = found.get(n)
             new[subject_key(item, n)] = Hand(session, now, None if pull is None else pull.head)
         return Handed({**self.hands, **new})
+
+    def ending(self, end: Callable[[str], End]) -> Handed:
+        """Spec 089 (S-089-2): once no session of the gate runs, each hand without an end
+        records its session's, read once per session by end; a hand with one keeps it"""
+        ends: dict[str, End] = {}
+        for hand in self.hands.values():
+            if hand.ended is None and hand.session not in ends:
+                ends[hand.session] = end(hand.session)
+        return Handed(
+            {k: h if h.ended is not None else replace(h, ended=ends[h.session]) for k, h in self.hands.items()}
+        )
 
     def marked(self, keys: Iterable[str]) -> Handed:
         """These hands marked idle"""

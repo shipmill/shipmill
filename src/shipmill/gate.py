@@ -87,6 +87,7 @@ from shipmill.walk import (
     WAITING_TIER,
     Changes,
     Cursor,
+    End,
     Flight,
     Hand,
     Handed,
@@ -1349,6 +1350,74 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     return Dead(last.session, log, seconds, auth, shown, counted(last))
 
 
+LIMITED = 429  # a stream-json event's api_error_status when a usage limit refused the request
+UNAUTHORIZED = 401  # and when the credential was refused
+
+
+def checked_event(event: Mapping[str, object]) -> Mapping[str, object]:
+    """A stream-json event whose fields session_end reads have the types Claude Code writes:
+    a `result`'s is_error a boolean, an api_error_status an integer or null, a
+    `rate_limit_event`'s rate_limit_info an object whose status is a string. Any other fails, so
+    an end is never guessed from a log shipmill can't read (spec 089)"""
+    kind = event["type"]
+    if kind == "result" and not isinstance(event.get("is_error"), bool):
+        raise ValueError(f"a result event's is_error must be true or false, got {event.get('is_error')!r}")
+    status = event.get("api_error_status")
+    if status is not None and (not isinstance(status, int) or isinstance(status, bool)):
+        raise ValueError(f"a {kind} event's api_error_status must be an integer or null, got {status!r}")
+    if kind == "rate_limit_event":
+        info = event.get("rate_limit_info")
+        if not isinstance(info, dict) or not isinstance(info.get("status"), str):
+            raise ValueError(
+                f"a rate_limit_event's rate_limit_info must be an object with a string status, got {info!r}"
+            )
+    return event
+
+
+def limited(event: Mapping[str, object]) -> bool:
+    """A usage limit stopped the session: an api_error_status of 429, or a rate_limit_event
+    whose status is rejected"""
+    if event.get("api_error_status") == LIMITED:
+        return True
+    info = event.get("rate_limit_info")
+    return event["type"] == "rate_limit_event" and isinstance(info, dict) and info["status"] == "rejected"
+
+
+def session_end(state: Path, last: Launch | None, session: str) -> End:
+    """Spec 089 (S-089-1, D-100): how a headless session ended, read from its log's tail once
+    its process is gone, in this order: limit, when an event holds an api_error_status of 429
+    or a rate_limit_event's status is rejected, whatever its result says and however long it
+    ran; auth, an api_error_status of 401 or an authentication failure as stream_auth_failed
+    reads one (#822); ok, the last `result` event has is_error false; error, anything else: a
+    result with is_error true, no result at all however long it ran (DEAD_WITHIN decides
+    nothing here), no log, a log not stream-json (save an authentication failure in its text,
+    auth as ended_dead reads it), or the last launch, when a STALLED tick stopped it. A
+    stream-json event whose fields don't have the types Claude Code writes fails the tick
+    (checked_event), and its fix is reading the log; a line that starts as JSON but doesn't
+    parse is an event cut off mid-write and read as no event, as stream_auth_failed does"""
+    log = session_log(state, session)
+    if not log.is_file():
+        return End.ERROR
+    if not is_stream_json(log):
+        return End.AUTH if AUTH_FAILURE.search(log_tail(log)) is not None else End.ERROR
+    lines = tail_lines(log)
+    try:
+        events = [checked_event(found) for line in lines if (found := stream_event(line)) is not None]
+    except ValueError as exc:
+        raise ReleaseError(
+            f"session {session}'s log {log} is malformed: {exc}; shipmill can't tell how the session ended",
+            f"tail -n 20 {log}",
+        ) from None
+    if any(limited(e) for e in events):
+        return End.LIMIT
+    if any(e.get("api_error_status") == UNAUTHORIZED for e in events) or stream_auth_failed(lines):
+        return End.AUTH
+    if last is not None and last.session == session and last.stopped is not None:
+        return End.ERROR
+    results = [e for e in events if e["type"] == "result"]
+    return End.OK if results and results[-1]["is_error"] is False else End.ERROR
+
+
 def counted(last: Launch) -> Deaths:
     """The run of dead sessions the last launch ends: one, or one more than before it"""
     before = last.deaths
@@ -1950,9 +2019,12 @@ def tick_walk(
     sweep_now: bool = False,
     upgrades: Callable[[], SweptUpgrades] | None = None,
     permissions: Callable[[], SweptPermissions] | None = None,
+    ends: Callable[[str], End] | None = None,
 ) -> Ticked:
-    """The change check, then the sweep when due, then the walk (spec 046). A sweep runs the
-    config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
+    """The change check, then the sweep when due, then the walk (spec 046). A headless gate's
+    tick gets here only once no session of it runs, so each hand without an end first records
+    its session's, as ends reads it (S-089-2); None, an interactive gate's, records none. A
+    sweep runs the config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
     sweep.json keeps what it did and the decision names it (S-047-10). A tick that doesn't
     sweep runs none (S-047-5). The permission notice (permissions, spec 060) runs right after
     the proposal, on a sweep alone, kept and named the same way. A change is a new
@@ -1977,6 +2049,8 @@ def tick_walk(
     unseen = dead is not None and not capped and any(h.session == dead.session for h in handed.hands.values())
     if not recorded and last is not None and now - last.at < retry:
         handed = Handed({**handed.hands, last.fingerprint: Hand(last.session, last.at)})
+    if ends is not None:  # spec 089: what ended means for the hand is #1551's and the specs after it
+        handed = handed.ending(ends)
     if dead is not None and not capped:
         handed = handed.without(dead.session)
     known = Swept.load(state / SWEEP)
@@ -2982,6 +3056,7 @@ def decided(
         sweep_now,
         proposal,
         noticing,
+        partial(session_end, state, last) if headless else None,
     )
     waits = waiting_rows(ticked, source, state / DECISIONS, repo) if headless else []
     if ticked.swept is not None and not dry_run:  # every read went through: the sweep stands, whatever the decision

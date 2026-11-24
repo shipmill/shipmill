@@ -4924,6 +4924,7 @@ HANDED = "handed.json"  # shipmill's walk.HANDED: the gate's hands, in its state
 HAND_KEYS = frozenset({"session", "at"})
 PULL_KEYS = frozenset({"head", "rollup"})
 SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")
+ENDS = ("ok", "limit", "auth", "error")  # shipmill's walk.End: how a hand's session ended (spec 089)
 
 
 def gate_state(folder: Path) -> Path | None:
@@ -4947,8 +4948,10 @@ def idle_hand(path: Path, key: object, entry: object) -> tuple[str, dt.datetime]
     """A hand of handed.json, checked as shipmill's walk.hand_of reads it: its session and at
     when it is marked idle, None when it isn't; anything else the gate never writes is refused"""
     where = f"error: {path}: {key}"
-    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle"}:
-        raise Refused(f"{where}: expected session and at, head and rollup or neither, and idle or not")
+    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle", "ended"}:
+        raise Refused(f"{where}: expected session and at, head and rollup or neither, idle or not, and ended or not")
+    if "ended" in entry and entry["ended"] not in ENDS:
+        raise Refused(f"{where}: ended must be one of {', '.join(ENDS)}, got {entry['ended']!r}")
     session, at, idle = entry["session"], entry["at"], entry.get("idle", False)
     if not isinstance(session, str) or not session:
         raise Refused(f"{where}: session must be a non-empty string")

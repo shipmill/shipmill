@@ -1,0 +1,3 @@
+### Added
+
+- Gate: once a headless session is gone, each of its hands in `handed.json` records how it ended as `ended`, read from its stream-json log: `ok` (its last `result` has `is_error: false`), `limit` (an `api_error_status` of 429 or a rejected `rate_limit_event`), `auth` (an `api_error_status` of 401 or an authentication failure), or `error` (anything else, a session that ran past 60 s with no result included); a log whose events don't have the types Claude Code writes fails the tick instead of guessing, and a `handed.json` written before keeps loading; the watch reads the new field too. The end changes nothing yet: spec 089's later issues act on it (#1550)
