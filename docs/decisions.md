@@ -853,3 +853,27 @@ entry that supersedes it, never by editing an old one.
 - Why: Zone levels set by hand made the maintainer choose between approving every pull request in a zone and trusting every one; evidence read from the forge and the checkout lets a safe change land lower while a bound the maintainer writes and fixed ceiling kinds keep risky ones asking (#1305)
 - Applies to: src/shipmill/decide.py, src/shipmill/classify.py, src/shipmill/earned.py, src/shipmill/area_record.py, src/shipmill/review_record.py, skills/github-issue-triage/scripts/decisions.py, docs/specs/083-earned-landing-level.md, [decisions.earned], [decisions] clean_releases, area-record zone
 - Enforced by: tests of spec 083 (test_s083_*) and tests/landing/seeded.toml, with the implementing PRs
+
+## D-102: A public write is checked for private repositories by name, and an agents repo refuses public writes while the private terms file is missing
+
+- Decided: 2026-11-24, in shipmill/shipmill#1480
+- Rule: As D-94, save what a missing file means: shipmill gh refuses a write to a public repo with exit 2 when its text names an owner/name repository the token at hand reads as private (one that can't be read is not counted as private), with or without the private terms file; and in a repo whose .github/shipmill.toml has an [agents] section, a write to a public repo is refused with exit 2 while ~/.config/shipmill/private.toml is missing, the error naming that file and that an empty one is enough. A repo without [agents] keeps reading a missing file as no terms, with doctor's warning
+- Why: Without the file every public write passed the leak check, and issue bodies naming private repositories were posted after the check shipped (#1480); a new machine running agents should not leak by default, at the cost of one setup step. Decided by `@romamo` on #1480 (option 1, relayed 2026-11-24)
+- Applies to: src/shipmill/leaks.py, src/shipmill/app_gh.py, src/shipmill/doctor.py, docs/specs/081-outgoing-leak-check.md, ~/.config/shipmill/private.toml
+- Enforced by: the leaks and app_gh tests (with the implementing PR)
+
+## D-103: A relayed veto counts as the maintainer's own
+
+- Decided: 2026-11-24, in shipmill/shipmill#1482
+- Rule: A relay by the --bot-login in D-93's grammar, naming a maintainer in its Decision by line, posted after an item's decided marker, whose answer line is own: veto or own: veto <text> (or whose answer line starts with the word veto), reads as that maintainer's veto (spec 030): triage_state.py reads the item VETOED and pr_gate.py holds every pull request on the vetoed decision until a veto-handled comment follows it, as for a veto the maintainer posts; a relay naming no trusted person, or out of the grammar, counts as no veto
+- Why: A relayed answer to a question already counts (D-93), but a relayed veto did not, so a vetoed security default nearly landed with nothing holding it (#1482); a veto given in chat should stop a merge as one written on the item does. Decided by `@romamo` on #1482 (option 1, relayed 2026-11-24)
+- Applies to: skills/github-issue-triage/scripts/triage_state.py, skills/github-pr-triage/scripts/pr_gate.py, skills/github-ship-watch/scripts/retro.py, docs/specs/030-decision-policy.md, skills/github-issue-triage/references/needs-decision.md
+- Enforced by: the triage_state.py and pr_gate.py tests (with the implementing PR)
+
+## D-104: An agent never decides on its own on an item that names a published vulnerability
+
+- Decided: 2026-11-24, in shipmill/shipmill#1483
+- Rule: shipmill gh refuses with exit 2 a comment holding the shipmill:decided marker on an issue or pull request whose body or comments name a CVE- or GHSA- id, its error pointing to the needs-decision question instead, so such a decision is asked whatever the zone's level; the same comment on an item naming neither posts as before. This refines D-48
+- Why: On an item naming a CVE, triage read the advisory as unfindable, posted a decided keeping the affected feature on, and a later session closed the safe fix for contradicting it until the maintainer vetoed it (#1483); a security default on a published vulnerability is a one-way door for users, and spec 030's zones don't detect it. Decided by `@romamo` on #1483 (option 1, relayed 2026-11-24)
+- Applies to: src/shipmill/app_gh.py, docs/specs/030-decision-policy.md, shipmill:decided
+- Enforced by: the app_gh tests (with the implementing PR)
