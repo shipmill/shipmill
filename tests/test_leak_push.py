@@ -274,6 +274,15 @@ def test_a_source_that_names_no_commit_is_refused_naming_it_and_claims_no_leak(b
         assert "unknown revision" not in said
 
 
+def test_a_tag_on_a_tree_or_blob_still_lets_tags_and_mirror_pass(box: Box) -> None:
+    """#1542: a ref that exists but names no commit, such as a tag on a tree, isn't missing;
+    `--tags` and `--mirror` pass with it as they did before the ref check"""
+    private(box)
+    box.git.run("tag", "tree-tag", "HEAD^{tree}")
+    assert leaks_push(box, "--tags", "origin") == 0
+    assert leaks_push(box, "--mirror", "origin") == 0
+
+
 @pytest.mark.parametrize(
     "refspec",
     ["main", "HEAD", "refs/heads/main", "main:feat/y", "HEAD:refs/heads/feat/y", "+main", "v2", "refs/tags/v2"],

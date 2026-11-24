@@ -257,10 +257,10 @@ def outgoing(git: Git, push: Push) -> Outgoing:
     texts: list[Text] = []
     lines: dict[str, tuple[int, ...]] = {}
     sources = list(dict.fromkeys(ref.source for ref in refs))
-    for source in sources:
-        if not git.ok("rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"):
+    for source in sources:  # a tag on a tree or blob exists, and rev-list reads no commit of it
+        if not git.ok("rev-parse", "--verify", "--quiet", f"{source}^{{object}}"):
             raise ReleaseError(
-                f"the push's source `{source}` {MISSING_REF}: it names no commit, so the leak check"
+                f"the push's source `{source}` {MISSING_REF}: it names no object, so the leak check"
                 " can't read what the push sends"
             )
     shas = (
