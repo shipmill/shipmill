@@ -115,7 +115,24 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       executor, state, holds (the open ones), waits_on and waited_on_by (every item it is
       linked to, open or closed), gate ("NO_GATE" or null), cycle (a CYCLE row's loop, the
       first reference repeated at the end, else null), and malformed (its malformed
-      Depends on lines, each "line <n>: <the line>", [] without one).
+      Depends on lines, each "line <n>: <the line>", [] without one). Each row also says what
+      it holds and waits for (spec 086), computed from the items read:
+      - held: how many distinct open issues wait on it, directly or through others, along
+        open holds (a Depends on line, blockedBy, a sub-issue); never itself, so its own
+        cycle adds nothing, and only an issue whose holds were read counts: an UNTRUSTED,
+        UNREADABLE, or closed issue adds nothing
+      - held_direct: how many of those name it among their own open holds
+      - milestones: the milestones of the issues counted in held, "owner/repo title",
+        sorted, each once
+      - waiting_for: for an open issue the first that applies of "decision" (labelled
+        needs-decision), "cycle", "items" (an open hold), "upstream", "postponed" (each
+        labelled so), "maintainer" (a person's item labelled human or role:maintainer),
+        "person" (any other person's item), "pull request" (an open pull request closes it),
+        "no gate" (NO_GATE), else "agent"; "pull request" for an open pull request,
+        "untrusted" and "unreadable" for those items, null for a closed item
+      - idle_days: whole days since the newest of the issue's updatedAt and each open
+        closing pull request's updatedAt; null for an item that isn't an open issue
+      The table lines and the exit codes don't show them.
 
       Exit 1 when any row is NO_GATE, CYCLE, or MALFORMED_DEPENDS, else 0; 2 on a
       malformed reference, a starting reference that can't be read or is a pull request,
@@ -131,6 +148,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime as dt
 import importlib.util
 import json
 import re
@@ -146,15 +164,20 @@ from typing import Any, NoReturn
 # What a "Depends on" line is and the issues it names, and the holds GitHub records, as
 # triage_state.py reads them
 from triage_state import (
+    DECISION_LABEL,
     DEPENDS,
+    MAINTAINER,
     TRUSTED,
+    UPSTREAM_LABEL,
     dependency_refs,
+    item_roles,
     login,
     malformed_dependencies,
     native_holds,
     ref_state,
     same_login,
     shortest_loop,
+    timestamp,
 )
 
 Variables = dict[str, str | int]
@@ -233,6 +256,8 @@ NATIVE_ITEM = f"""
         blocking(first: {LINKS}) {{ {LINKED} }}
         parent {{ number repository {{ nameWithOwner }} }}"""
 NATIVE_NAMED = re.compile(r"\b(?:" + "|".join(NATIVE_SHOW) + r")\b")
+CLOSERS = "closedByPullRequestsReferences"  # the pull requests that close an issue (spec 086)
+CLOSING = "pageInfo { hasNextPage } nodes { state updatedAt }"
 WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
 
 
@@ -241,11 +266,13 @@ def item_fields(native: bool) -> str:
     return f"""
       __typename
       ... on Issue {{
-        number title state stateReason body
+        number title state stateReason body updatedAt
         author {{ __typename login }} authorAssociation
         repository {{ nameWithOwner }}
+        milestone {{ title }}
         labels(first: {LINKS}) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
-        assignees(first: {LINKS}) {{ pageInfo {{ hasNextPage }} nodes {{ login }} }}{NATIVE_ITEM if native else ""}
+        assignees(first: {LINKS}) {{ pageInfo {{ hasNextPage }} nodes {{ login }} }}
+        {CLOSERS}(first: {LINKS}) {{ {CLOSING} }}{NATIVE_ITEM if native else ""}
       }}
       ... on PullRequest {{ number title state repository {{ nameWithOwner }} }}
 """
@@ -758,6 +785,13 @@ class Item:
     holds: tuple[tuple[Ref, str | None], ...] = ()
     waited_on_by: tuple[Ref, ...] = ()
     malformed: tuple[str, ...] = ()  # its malformed Depends on lines, "line <n>: <the line>" (spec 041)
+    # An issue's, for spec 086: its label names, its person's-item roles (item_roles), its
+    # milestone's title, its updatedAt, and the updatedAt of each open pull request closing it
+    labels: frozenset[str] = frozenset()
+    roles: tuple[str, ...] = ()
+    milestone: str | None = None
+    updated: dt.datetime | None = None
+    closers: tuple[dt.datetime, ...] = ()
 
     @property
     def open_issue(self) -> bool:
@@ -812,6 +846,10 @@ def parse_item(node: dict[str, Any], reader: Reader) -> Item:
     if node.get("parent"):
         waiting.append(ref_of(node["parent"]))
     downstream = {r.key: r for r in waiting if r.key != ref.key}
+    milestone = node["milestone"]
+    if milestone is not None and not (isinstance(milestone, dict) and isinstance(milestone.get("title"), str)):
+        fail(f"gh: {ref}'s milestone has no title")
+    closers = tuple(timestamp(str(n["updatedAt"])) for n in connection(node, CLOSERS, ref) if n["state"] == "OPEN")
     return Item(
         ref,
         "Issue",
@@ -821,6 +859,11 @@ def parse_item(node: dict[str, Any], reader: Reader) -> Item:
         tuple(holds.values()),
         tuple(downstream.values()),
         tuple(malformed_dependencies(node)),
+        frozenset(str(n) for n in labels),
+        tuple(item_roles(node)),
+        None if milestone is None else str(milestone["title"]),
+        timestamp(str(node["updatedAt"])),
+        closers,
     )
 
 
@@ -1070,7 +1113,106 @@ def loops(chain: list[Item], items: dict[Key, Item]) -> dict[Key, list[Ref]]:
     return found
 
 
-def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> list[dict[str, Any]]:
+def hold_state(items: dict[Key, Item], ref: Ref, given: str | None) -> str:
+    """A hold's state: the one GitHub gave along (a native relation), else the item's as read,
+    UNREADABLE for one that can't be read"""
+    if given is not None:
+        return given
+    item = items[ref.key]
+    return UNREADABLE if item.kind == UNREADABLE else item.state
+
+
+# -- what an item holds (spec 086): the fields of show --json's rows that impact, stalled,
+# path, the watch, and the fleet's queue read; each is defined here and nowhere else
+
+POSTPONED_LABEL = "postponed"  # triage_state.py's --postponed-label default
+DAY = dt.timedelta(days=1)
+
+
+@dataclass(frozen=True)
+class Weight:
+    """What waits on an item: held, every open issue with a path of open holds to it (itself
+    never); direct, those holding on it themselves; milestones, theirs as "owner/repo title",
+    sorted, each once"""
+
+    held: int
+    direct: int
+    milestones: tuple[str, ...]
+
+
+def weights(chain: list[Item], items: dict[Key, Item]) -> dict[Key, Weight]:
+    """Each chain item's Weight over every item read. A link runs from an open issue whose
+    holds were read (never a closed, UNTRUSTED, or UNREADABLE item, D-16) to each hold still
+    open (OPEN_HOLDS) that was read; each waiter counts once, however many paths reach it, and
+    an item on a cycle never counts for itself"""
+    read = {item.ref.key: item for item in items.values()}
+    waiters: dict[Key, set[Key]] = {}
+    for item in read.values():
+        if not item.open_issue:
+            continue
+        for hold, given in item.holds:
+            target = items.get(hold.key)
+            if target is not None and hold_state(items, hold, given) in OPEN_HOLDS:
+                waiters.setdefault(target.ref.key, set()).add(item.ref.key)
+    found: dict[Key, Weight] = {}
+    for item in chain:
+        start = item.ref.key
+        seen: set[Key] = set()
+        frontier = [start]
+        while frontier:
+            later = [k for key in frontier for k in waiters.get(key, ()) if k not in seen]
+            seen.update(later)
+            frontier = later
+        seen.discard(start)
+        direct = waiters.get(start, set()) - {start}
+        milestones = {f"{read[k].ref.repo} {read[k].milestone}" for k in seen if read[k].milestone is not None}
+        found[start] = Weight(len(seen), len(direct), tuple(sorted(milestones)))
+    return found
+
+
+def waiting_for(item: Item, row: dict[str, Any]) -> str | None:
+    """What an item waits for, from its show row (state, cycle, holds, gate): for an open
+    issue the first that applies of decision, cycle, items, upstream, postponed, maintainer,
+    person, pull request, no gate, agent; "pull request" for an open pull request,
+    "untrusted" and "unreadable" for those items, and None for a closed one"""
+    if item.kind == UNTRUSTED:
+        return "untrusted"
+    if item.kind == UNREADABLE:
+        return "unreadable"
+    if item.state != "OPEN":
+        return None
+    if item.kind == "PullRequest":
+        return "pull request"
+    if DECISION_LABEL in item.labels:
+        return "decision"
+    if row["cycle"] is not None:
+        return "cycle"
+    if row["holds"]:
+        return "items"
+    if UPSTREAM_LABEL in item.labels:
+        return "upstream"
+    if POSTPONED_LABEL in item.labels:
+        return "postponed"
+    if MAINTAINER in item.roles:
+        return "maintainer"
+    if item.roles:
+        return "person"
+    if item.closers:
+        return "pull request"
+    if row["gate"] == "NO_GATE":
+        return "no gate"
+    return "agent"
+
+
+def idle_days(item: Item, now: dt.datetime) -> int | None:
+    """Whole days since the newest of an open issue's updatedAt and its open closing pull
+    requests' (0 for a time after now); None for any item that isn't an open issue"""
+    if not item.open_issue or item.updated is None:
+        return None
+    return max(0, (now - max((item.updated, *item.closers))) // DAY)
+
+
+def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents, now: dt.datetime) -> list[dict[str, Any]]:
     """One row per item of the chain; a READY issue's repo config is read once per repo"""
 
     def named(ref: Ref) -> Ref:
@@ -1078,10 +1220,7 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
         return item.ref if item is not None and item.kind != UNREADABLE else ref
 
     def state_of(ref: Ref, given: str | None) -> str:
-        if given is not None:
-            return given
-        item = items[ref.key]
-        return UNREADABLE if item.kind == UNREADABLE else item.state
+        return hold_state(items, ref, given)
 
     # what waits on an item: what GitHub records it blocking or as its parent, and every
     # item of the chain that names it as a hold (a "Depends on" line has no reverse)
@@ -1091,6 +1230,7 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
         for hold, _ in item.holds:
             waiting.setdefault(named(hold).key, {})[item.ref.key] = item.ref
     cycles = loops(chain, items)
+    weighed = weights(chain, items)
     gates: dict[str, bool] = {}
     rows: list[dict[str, Any]] = []
     for item in chain:
@@ -1122,6 +1262,9 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
                 text = contents(item.ref.repo)
                 gates[repo] = text is not None and has_gate(text, item.ref.repo)
             row["gate"] = None if gates[repo] else "NO_GATE"
+        weight = weighed[item.ref.key]
+        row["held"], row["held_direct"], row["milestones"] = weight.held, weight.direct, list(weight.milestones)
+        row["waiting_for"], row["idle_days"] = waiting_for(item, row), idle_days(item, now)
         rows.append(row)
     return rows
 
@@ -1139,9 +1282,9 @@ def show_line(row: dict[str, Any]) -> str:
     return "  ".join([row["ref"], row["title"], row["executor"], state, *last])
 
 
-def show(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool) -> int:
+def show(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool, now: dt.datetime) -> int:
     chain, items = walk(reader, starts)
-    rows = show_rows(chain, items, contents)
+    rows = show_rows(chain, items, contents, now)
     if as_json:
         print(json.dumps({"rows": rows}, sort_keys=True))
     else:
@@ -1159,11 +1302,13 @@ def main(
     checkout: Path | None = None,
     execute: Execute = capture,
     edit: Edit | None = None,
+    now: dt.datetime | None = None,
 ) -> int:
     """write is link's runner for the relation's mutation and edit its body edit, given
     together; None for both reads the checkout for the gh command they go through (see writer
     and product_writer). checkout is the folder whose config link reads, the current one when
-    None; execute runs git (its origin) and the writes' gh"""
+    None; execute runs git (its origin) and the writes' gh. now is the moment show's idle_days
+    count to, the clock's when None"""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     link_parser = commands.add_parser("link", help="write a link as a native relation and a Depends on line")
@@ -1204,7 +1349,8 @@ def main(
         for ref in starts:
             origins.setdefault(ref.repo.lower(), ref.repo)  # each repo once, as first spelled
         reader = Reader(run, standing, args.trusted_only, args.bot_login, tuple(origins.values()))
-        return show(reader, contents, starts, args.json)
+        moment = now if now is not None else dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
+        return show(reader, contents, starts, args.json, moment)
     target = parse_ref(args.issue)
     other = parse_ref(args.child if args.child is not None else args.blocked_by)
     if args.product and args.child is None:

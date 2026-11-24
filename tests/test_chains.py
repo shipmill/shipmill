@@ -85,6 +85,7 @@ class Forge:
         none = {"pageInfo": {"hasNextPage": False}, "nodes": []}
         fields = base | {"stateReason": None, "body": found["body"], "labels": none, "assignees": none}
         fields |= {"author": {"__typename": "User", "login": "alice"}, "authorAssociation": "OWNER"}
+        fields |= {"updatedAt": "2026-01-01T00:00:00Z", "milestone": None, "closedByPullRequestsReferences": none}
         if not native:
             return fields
 
@@ -663,6 +664,7 @@ elif "i0: repository" in query:  # link's cycle walk: an open issue holding noth
         "__typename": "Issue", "number": int(var["k0"]), "title": "t", "state": "OPEN", "stateReason": None,
         "body": "Body", "author": {{"__typename": "User", "login": "alice"}}, "authorAssociation": "OWNER",
         "repository": {{"nameWithOwner": var["o0"] + "/" + var["n0"]}}, "labels": none, "assignees": none,
+        "updatedAt": "2026-01-01T00:00:00Z", "milestone": None, "closedByPullRequestsReferences": none,
         "blockedBy": none, "subIssues": none, "blocking": none, "parent": None}}}}}}}}))
 elif "issueOrPullRequest" in query:
     number = next(a for a in args if a.startswith("number=")).partition("=")[2]

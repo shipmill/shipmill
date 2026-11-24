@@ -141,7 +141,8 @@ def test_s041_8_rows_off_a_cycle_keep_their_output_with_the_two_new_keys(
     forge.issue("o/r#2")
     forge.configs = {"o/r": GATED}
     code, rows = shown(ch, forge, capsys, "o/r#1")
-    assert rows[0] == {
+    impact = {"held", "held_direct", "milestones", "waiting_for", "idle_days"}  # spec 086's, tested there
+    assert {k: v for k, v in rows[0].items() if k not in impact} == {
         "ref": "o/r#1",
         "title": "title of o/r#1",
         "executor": "agent",
