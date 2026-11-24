@@ -270,7 +270,9 @@ def test_s038_15_an_unowned_report_is_listed_in_issues_open_only_and_starts_no_s
     rows = ws.intake("o/r", 0, "\n".join([unowned, line(9, "BLOCKED")]), [], lambda n: [], BOT, True)
     assert [(r.state, r.detail) for r in rows] == [("ISSUES_OPEN", "BLOCKED #9; UPSTREAM_UNOWNED #5")]
     assert not any(r.json()["agent"] for r in rows)
-    printed = "\n".join(json.dumps(r.json(), sort_keys=True) for r in ws.intake("o/r", 0, unowned, [], lambda n: [], BOT, True))
+    printed = "\n".join(
+        json.dumps(r.json(), sort_keys=True) for r in ws.intake("o/r", 0, unowned, [], lambda n: [], BOT, True)
+    )
     now = dt.datetime(2026, 11, 24, 12, 0, tzinfo=dt.UTC)
     assert decide(parse_findings(printed), [], None, now, dt.timedelta(hours=1)).action == Action.QUIET
 
