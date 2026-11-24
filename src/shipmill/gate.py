@@ -2645,12 +2645,17 @@ def noted_pause(folder: Path, state: Path, last: Launch | None, dead: Dead | Non
     one gate.json recorded it ran with, pauses: the cause, the session, when it ended, and for a
     limit the newest resetsAt its log carries. Written once per session: while gate.json keeps
     naming it, a later tick finds the record, lifted or not, and writes nothing. A launch from
-    before spec 089 recorded no credential, so its end pauses none. A dry run writes nothing
-    and returns the pause it would write. None when nothing is written"""
+    before spec 089 recorded no credential, so its end pauses none. A pause that holds is kept,
+    save that an auth end replaces a limit pause: two gates whose sessions on one credential
+    both ended would otherwise replace each other's record on every tick, and an auth one's
+    notification with it (S-089-10). A dry run writes nothing and returns the pause it would
+    write. None when nothing is written"""
     if dead is None or dead.end not in CAUSES or last is None or last.credential is None:
         return None
     found = load_pause(folder, last.credential)
     if found is not None and found.session == last.session:
+        return None
+    if found is not None and found.holds and (found.cause is End.AUTH or dead.end is End.LIMIT):
         return None
     resets = session_resets(state, last.session) if dead.end is End.LIMIT else None
     ended = log_written(session_log(state, last.session), last)

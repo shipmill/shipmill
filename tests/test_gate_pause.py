@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -282,3 +283,31 @@ def test_s089_5_a_pause_file_shipmill_doesnt_write_is_refused(folder: Path) -> N
     pause_path(folder, LOGIN).write_text(json.dumps({"cause": "dead", "session": "s", "at": NOW.isoformat()}))
     with pytest.raises(ReleaseError, match="malformed"):
         load_pause(folder, LOGIN)
+
+
+def test_s089_10_two_gates_on_one_token_whose_sessions_both_ended_auth_notify_once(
+    checkout: Git, folder: Path, tmp_path: Path
+) -> None:
+    """Each gate's gate.json names its own dead session: neither replaces the other's held
+    pause, so its notified mark stays and no tick of either sends another"""
+    credential = token_at(tmp_path / "claude-token")
+    root = tmp_path / "other"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    other = Git(root)
+    other.run("remote", "add", "origin", "https://github.com/romamo/demo.git")
+    first, second = Gate(checkout, folder, credential, notify=True), Gate(other, folder, credential, notify=True)
+    first.tick(NOW)
+    second.tick(NOW)
+    ended(checkout, *REFUSED)
+    record = state_dir(other) / RECORD
+    launched = json.loads(record.read_text(encoding="utf-8"))
+    launched["session"] = "22222222-2222-2222-2222-222222222222"
+    record.write_text(json.dumps(launched), encoding="utf-8")
+    log = session_log(state_dir(other), launched["session"])
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("".join(json.dumps(e) + "\n" for e in REFUSED), encoding="utf-8")
+    for minutes in (10, 20, 30):
+        at = NOW + dt.timedelta(minutes=minutes)
+        assert first.tick(at).action is Action.PAUSED and second.tick(at).action is Action.PAUSED
+    assert len(first.notifier.sent) + len(second.notifier.sent) == 1
