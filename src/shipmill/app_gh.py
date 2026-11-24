@@ -951,7 +951,7 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
     return [*kept, "-f", f"body={_sized(body, what)}", *tail]
 
 
-# -- #1491: a relayed decision names its person in a code span (D-61) ----------------------------
+# -- #1491, #1484: the comment a write posts, for the relay and needs-decision holds (D-61) -------
 
 # The REST endpoint that posts a comment on an issue's or a pull request's thread, past the host
 _API_COMMENT = re.compile(r"repos/[^/]+/[^/]+/issues/[0-9]+/comments/?", re.IGNORECASE)

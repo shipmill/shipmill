@@ -321,7 +321,7 @@ from shipmill.credit import (
     issue_deciders,
     with_parents,
 )
-from shipmill.decision_label import hold_label
+from shipmill.decision_label import hold_label, hold_question
 from shipmill.doctor import (
     CALLER,
     DOWNSTREAM_CALLER,
@@ -2138,10 +2138,13 @@ def _gh(
     it (S-056-8). As the App, an `issue edit` or `pr edit` that adds needs-decision exits 2
     unless the item carries a question, and one that removes it unless a reply, a counted relay,
     or a withdrawn marker follows the newest question, read with the App's token before gh runs
-    (#1312, `hold_label`). In every mode a comment whose first line relays a decision naming its
-    person bare exits 2 before any token or gh (#1491, D-61, `hold_relay_mention`), and a write
-    whose text holds a private term (to a public repo), a secret's value, or a known token
-    format exits 2 right before gh would run (spec 081, `_leak_check`)"""
+    (#1312, `hold_label`); on a pull request it adds the label only under a question naming its
+    current head (#1484). In every mode a comment whose first line relays a decision naming its
+    person bare exits 2 before any token or gh (#1491, D-61, `hold_relay_mention`), as do a
+    needs-decision question on a pull request without its head line and a relay out of the relay
+    grammar (#1484, D-93, `hold_question`), and a write whose text holds a private term (to a
+    public repo), a secret's value, or a known token format exits 2 right before gh would run
+    (spec 081, `_leak_check`)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -2212,6 +2215,7 @@ def _gh(
         edit = body_edit(gh_args, read)
         gh_args = marked_args(gh_args, read) if edit is None else gh_args
         hold_relay_mention(gh_args)  # #1491: once its body is read, before gh runs
+        hold_question(gh_args)  # #1484: once its body is read, before gh runs
         binary, env = find_gh(environ), as_host(environ)
         origin = _known_origin(top) if top is not None and readable else None
         if edit is not None:
@@ -2244,6 +2248,7 @@ def _gh(
     edit = body_edit(gh_args, read)
     gh_args = marked_args(gh_args, read) if edit is None else gh_args
     hold_relay_mention(gh_args)  # #1491: once its body is read, before any token
+    hold_question(gh_args)  # #1484: once its body is read, before any token
     hold_plan(top, gh_args, repo)  # S-055-17: `pr create` and the api's create, before any token, so gh never runs
     labelled = label_edit(gh_args)  # #1312: read from the args before any token, checked once it is had
     try:
@@ -2685,6 +2690,7 @@ def _gh_product(
     edit = body_edit(gh_args, read)  # spec 050: before any token
     gh_args = marked_args(gh_args, read) if edit is None else gh_args
     hold_relay_mention(gh_args)  # #1491: once its body is read, before any token
+    hold_question(gh_args)  # #1484: once its body is read, before any token
     # In the coordinator's session the session's gh helper comes first on PATH, and would put
     # the session's token over the product token: skip it, as the helper itself does
     binary = resolve_gh(state_dir(Git(top)) / HELPERS, environ.get("PATH", ""))

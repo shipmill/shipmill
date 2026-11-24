@@ -59,7 +59,8 @@ ASKED_BY_PERSON = [(BOT, "NONE", QUESTION), (MAINTAINER, "OWNER", QUESTION.remov
 @dataclass
 class Comments:
     """Stands in for the gh that reads an item's comments: records each argv and env, and
-    prints each (login, association, body) as the jq filter would, one JSON line each"""
+    prints each (login, association, body) as the jq filter would, one JSON line each; the
+    GraphQL read of the item's type (#1484) reads an issue"""
 
     thread: list[tuple[str, str, str]] = field(default_factory=list)
     code: int = 0
@@ -67,6 +68,8 @@ class Comments:
 
     def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
         self.calls.append((list(argv), dict(env)))
+        if "graphql" in argv:
+            return self.code, json.dumps(["Issue", ""]) + "\n"
         return self.code, "".join(json.dumps(list(row)) + "\n" for row in self.thread)
 
 
@@ -88,10 +91,11 @@ def gh(root: Path, args: list[str], host: Host, comments: Comments, key: Path | 
 
 
 def as_app(tmp_path: Path, args: list[str], host: Host, thread: list[tuple[str, str, str]]) -> Runner:
-    """args through shipmill gh as the App; gh ran them as given, after one read of the comments"""
+    """args through shipmill gh as the App; gh ran them as given, after one read of the comments
+    (and, adding the label, one of the item's type, #1484)"""
     comments = Comments(thread)
     runner = gh(checkout(tmp_path, WITH_APP), args, host, comments, key_file(tmp_path))
-    [(read, read_env)] = comments.calls
+    [(read, read_env)] = [(argv, env) for argv, env in comments.calls if "graphql" not in argv]
     [(argv, env)] = runner.calls
     assert read[1:4] == ["api", "--paginate", f"repos/{REPO}/issues/{args[2]}/comments"]
     assert argv[1:] == args
