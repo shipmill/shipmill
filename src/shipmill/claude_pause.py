@@ -135,9 +135,12 @@ def save_pause(folder: Path, credential: str, pause: Pause) -> None:
 
 
 def newest_reset(events: list[Mapping[str, object]]) -> dt.datetime | None:
-    """The newest `resetsAt` a session's `rate_limit_event`s carry, epoch seconds in its
-    rate_limit_info, as a time; None when none carries one"""
-    found = []
+    """The newest `resetsAt` a session's `rate_limit_event`s carry, epoch seconds in their
+    rate_limit_info, as a time: of the rejected ones, the limit that stopped it, when it has
+    any, so an allowed warning about a later window doesn't stretch the pause; else of every
+    one. None when none carries one"""
+    rejected: list[dt.datetime] = []
+    every: list[dt.datetime] = []
     for event in events:
         info = event.get("rate_limit_info")
         if event.get("type") != "rate_limit_event" or not isinstance(info, dict) or "resetsAt" not in info:
@@ -145,5 +148,8 @@ def newest_reset(events: list[Mapping[str, object]]) -> dt.datetime | None:
         resets = info["resetsAt"]
         if isinstance(resets, bool) or not isinstance(resets, int | float):
             raise ValueError(f"a rate_limit_event's resetsAt must be a number, got {resets!r}")
-        found.append(dt.datetime.fromtimestamp(resets, tz=dt.UTC))
-    return max(found, default=None)
+        at = dt.datetime.fromtimestamp(resets, tz=dt.UTC)
+        every.append(at)
+        if info.get("status") == "rejected":
+            rejected.append(at)
+    return max(rejected or every, default=None)

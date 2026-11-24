@@ -15,7 +15,16 @@ import pytest
 
 from shipmill.agents import Mode
 from shipmill.claude_auth import ClaudeAuth
-from shipmill.claude_pause import LOGIN, Pause, credential_id, load_pause, pause_path, pauses_dir, save_pause
+from shipmill.claude_pause import (
+    LOGIN,
+    Pause,
+    credential_id,
+    load_pause,
+    newest_reset,
+    pause_path,
+    pauses_dir,
+    save_pause,
+)
 from shipmill.claude_token import Credential, Token, TokenSource
 from shipmill.errors import ReleaseError
 from shipmill.gate import DEAD_STREAK, RECORD, Action, Decision, load_launch, session_log, state_dir
@@ -327,3 +336,14 @@ def test_s089_5_a_gate_json_credential_that_isnt_a_credentials_name_is_refused(c
     with pytest.raises(ValueError, match="16 hex digits"):
         pause_path(folder, "../../escaped")
     assert not (folder.parent.parent / "escaped.json").exists()
+
+
+def test_s089_5_resets_at_is_the_rejected_limits_not_a_later_windows_warning() -> None:
+    def event(status: str, at: int) -> dict[str, object]:
+        return {"type": "rate_limit_event", "rate_limit_info": {"status": status, "resetsAt": at}}
+
+    stamp = dt.datetime.fromtimestamp
+    found = newest_reset([event("allowed_warning", RESETS), event("rejected", EARLIER)])
+    assert found == stamp(EARLIER, tz=dt.UTC)
+    assert newest_reset([event("allowed", EARLIER), event("allowed_warning", RESETS)]) == stamp(RESETS, tz=dt.UTC)
+    assert newest_reset([{"type": "result", "is_error": False}]) is None
