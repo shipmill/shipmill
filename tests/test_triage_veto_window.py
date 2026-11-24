@@ -195,6 +195,15 @@ def test_s067_9_an_unanswered_veto_holds_past_the_window(ts: ModuleType) -> None
     assert 7 in windows(ts, "2026-11-15T16:00:00Z", handled)
 
 
+def test_1482_a_maintainers_relayed_veto_holds_past_the_window(ts: ModuleType) -> None:
+    relayed = app("Decision by `@amy`, relayed by Claude Code\n\nown: veto keep it in scope", "2026-11-15T15:00:00Z")
+    gh = FakeGitHub(ts, {("DECIDED_PRS_PAGE", None, None): decided(pull(comments=[app(DECIDED), relayed]))})
+    held = ts.veto_windows("o/r", [build_issue()], APP, at("2026-11-20T00:00:00Z"), gh, maintainers=frozenset({"amy"}))
+    assert held == {7: "#50 vetoed by @amy"}
+    # without the maintainer given (no --role flags), the relay is no veto
+    assert windows(ts, "2026-11-20T00:00:00Z", pull(comments=[app(DECIDED), relayed])) == {}
+
+
 @pytest.mark.parametrize(
     "veto",
     [
