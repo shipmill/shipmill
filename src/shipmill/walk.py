@@ -112,19 +112,23 @@ def tier_of(finding: Finding) -> int:
 
 
 EXPEDITED = frozenset({3, 6})  # spec 070: the tiers whose expedite rows come before the standard ones
+WEIGHED = frozenset({4, 6})  # spec 086: the tiers whose rows go by their highest held first
 
 
 def order(findings: Iterable[Finding]) -> list[Finding]:
     """A walk's fixed order (S-046-12): the tier, the kind's place in it, then the subject. In
     tiers 3 and 6 an expedite row comes before every standard row (S-070-4), and each group
-    keeps that order; tiers 1 and 2 still come first"""
+    keeps that order; tiers 1 and 2 still come first. In tiers 4 and 6 a row whose issues hold
+    more open issues comes first within its group (spec 086), a row without impact reading 0,
+    so with no impact the order is S-046-12's"""
 
-    def key(f: Finding) -> tuple[int, bool, int, int, str, str]:
+    def key(f: Finding) -> tuple[int, bool, int, int, int, str, str]:
         tier = tier_of(f)
         kinds = TIERS.get(tier, ())
         place = kinds.index(f.kind) if f.kind in kinds else len(kinds)
         number = int(f.subject[1:]) if re.fullmatch(r"#\d+", f.subject) else 0  # #9 before #10
-        return tier, not (f.expedite and tier in EXPEDITED), place, number, f.subject, f.detail
+        weight = -f.held if tier in WEIGHED else 0
+        return tier, not (f.expedite and tier in EXPEDITED), weight, place, number, f.subject, f.detail
 
     return sorted(findings, key=key)
 
@@ -298,10 +302,11 @@ def subject_key(item: Finding, number: int) -> str:
 
 def cut(item: Finding, numbers: Sequence[int]) -> Finding:
     """The item cut to these of its subjects: its detail keeps only their `#N`, after an ISSUES
-    row's triage state, and a PRS_OPEN row only their heads"""
+    row's triage state, a PRS_OPEN row only their heads, and its impact only theirs (spec 086)"""
     state = f"{item.detail.split(' ', 1)[0]} " if item.state == ISSUES else ""
     heads = tuple((n, sha) for n, sha in item.heads if n in numbers)
-    return replace(item, detail=state + " ".join(f"#{n}" for n in numbers), heads=heads)
+    impact = tuple((n, held) for n, held in item.impact if n in numbers)
+    return replace(item, detail=state + " ".join(f"#{n}" for n in numbers), heads=heads, impact=impact)
 
 
 @dataclass(frozen=True, slots=True)

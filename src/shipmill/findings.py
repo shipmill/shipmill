@@ -23,7 +23,9 @@ class Finding:
     is the one line that clears it (spec 011), built from trusted values only, None without.
     expedite marks a row of tier 3 or 6 naming an expedite outcome's issues or the pull
     requests closing one (S-070-3), which the walk takes before the tier's standard rows; it
-    joins no fingerprint, so a row hashes as it did before spec 070"""
+    joins no fingerprint, so a row hashes as it did before spec 070. impact is (number, held)
+    for each of the row's issues that holds open issues (spec 086), most held first, which
+    orders tiers 4 and 6; () without, and it joins no fingerprint either (S-046-13, D-87)"""
 
     state: str
     subject: str
@@ -32,6 +34,18 @@ class Finding:
     heads: tuple[tuple[int, str], ...] = ()
     fix: str | None = None
     expedite: bool = False
+    impact: tuple[tuple[int, int], ...] = ()
+
+    @property
+    def held(self) -> int:
+        """The most open issues one of the row's issues holds, 0 without impact (spec 086)"""
+        return max((held for _, held in self.impact), default=0)
+
+    @property
+    def first_by_impact(self) -> tuple[int, int] | None:
+        """The row's issue that holds the most, and its count, the lower number on a tie; None
+        without impact (spec 086)"""
+        return min(self.impact, key=lambda pair: (-pair[1], pair[0]), default=None)
 
     @property
     def kind(self) -> str:
@@ -82,8 +96,27 @@ def parse_findings(text: str) -> list[Finding]:
         expedite = row.get("expedite", False)
         if not isinstance(expedite, bool):
             raise ReleaseError(f"watch_state.py printed {line[:200]!r}: a row's expedite must be true or false")
-        findings.append(Finding(row["state"], row["subject"], row["detail"], row["agent"], heads, fix, expedite))
+        impact = parse_impact(row["impact"], line) if "impact" in row else ()
+        found = Finding(row["state"], row["subject"], row["detail"], row["agent"], heads, fix, expedite, impact)
+        findings.append(found)
     return findings
+
+
+def whole(value: object) -> bool:
+    """A positive whole number, never a boolean"""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def parse_impact(found: object, line: str) -> tuple[tuple[int, int], ...]:
+    """A row's impact (spec 086): a list of [number, held] pairs of positive whole numbers;
+    anything else is refused"""
+    pairs = found if isinstance(found, list) else None
+    if pairs is None or not all(isinstance(p, list) and len(p) == 2 and whole(p[0]) and whole(p[1]) for p in pairs):
+        raise ReleaseError(
+            f"watch_state.py printed {line[:200]!r}: a row's impact must be a list of [number, held] pairs"
+            " of positive whole numbers"
+        )
+    return tuple((int(p[0]), int(p[1])) for p in pairs)
 
 
 def parse_heads(row: Mapping[str, object], line: str) -> tuple[tuple[int, str], ...]:
