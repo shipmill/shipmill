@@ -311,3 +311,19 @@ def test_s089_10_two_gates_on_one_token_whose_sessions_both_ended_auth_notify_on
         at = NOW + dt.timedelta(minutes=minutes)
         assert first.tick(at).action is Action.PAUSED and second.tick(at).action is Action.PAUSED
     assert len(first.notifier.sent) + len(second.notifier.sent) == 1
+
+
+def test_s089_5_a_gate_json_credential_that_isnt_a_credentials_name_is_refused(checkout: Git, folder: Path) -> None:
+    """gate.json's credential names the pause file: one that could leave the folder is malformed"""
+    gate = Gate(checkout, folder)
+    gate.tick(NOW)
+    record = state_dir(checkout) / RECORD
+    launched = json.loads(record.read_text(encoding="utf-8"))
+    launched["credential"] = "../../escaped"
+    record.write_text(json.dumps(launched), encoding="utf-8")
+    ended(checkout, *REFUSED)
+    with pytest.raises(ReleaseError, match="malformed"):
+        load_launch(record)
+    with pytest.raises(ValueError, match="16 hex digits"):
+        pause_path(folder, "../../escaped")
+    assert not (folder.parent.parent / "escaped.json").exists()

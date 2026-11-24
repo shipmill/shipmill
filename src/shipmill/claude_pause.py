@@ -8,6 +8,7 @@ of the token file's content (spec 035), or `login` for a gate with no token file
 import datetime as dt
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -19,6 +20,7 @@ from shipmill.walk import End, malformed, moment, write
 LOGIN = "login"  # the credential of a gate with no token file: the host's Claude Code login
 CAUSES = (End.LIMIT, End.AUTH)
 KEYS = frozenset({"cause", "session", "at", "resets_at", "notified", "lifted"})
+NAMED = re.compile(r"login|[0-9a-f]{16}")  # what credential_id returns, and so a pause file's name
 
 
 def credential_id(token: Token | None) -> str:
@@ -101,6 +103,8 @@ class Pause:
 
 
 def pause_path(folder: Path, credential: str) -> Path:
+    if NAMED.fullmatch(credential) is None:
+        raise ValueError(f"a credential is login or 16 hex digits, got {credential!r}")
     return folder / f"{credential}.json"
 
 

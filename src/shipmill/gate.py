@@ -51,6 +51,7 @@ from shipmill.claude_pause import (
     save_pause,
 )
 from shipmill.claude_pause import LOGIN as LOGIN_CREDENTIAL
+from shipmill.claude_pause import NAMED as CREDENTIAL_NAMED
 from shipmill.claude_token import Credential, Kind, Token, rejected_fix, session_env
 from shipmill.config import CONFIG_PATH, Table, config_path, loads, read
 from shipmill.environments import OperateConfig
@@ -246,8 +247,10 @@ class Launch:
     credential: str | None = None  # spec 089: credential_id of what it ran with; None before spec 089
 
     def __post_init__(self) -> None:
-        if self.credential is not None and (not isinstance(self.credential, str) or not self.credential):
-            raise ValueError(f"credential must be a non-empty string, got {self.credential!r}")
+        if self.credential is not None and (
+            not isinstance(self.credential, str) or CREDENTIAL_NAMED.fullmatch(self.credential) is None
+        ):
+            raise ValueError(f"credential must be login or 16 hex digits, got {self.credential!r}")
         if self.item is not None and (not isinstance(self.item, str) or not self.item.strip()):
             raise ValueError(f"item must be a non-empty string, got {self.item!r}")
         if self.stopped is not None and self.process is None:
