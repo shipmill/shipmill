@@ -545,7 +545,7 @@ def test_s026_14_the_policy_reads_hooks_with_its_defaults() -> None:
 
 def test_d82_the_policy_reads_hooks_uv_run() -> None:
     assert hooks("").uv_run == ()
-    assert hooks('\n[hooks]\nuv_run = ["treaty", "as-watch"]\n').uv_run == ("treaty", "as-watch")
+    assert hooks('\n[hooks]\nuv_run = ["treaty", "demo-watch"]\n').uv_run == ("treaty", "demo-watch")
 
 
 @pytest.mark.parametrize("name", [name for name in CASES if name.startswith("hooks ")])
