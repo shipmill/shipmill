@@ -174,7 +174,6 @@ QUICK = NOW + DEAD_WITHIN / 2  # a log last written within DEAD_WITHIN of the la
         (stream(INIT, SAID), "Triaging #12"),  # no result event: it was cut off
         (stream(INIT, SAID, FAILED), "error_during_execution"),
         (stream(INIT, SAID, {**DONE, "is_error": True}), "Done: triaged #12"),
-        (stream(INIT, {**DONE, "is_error": None}), "Done: triaged #12"),  # only false is a result
         (stream(INIT, TOOL), ""),
         (stream(INIT, SAID, after="API Error: 529 Overloaded\n"), "API Error: 529 Overloaded"),
         (stream(INIT, SAID, after=json.dumps(TOOL_OUTPUT)[:-5]), "Triaging #12"),  # a cut-off event isn't shown
@@ -253,8 +252,9 @@ def test_s048_17_a_long_log_reads_its_result_from_its_tail(tmp_path: Path) -> No
 
 @pytest.mark.parametrize(
     ("text", "dead"),
-    [("Nothing needed a change.\n", False), ("API Error: 529 Overloaded\n", True), ("", True)],
+    [("Nothing needed a change.\n", True), ("API Error: 529 Overloaded\n", True), ("", True)],
 )
-def test_s048_17_a_text_log_written_before_spec_048_reads_as_before(tmp_path: Path, text: str, dead: bool) -> None:
+def test_s048_17_a_text_log_written_before_spec_048_ended_dead(tmp_path: Path, text: str, dead: bool) -> None:
+    # spec 089 (S-089-1): a log not stream-json ends error, whatever its text and however quick
     written(session_log(tmp_path, str(SESSION)), text, QUICK)
     assert (ended_dead(headless_launch(), tmp_path) is not None) is dead

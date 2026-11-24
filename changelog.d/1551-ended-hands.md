@@ -1,0 +1,3 @@
+### Changed
+
+- Gate: a headless session is dead when its log's end is anything but `ok` (a usage limit, an authentication failure, or no result without an error), however long it ran, instead of when it ended within 60 s of its launch; a session a STALLED tick stopped is dead too. A hand whose session ended `limit`, `auth`, or `error` drops from `handed.json` on the tick that records the end, whichever session `gate.json` names by then, so its item is handed again, and only a hand whose session ended `ok` turns idle: hands already stuck idle behind sessions a usage limit stopped return to the queue on the first tick after the upgrade. A capped dead session's hands still hold its item for `retry_hours` until spec 089's backoff replaces that hold (#1551)

@@ -130,6 +130,7 @@ def test_s089_1_a_session_without_a_log_or_one_a_stalled_tick_stopped_ends_error
     [
         {"type": "result", "subtype": "success", "result": "Done"},  # no is_error
         {"type": "result", "subtype": "success", "is_error": "false"},
+        {"type": "result", "subtype": "success", "is_error": None},
         {"type": "result", "is_error": True, "api_error_status": "429"},
         {"type": "assistant", "api_error_status": True},
         {"type": "rate_limit_event", "rate_limit_info": "rejected"},
@@ -212,18 +213,20 @@ def ended_session(git: Git, *lines: object, seconds: int) -> None:
 
 def test_s089_2_a_headless_tick_records_each_gone_sessions_end_on_its_hands(checkout: Git) -> None:
     ended_session(checkout, INIT, SAID, OK, seconds=600)
-    claude = FakeClaude()
-    decision = tick(checkout, Source({1: [INCIDENT], 2: [BOT_FAILED]}), LATER, cfg(Mode.HEADLESS), claude)
-    assert decision.action is Action.UNCHANGED and not claude.started
+    decision = tick(checkout, Source({1: [INCIDENT], 2: [BOT_FAILED]}), LATER, cfg(Mode.HEADLESS), FakeClaude())
     found = handed(checkout)
     assert found[item_key(INCIDENT)] == {"session": SESSION, "at": NOW.isoformat(), "ended": "ok"}
-    assert found[item_key(BOT_FAILED)]["ended"] == "error"  # its log is gone
+    # BOT_FAILED's session left no log: it ended error, so its hand dropped (S-089-4) and the tick
+    # handed it again, to a new session whose hand records no end while it runs
+    assert decision.action is Action.LAUNCH and "BOT_FAILED" in decision.reason
+    assert "ended" not in found[item_key(BOT_FAILED)] and found[item_key(BOT_FAILED)]["session"] != "s0"
 
 
-def test_s089_2_a_session_with_no_result_past_60_s_records_error(checkout: Git) -> None:
+def test_s089_2_a_session_with_no_result_past_60_s_ends_error(checkout: Git) -> None:
     ended_session(checkout, INIT, SAID, seconds=600)
-    tick(checkout, Source({1: [INCIDENT], 2: [BOT_FAILED]}), LATER, cfg(Mode.HEADLESS), FakeClaude())
-    assert handed(checkout)[item_key(INCIDENT)]["ended"] == "error"
+    decision = tick(checkout, Source({1: [INCIDENT], 2: [BOT_FAILED]}), LATER, cfg(Mode.HEADLESS), FakeClaude())
+    assert decision.action is Action.SESSION_DEAD and decision.dead is not None
+    assert decision.dead.end is End.ERROR and decision.dead.seconds == 600
 
 
 def test_s089_2_an_interactive_gates_hands_record_no_end(checkout: Git) -> None:
