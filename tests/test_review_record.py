@@ -455,6 +455,23 @@ def test_s075_9_landing_records_the_counts_and_the_retro_reads_them() -> None:
     assert "also pass `--reviews`" in gather
 
 
+def test_the_pr_triage_skill_leaves_no_detached_worktree_for_the_prune() -> None:
+    """The prune keeps a detached worktree forever (S-002-4) and finds a landed pull request by a
+    branch named for it (D-91), so a worktree the skill may leave behind holds such a branch (#1513)"""
+    verify = section(BRIEF, "## Verify a refusal")
+    assert "--detach" not in verify
+    assert "`git fetch origin pull/{N}/head`, then `git checkout -B review-{N}-verify {reviewed_head}`" in verify
+    assert "`git branch --set-upstream-to=origin/{head_branch} review-{N}-verify`" in verify
+    landing = folded(SKILLS / "github-pr-triage" / "references" / "landing.md")
+    assert "--detach" not in landing
+    assert "`git checkout -B land-<child> origin/<default>`" in landing
+    assert "`git worktree add -B land-<N> tmp/wt-land-<N> <ref>`" in landing
+    step = section(SKILLS / "github-pr-triage" / "SKILL.md", "### 7. Clean up")
+    assert "holds a branch named for its pull request" in step and "never a detached HEAD" in step
+    three = section(SKILLS / "github-pr-triage" / "SKILL.md", "### 3. Verify each reviewer's report")
+    assert "`{head_branch}`" in three
+
+
 def test_s055_18_the_implementer_opens_the_pr_with_its_plan_in_the_body() -> None:
     brief = folded(SKILLS / "github-issue-triage" / "references" / "implementer-brief.md")
     assert "the body the PR is opened with" in brief
