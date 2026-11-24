@@ -37,8 +37,19 @@ state: each row comes from a state script that already reads it, on the same fre
 | `TO_MERGE` | a pull request labelled `shipmill-ready` under `[autonomy] land = "propose"` | `watch_state.py`'s PRS_PARKED, TO_MERGE part | the newest event adding the label |
 | `PROMOTION` | an open "Ready to promote" proposal issue of `shipmill operate` | `watch_state.py`'s PROMOTION_DUE, proposal part | the issue's opening |
 | `NO_REASON` | an opportunity closed as not planned with no reason recorded | `intake_state.py --json`, NO_REASON | the close |
+| `UPSTREAM` | an open report labelled `upstream` that nobody linked to an issue in another repo or took (spec 038): report it where it belongs | `triage_state.py --json`, UPSTREAM_UNOWNED | the newest event adding the `upstream` label, else the issue's opening |
 
 - A row whose item is in `QUESTION` is in no other row, so an item is listed once
+- **`triage_state.py`'s `--home`** is the one the watch passes (spec 038): the clone's
+  `[product] home` in a component, the repo itself in the home repo (its config has
+  `[product] repos`), none otherwise; with one, the coordinator routes the reports, so a
+  product's report is no `UPSTREAM` row. A clone whose config has no `[product]` table, or
+  no config, reads without `--home`
+
+The first version of this spec had eight row kinds and none for an `upstream` report, so a
+report nobody linked or took in a repo without a coordinator waited on nobody
+(shipmill/shipmill#1487). The maintainer decided on 2026-11-24 in shipmill/shipmill#1502 that
+the queue lists it as a ninth kind, `UPSTREAM` (S-069-14).
 - **The reader** is `--login`, else the login of the authenticated `gh` user (`gh api user`).
   Only `YOUR_ITEM` depends on it; an item assigned to a team and to no login of the reader is
   not theirs here
@@ -77,6 +88,7 @@ state: each row comes from a state script that already reads it, on the same fre
 - S-069-11: the run exits 0 when no repo has a row and 1 when any has; a fleet file `fleet.py report` refuses is refused by `queue` with the same exit 2 and message
 - S-069-12: `queue` makes no write on GitHub: a run against a fake `gh` records only reads
 - S-069-13: `skills/github-ship-watch/SKILL.md`'s Fleet section documents `fleet.py queue`, its rows, and a routine prompt that runs it
+- S-069-14: an open issue labelled `upstream` that `triage_state.py` reads UPSTREAM_UNOWNED is an `UPSTREAM` row, "report it where it belongs", since its label's newest event; one it reads UPSTREAM, or whose label came off, is none; `triage_state.py` runs with the clone's `[product] home` as `--home` in a component, the repo itself in the home repo, and none in a repo without `[product]`
 
 ## Out of scope
 
@@ -103,6 +115,7 @@ state: each row comes from a state script that already reads it, on the same fre
 - shipmill/shipmill#1244: S-069-1, S-069-5, S-069-6, S-069-7, S-069-8, S-069-9, S-069-10, S-069-11, S-069-12
 - shipmill/shipmill#1245: S-069-2, S-069-3
 - shipmill/shipmill#1246: S-069-4, S-069-13
+- shipmill/shipmill#1487: S-069-14
 
 ## Verification
 
@@ -119,3 +132,4 @@ state: each row comes from a state script that already reads it, on the same fre
 - S-069-11: tests/test_fleet_queue.py (test_s069_11_*): exit 0 on an empty queue and 1 with a row; a fleet file `report` refuses, `queue` refuses with the same exit 2 and message; the live run exited 1; passes
 - S-069-12: tests/test_fleet_queue.py (test_s069_12_*): against a fake gh the run makes only `gh api user`, `gh repo clone`, and `gh api graphql` queries, no mutation; passes
 - S-069-13: tests/test_fleet_queue.py (test_s069_13_*): `skills/github-ship-watch/SKILL.md`'s Fleet section names `scripts/fleet.py queue --fleet <file>`, each row kind, and a `/schedule` routine prompt running it and reporting oldest first; passes
+- S-069-14: tests/test_fleet_queue.py (test_1487_*, each marked `proves: S-069-14`): an UPSTREAM_UNOWNED report is an `UPSTREAM` row since its label, an UPSTREAM one and one whose label came off are none, and triage_state.py runs with the component's `[product] home`, the home repo itself, or no `--home` for a standalone repo; passes

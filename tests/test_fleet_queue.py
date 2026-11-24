@@ -835,6 +835,7 @@ def upstream_line(number: int, state: str) -> dict[str, Any]:
     return {"number": number, "state": state, "title": f"Report {number}", "note": "no coordinator"}
 
 
+# proves: S-069-14
 def test_1487_an_unowned_upstream_report_waits_on_the_maintainer_until_linked_or_assigned(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -853,12 +854,14 @@ def test_1487_an_unowned_upstream_report_waits_on_the_maintainer_until_linked_or
     assert run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT) == (0, "nothing waits on the maintainer\n")
 
 
+# proves: S-069-14
 def test_1487_an_unowned_report_whose_label_came_off_is_no_row(fl: ModuleType) -> None:
     assert fl.queue_item("o/r", fl.UPSTREAM, item(5, "Relabelled"), BOT) is None
     found = fl.queue_item("o/r", fl.UPSTREAM, item(5, "No label event", labels=["upstream"], created=ago(days=2)), BOT)
     assert found is not None and found.since == NOW - dt.timedelta(days=2)  # since its opening
 
 
+# proves: S-069-14
 def test_1487_in_a_component_triage_reads_with_the_clones_home(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -872,6 +875,7 @@ def test_1487_in_a_component_triage_reads_with_the_clones_home(
     assert "--home" not in triage("o/s")  # no [product] home: none
 
 
+# proves: S-069-14
 def test_1487_in_a_home_repo_triage_reads_with_the_repo_itself_as_home(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

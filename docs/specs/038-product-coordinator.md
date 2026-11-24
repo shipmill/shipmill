@@ -146,9 +146,18 @@ repo.
 - A new `--home OWNER/NAME` gives its note: `routed by OWNER/NAME`; without it, `no coordinator:
   waits for the maintainer`. A report labelled needs-decision whose question has no reply
   adds `asks the maintainer` (the coordinator asked on it; the component acts on no reply)
+- Without `--home`, a report nobody took (no assignee) and nothing links to an issue in
+  another repo (no `Depends on` line, blocked-by relation, or sub-issue naming one; a link in
+  its own repo routes it nowhere) reads UPSTREAM_UNOWNED, noted `no coordinator: waits for
+  the maintainer to report it where it belongs`, with `asks the maintainer` added as
+  UPSTREAM's is. UPSTREAM_UNOWNED is not in `ACTION` either. A link to another repo's issue or
+  an assignee makes it UPSTREAM again
 - `skills/github-ship-watch/scripts/watch_state.py` passes the config's `[product] home` as
-  `--home`, and lists UPSTREAM issues in ISSUES_OPEN as `UPSTREAM #N`, never in ISSUES,
-  NEEDS_DECISION, or an agent row, so the gate starts no session for one
+  `--home`, and in the home repo (its config has `[product] repos`) the repo itself, whose
+  coordinator routes its own reports; with `--home` naming the repo itself `triage_state.py`
+  reads no product holds and adds no hold note. The watch lists UPSTREAM issues in
+  ISSUES_OPEN as `UPSTREAM #N` and UPSTREAM_UNOWNED ones as `UPSTREAM_UNOWNED #N`, never in
+  ISSUES, NEEDS_DECISION, or an agent row, so the gate starts no session for one
 - A closed issue labelled `upstream` never reads SUSPECT_CLOSE: the coordinator, or the
   maintainer without one, closes it by hand by design, as a `human` item is
 - The issue that waits on the report reads BLOCKED while it is open and UNBLOCKED once it
@@ -229,11 +238,21 @@ takes only a listed repo: the link names the home in the body edit's endpoint, n
 
 ### Without a coordinator
 
-A repo with no `[product] home` has no coordinator: its `upstream` report or stand-in reads
-UPSTREAM with `no coordinator: waits for the maintainer`, its triage comment says so, and the
-maintainer reports it where it belongs and closes it by hand. A home repo has a coordinator only
-with `[product] repos` and `[agents] app_id`; a component whose home runs no gate keeps
-waiting, which the maintainer's queue (#337) is to show.
+A repo with no `[product] home` and no `[product] repos` has no coordinator: its `upstream`
+report or stand-in reads UPSTREAM with `no coordinator: waits for the maintainer`, or
+UPSTREAM_UNOWNED while nobody linked it to another repo's issue or took it, its triage
+comment says so, and the maintainer reports it where it belongs and closes it by hand. The
+maintainer's queue (`fleet.py queue`, spec 069) lists an UPSTREAM_UNOWNED report as an
+`UPSTREAM` row until it is linked or assigned. A home repo has a coordinator only with
+`[product] repos` and `[agents] app_id`; a component whose home runs no gate keeps waiting.
+
+The first version of this spec read every `upstream` report as UPSTREAM (S-038-13), so one
+in a repo without a coordinator that nobody linked or took waited on nobody: it started no
+session and no queue listed it (shipmill/shipmill#1487). The maintainer decided on
+2026-11-24 in shipmill/shipmill#1502 that such a report reads UPSTREAM_UNOWNED, with its own
+note, listed in ISSUES_OPEN as `UPSTREAM_UNOWNED #N` and on the maintainer's queue, and that
+the watch passes the home repo itself as `--home` there, so the coordinator's own reports
+stay UPSTREAM. S-038-13, S-038-14, and S-038-15 are amended to say so.
 
 ### Spec 017's direct holds
 
@@ -291,9 +310,9 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-10: dropped in #1085, see S-065-6 and S-065-7: they keep the refusal of a component's `shipmill gh -R` and `shipmill app-token` for another repo, naming D-84, and replace the refusal of any `--product` in a component with a read token over the product's other repos (D-84)
 - S-038-11: `chains.py link` run from a checkout whose config sets `[product] home` exits 2 before any write when either reference names another repo than its own
 - S-038-12: dropped in #601, see S-038-29: `chains.py link --product P --child C` writes through `shipmill gh --product <P's repo>`, and exits 2 before any write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
-- S-038-13: `triage_state.py` reads an open issue labelled `upstream` as UPSTREAM before NEEDS_DECISION, DECIDED, and every other state but UNTRUSTED, triaged or not, whatever its holds; UPSTREAM is not in `ACTION`, so a repo whose only open issue reads UPSTREAM exits 0
-- S-038-14: UPSTREAM's note is `routed by OWNER/NAME` with `--home OWNER/NAME` and `no coordinator: waits for the maintainer` without it, and adds `asks the maintainer` when the report is labelled needs-decision and its question has no reply
-- S-038-15: `watch_state.py` passes `[product] home` as `--home` and lists UPSTREAM issues in ISSUES_OPEN as `UPSTREAM #N`, in no ISSUES, NEEDS_DECISION, or agent row, and the gate starts no session for a repo whose only open issue reads UPSTREAM
+- S-038-13: `triage_state.py` reads an open issue labelled `upstream` as UPSTREAM before NEEDS_DECISION, DECIDED, and every other state but UNTRUSTED, triaged or not, whatever its holds; without `--home`, one with no assignee and no `Depends on` line, blocked-by relation, or sub-issue naming another repo's issue reads UPSTREAM_UNOWNED instead (a link in its own repo doesn't count); neither is in `ACTION`, so a repo whose only open issue reads either exits 0 (amended in #1502)
+- S-038-14: UPSTREAM's note is `routed by OWNER/NAME` with `--home OWNER/NAME` and `no coordinator: waits for the maintainer` without it; UPSTREAM_UNOWNED's is `no coordinator: waits for the maintainer to report it where it belongs`; each adds `asks the maintainer` when the report is labelled needs-decision and its question has no reply (amended in #1502)
+- S-038-15: `watch_state.py` passes `[product] home` as `--home`, and the repo itself in a home repo (its config has `[product] repos`), where `triage_state.py` then reads no product holds and adds no hold note; it lists UPSTREAM issues in ISSUES_OPEN as `UPSTREAM #N` and UPSTREAM_UNOWNED ones as `UPSTREAM_UNOWNED #N`, in no ISSUES, NEEDS_DECISION, or agent row, and the gate starts no session for a repo whose only open issue reads either (amended in #1502)
 - S-038-16: an issue with a `Depends on #R` line and a native blockedBy on an `upstream` report #R reads BLOCKED while #R is open, UNBLOCKED once #R closes as completed, and UNBLOCKED with `#R:not_planned` in its note once #R closes as not planned
 - S-038-17: a closed issue labelled `upstream` never reads SUSPECT_CLOSE, whoever closed it and however
 - S-038-18: `upstream_state.py <owner/home>` prints one line per open `upstream` issue of the home repo and every listed repo, reading ROUTE_DUE, ASKED, ANSWERED, ROUTED (note `children K/N closed`), or CLOSE_DUE (note `completed`, or `not_planned` when any child closed as not planned), and exits 1 when any is ROUTE_DUE, ANSWERED, or CLOSE_DUE, else 0, and 2 on a gh failure
@@ -360,9 +379,9 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-10: dropped in #1085; its tests follow S-065-6 and S-065-7 (tests/test_product_config.py, tests/test_component_read.py)
 - S-038-11: tests/test_chains.py (test_s038_11_*): `chains.py link` in a component exits 2 for another repo's reference with no read or write, and links within its repo as before; passes
 - S-038-12: dropped in #601
-- S-038-13: tests/test_triage_upstream.py (test_s038_13_*): a report reads UPSTREAM over every state but UNTRUSTED, and a repo whose only issue is one exits 0; passes
-- S-038-14: tests/test_triage_upstream.py (test_s038_14_*): the notes `routed by OWNER/NAME`, `no coordinator: waits for the maintainer`, and `, asks the maintainer`; a malformed `--home` exits 2; passes
-- S-038-15: tests/test_triage_upstream.py (test_s038_15_*): the watch passes `[product] home` as `--home`, lists `UPSTREAM #N` in ISSUES_OPEN only, and the gate stays quiet for a lone report; passes
+- S-038-13: tests/test_triage_upstream.py (test_s038_13_*): a report reads UPSTREAM over every state but UNTRUSTED, and a repo whose only issue is one exits 0; passes. As amended in #1502, tests/test_triage_state.py (test_1487_*): an unlinked, unassigned report reads UPSTREAM_UNOWNED and exits 0, and one linked to another repo's issue (a `Depends on` line, blocked-by, or sub-issue), assigned, or read with `--home` reads UPSTREAM, a same-repo link counting as none; passes
+- S-038-14: tests/test_triage_upstream.py (test_s038_14_*): the notes `routed by OWNER/NAME`, `no coordinator: waits for the maintainer`, and `, asks the maintainer`; a malformed `--home` exits 2; passes. As amended in #1502, tests/test_triage_state.py (test_1487_*): UPSTREAM_UNOWNED's note, with `, asks the maintainer` while its question waits; passes
+- S-038-15: tests/test_triage_upstream.py (test_s038_15_*): the watch passes `[product] home` as `--home`, lists `UPSTREAM #N` in ISSUES_OPEN only, and the gate stays quiet for a lone report; passes. As amended in #1502, tests/test_triage_upstream.py (test_1487_*) gives `triage_home` a component's home, the home repo itself, and none for a standalone repo or one without `[product]`, tests/test_triage_state.py (test_1487_in_the_home_repo_*) reads the home repo's report with itself as `--home` as UPSTREAM, and test_s038_15_* lists `UPSTREAM_UNOWNED #N` in ISSUES_OPEN only and keeps the gate quiet for a lone one; passes
 - S-038-16: tests/test_triage_upstream.py (test_s038_16_*): BLOCKED, UNBLOCKED, and UNBLOCKED with `#5:not_planned`, with and without `--home`; passes
 - S-038-17: tests/test_triage_upstream.py (test_s038_17_*): a closed report is never SUSPECT_CLOSE, closed by hand, as not planned, by an unmerged pull request, or by a quoting commit; passes
 - S-038-18: tests/test_upstream_state.py (test_s038_18_*): one line per open report of the home repo and each listed repo in each state, the exit codes, and exit 2 on a gh failure with no partial output; `upstream_state.py shipmill/shipmill` in this repo exits 2 for its missing `[product] repos`; passes

@@ -1296,6 +1296,7 @@ def read_rows(proc: subprocess.CompletedProcess[str]) -> list[tuple[int, str, st
     return [(r["number"], r["state"], r["note"]) for r in map(json.loads, proc.stdout.splitlines())]
 
 
+# proves: S-038-13, S-038-14
 @pytest.mark.parametrize(
     "item",
     [
@@ -1314,6 +1315,7 @@ def test_1487_an_unlinked_unassigned_upstream_report_reads_unowned_and_no_action
     assert "UPSTREAM_UNOWNED" not in ts.ACTION
 
 
+# proves: S-038-13
 @pytest.mark.parametrize(
     "item",
     [
@@ -1329,12 +1331,14 @@ def test_1487_a_linked_or_assigned_upstream_report_reads_upstream(tmp_path: Path
     assert read_rows(proc) == [(5, "UPSTREAM", "no coordinator: waits for the maintainer")]
 
 
+# proves: S-038-13
 def test_1487_with_a_coordinator_an_unlinked_report_stays_upstream(tmp_path: Path) -> None:
     proc = run_script(tmp_path, [upstream_report()], "--home", "acme/product")
     assert proc.returncode == 0, proc.stderr
     assert read_rows(proc) == [(5, "UPSTREAM", "routed by acme/product")]  # its ROUTE_DUE takes it up
 
 
+# proves: S-038-15
 def test_1487_in_the_home_repo_an_unlinked_report_stays_upstream(tmp_path: Path) -> None:
     # the watch and the queue pass a home repo itself as --home: its coordinator routes the report
     proc = run_script(tmp_path, [upstream_report()], "--home", "o/r")
@@ -1342,6 +1346,7 @@ def test_1487_in_the_home_repo_an_unlinked_report_stays_upstream(tmp_path: Path)
     assert read_rows(proc) == [(5, "UPSTREAM", "routed by o/r")]
 
 
+# proves: S-038-14
 def test_1487_an_unowned_reports_open_question_still_asks_the_maintainer(tmp_path: Path) -> None:
     item = upstream_report()
     item["labels"]["nodes"].append({"name": "needs-decision"})
