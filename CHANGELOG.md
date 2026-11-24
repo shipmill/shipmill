@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.166.0] - 2026-11-24
+
+### Changed
+
+- Specs 083 and 089 list their build issues, and D-101 records that a pull request in `protected` or `security` may earn a lower level within `[decisions.earned]` (#1305, #1512)
+
 ## [0.165.0] - 2026-11-24
 
 ### Changed
@@ -2989,7 +2995,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.165.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.166.0...HEAD
+[0.166.0]: https://github.com/shipmill/shipmill/compare/v0.165.0...v0.166.0
 [0.165.0]: https://github.com/shipmill/shipmill/compare/v0.164.1...v0.165.0
 [0.164.1]: https://github.com/shipmill/shipmill/compare/v0.164.0...v0.164.1
 [0.164.0]: https://github.com/shipmill/shipmill/compare/v0.163.2...v0.164.0
