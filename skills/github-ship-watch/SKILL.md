@@ -357,7 +357,7 @@ In a session, `/loop 1h` the same report.
 - `TO_MERGE`: a pull request labelled `shipmill-ready` under `[autonomy] land = "propose"`, since the label
 - `PROMOTION`: an open "Ready to promote" proposal issue of `shipmill operate`, since its opening
 - `NO_REASON`: an opportunity closed as not planned with no reason recorded, since its close
-- `UPSTREAM`: an `upstream` report nobody linked to an issue in another repo or took (`triage_state.py`'s UPSTREAM_UNOWNED, #1487): report it where it belongs, or assign it, since its label. In a product, `triage_state.py` reads with the clone's `[product] home` as `--home`, so the coordinator's report is none
+- `UPSTREAM`: an `upstream` report nobody linked to an issue in another repo or took (`triage_state.py`'s UPSTREAM_UNOWNED, #1487): report it where it belongs, or assign it, since its label. In a product, `triage_state.py` reads with the clone's `[product] home` as `--home`, or in the home repo (its config has `[product] repos`) the repo itself, so the coordinator's report is none
 
 An item an outsider opened is in no row; without `--bot-login`, an item the App opened reads as an outsider's. `--json` prints one object: `login`, `items` (each with `repo`, `kind`, `number`, `url`, `asked`, `title`, `since`, `waited_minutes`) in the table's order, and `errors`. A repo whose read fails gets one REPO_ERROR line after the queue, naming the step and the error's first line. Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's read failed, and 2 on a malformed fleet file.
 

@@ -334,7 +334,9 @@ PyPI's window (#597; the pinned `uvx shipmill==<version>` form only, never --too
 --bot-login and --trusted-only go through to triage_state.py: the login shipmill's
 sessions write as (whose comment is the question, and whose issue is trusted), and the
 trust filter of an unattended gate. The config's [product] home (spec 038) goes through
-as --home, which words an upstream report's note; a home that isn't owner/name exits 2.
+as --home, which words an upstream report's note, and in the home repo (its config has
+[product] repos) the repo itself does, whose coordinator routes its reports (#1487); a home
+that isn't owner/name exits 2.
 Each --role flag (spec 036: a role's resolved fillers, one per role, maintainer included, as
 `shipmill roles --flags` prints them) goes through to triage_state.py as given, so a person's
 item reads ASSIGN_DUE (an ISSUES action) rather than NO_ASSIGNEE, and to intake_state.py
@@ -4575,6 +4577,17 @@ def product_home(text: str, policy: Path) -> str | None:
     return product_home_toml(raw, policy)
 
 
+def triage_home(text: str, policy: Path, repo: str) -> str | None:
+    """The --home triage_state.py reads with: the config's [product] home in a component, the
+    repo itself in the home repo (its config has [product] repos), whose coordinator routes
+    its own upstream reports (upstream_state.py's ROUTE_DUE, #1487), else None. triage_state.py
+    reads no product holds and adds no hold note with --home naming the repo itself"""
+    home = product_home(text, policy)
+    if home is None and product_repos(text, policy) is not None:
+        return repo
+    return home
+
+
 def checked_home(home: object, policy: Path) -> str | None:
     """A [product] home as read, refused unless it is owner/name by triage_state.py's rule"""
     if home is None:
@@ -6158,7 +6171,7 @@ def asked_rows(
     untrusted = plan_trust(args, repo_dir, table)
     if untrusted is None:
         return []
-    home = None if text is None else product_home(text, POLICY)
+    home = None if text is None else triage_home(text, POLICY, args.repo)
     code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role, ASKED)
     upgrades = upgrade_issues(args.repo, text)
     level = "observe" if text is None else config(text, POLICY, args.incident_label).upgrade
@@ -6223,7 +6236,7 @@ def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None, known
     untrusted = plan_trust(args, repo_dir, table)
     if untrusted is None:
         return []
-    home = None if text is None else product_home(text, POLICY)
+    home = None if text is None else triage_home(text, POLICY, args.repo)
     code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
     owned = Upgrades([], [], frozenset(i.number for i in upgrade_issues(args.repo, text)))
     directions = triage_directions(triage) if table is not None else frozenset()
@@ -6541,7 +6554,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         holds = hold_rows(fetch_issues(args.repo, "--label", HOLD_LABEL), now, args.repo)
         rows.append(triage_mode_row(text, policy, direction.declined, bool(holds)))
         rows += direction.rows
-        home = product_home(text, policy)
+        home = triage_home(text, policy, args.repo)
         rows += gate_app_rows(table)
         read = config(text, policy, args.incident_label)
         rows += holds
@@ -6692,7 +6705,7 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
             return wait
 
     def triage() -> tuple[int, str]:
-        home = None if policy is None or text is None else product_home(text, policy)
+        home = None if policy is None or text is None else triage_home(text, policy, args.repo)
         return triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
 
     with ThreadPoolExecutor(max_workers=8) as pool:

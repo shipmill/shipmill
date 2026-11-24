@@ -78,8 +78,9 @@ login:
   UPSTREAM    an open report triage_state.py reads UPSTREAM_UNOWNED, still labelled upstream:
               nobody linked it to an issue in another repo or took it (#1487), so the
               maintainer reports it where it belongs; since the label's newest event, else
-              its opening. triage_state.py runs with the clone's [product] home as --home,
-              as the watch does, so in a product the coordinator's report is none
+              its opening. triage_state.py runs with the --home the watch passes (the
+              clone's [product] home, or the repo itself in the home repo, whose config has
+              [product] repos), so in a product the coordinator's report is none
   OPPORTUNITY an open opportunity intake_state.py reads OPPORTUNITY_OPEN; since its opening
   PLAN        an open plan issue intake_state.py reads PLAN_OPEN; since its newest revision:
               the newest <!-- shipmill:plan-revised rev=k --> comment by the --bot-login
@@ -642,19 +643,20 @@ def role_flags(roles: Sequence[str]) -> list[str]:
 
 def triage_command(e: Entry, bot_login: str | None, roles: Sequence[str] = (), home: str | None = None) -> list[str]:
     """triage_state.py for one repo's person's items and unowned upstream reports, with the
-    watch's trust (D-16), the clone's roles (spec 036), and its [product] home as --home, as
-    the watch passes it (spec 038): with one, the coordinator routes the reports (#1487)"""
+    watch's trust (D-16), the clone's roles (spec 036), and the --home the watch passes (spec
+    038): with one, the coordinator routes the reports (#1487)"""
     cmd = [sys.executable, str(WS.TRIAGE_STATE), e.repo, "--json", "--trusted-only"]
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     return cmd + role_flags(roles) + (["--home", home] if home is not None else [])
 
 
-def clone_home(checkout: Path) -> str | None:
-    """The clone's [product] home, read with watch_state.py's reader (None without a config)"""
+def clone_home(checkout: Path, repo: str) -> str | None:
+    """The --home of the clone's triage, read with watch_state.py's reader: its [product] home
+    in a component, the repo itself in the home repo (#1487); None without a config"""
     policy = WS.policy_file(checkout)
     if policy is None:
         return None
-    home: str | None = WS.product_home((checkout / policy).read_text(encoding="utf-8"), policy)
+    home: str | None = WS.triage_home((checkout / policy).read_text(encoding="utf-8"), policy, repo)
     return home
 
 
@@ -1032,7 +1034,7 @@ def queue_clone(e: Entry, runner: Runner, checkout: Path, bot_login: str | None,
     watched = runner(queue_watch_command(e, checkout, bot_login))
     if watched.returncode not in (0, 1):
         return RepoError(e.repo, "watch_state.py", first_line(watched, "watch_state.py"))
-    triaged = runner(triage_command(e, bot_login, roles, clone_home(checkout)))
+    triaged = runner(triage_command(e, bot_login, roles, clone_home(checkout, e.repo)))
     if triaged.returncode not in (0, 1):
         return RepoError(e.repo, "triage_state.py", first_line(triaged, "triage_state.py"))
     intake = runner(intake_command(e, bot_login, (checkout / WS.DIRECTION).is_file(), roles), cwd=checkout)
