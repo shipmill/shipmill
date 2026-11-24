@@ -6,11 +6,17 @@ import io
 import json
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+
+from shipmill import leak_push
+from shipmill.cli import main
+from shipmill.errors import ReleaseError
+from shipmill.gitrepo import Git
+from shipmill.leaks import Destination, LeakRefused, refusal
 
 from .test_delivery_hooks import (
     AGENTS,
@@ -23,6 +29,7 @@ from .test_delivery_hooks import (
     fixture,
     git_repo,
 )
+from .test_leak_push import GITHUB_TOKEN
 
 
 @pytest.fixture(scope="module")
@@ -38,6 +45,8 @@ def box(tmp_path_factory: pytest.TempPathFactory) -> Sandbox:
         outside=outside,
     )
 
+
+Done = subprocess.CompletedProcess[str]
 
 FINDINGS = (
     "shipmill leaks push: refused, nothing was sent (acme/widgets is public)\n"
@@ -62,7 +71,7 @@ class Check:
         return subprocess.CompletedProcess(list(cmd), self.code, "", self.stderr)
 
 
-def pre(command: str, where: Path, check: Check) -> tuple[int, list[str]]:
+def pre(command: str, where: Path, check: Callable[[Sequence[str], Path, float], Done]) -> tuple[int, list[str]]:
     """The pre hook on a Bash command run in where, in a session without the App (the push
     rules don't read it); its exit and its stderr's lines"""
     data = fixture("bash-read.json", where, command)
@@ -141,6 +150,72 @@ def test_s081_11_a_check_that_cant_run_or_finish_refuses_the_push(box: Sandbox, 
     assert lines[2].endswith("then run: git push origin feat/x")
     if check.stderr:
         assert lines[3:] == check.stderr.strip().splitlines()
+
+
+@dataclass
+class Real:
+    """Runs the real `shipmill leaks push` in process for `uvx shipmill==<pinned> leaks push`,
+    its exit and stderr as `shipmill.cli.run` gives them; no gh on PATH, so a repo off
+    github.com is checked as public"""
+
+    home: Path
+
+    def __call__(self, cmd: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
+        assert list(cmd[:2]) == ["uvx", PINNED]
+        try:
+            code, said = main(list(cmd[2:]), environ={"PATH": ""}, home=self.home), ""
+        except LeakRefused as exc:
+            code, said = 2, f"{exc}\n"
+        except ReleaseError as exc:
+            code, said = 2, f"shipmill: {exc}\n"
+        return subprocess.CompletedProcess(list(cmd), code, "", said)
+
+
+def test_a_push_of_a_branch_the_same_command_creates_claims_no_leak(tmp_path: Path) -> None:
+    """#1542's Check: the hook sees the whole command before any part runs, so `new` doesn't
+    exist yet; the push is still refused, naming the missing ref, and claims no leak"""
+    repo = git_repo(tmp_path / "repo", AGENTS, origin=True)
+    command = "git switch -c new && git commit --allow-empty -m x && git push -u origin new"
+    code, lines = pre(command, repo, Real(tmp_path / "home"))
+    assert code == 2
+    assert lines[0] == "shipmill hook leaks: git push -u origin new"
+    assert lines[2].startswith("Instead: ")
+    assert "rewrite" not in lines[2]
+    assert "doesn't exist" in lines[2] and "before any part of it runs" in lines[2]
+    assert lines[2].endswith("then run: git push -u origin new")
+    assert any("`new`" in line and leak_push.MISSING_REF in line for line in lines[3:])
+
+
+def test_a_push_of_an_existing_ref_with_a_finding_still_says_to_rewrite_it(tmp_path: Path) -> None:
+    repo = git_repo(tmp_path / "repo", AGENTS, origin=True)
+    git = Git(repo, "t", "t@example.com")
+    git.run("switch", "-q", "-c", "leak")
+    (repo / "deploy.sh").write_text(f"export GH={GITHUB_TOKEN}\n", encoding="utf-8")
+    git.run("add", "deploy.sh")
+    git.run("commit", "-q", "-m", "deploy")
+    code, lines = pre("git push -u origin leak", repo, Real(tmp_path / "home"))
+    assert code == 2
+    assert lines[2].startswith("Instead: rewrite the unpushed commits without what the check names below")
+    assert lines[3].startswith(DELIVERY.LEAKS_FOUND)
+    assert any("secret-format: commit" in line for line in lines[3:])
+
+
+def test_a_check_that_cant_read_the_push_says_so_and_claims_no_leak(box: Sandbox) -> None:
+    said = "shipmill: git rev-list --reverse --topo-order feat/x failed: fatal: bad object\n"
+    code, lines = pre("git push origin feat/x", box.agents, Check(2, said))
+    assert code == 2
+    assert lines[2].startswith("Instead: the leak check couldn't read the push (")
+    assert "fatal: bad object" in lines[2] and "rewrite" not in lines[2]
+    assert lines[2].endswith("then run: git push origin feat/x")
+    assert lines[3:] == said.strip().splitlines()
+
+
+def test_the_hooks_phrases_are_the_clis() -> None:
+    """The hook tells findings from a ref that doesn't exist yet by the phrases the CLI writes;
+    both ship in the same pinned release"""
+    assert DELIVERY.LEAKS_MISSING_REF == leak_push.MISSING_REF
+    found = str(refusal(leak_push.COMMAND, Destination(None, None), []))
+    assert found.startswith(DELIVERY.LEAKS_FOUND)
 
 
 def test_s081_11_a_push_that_goes_on_passes_on_its_warnings(box: Sandbox) -> None:
