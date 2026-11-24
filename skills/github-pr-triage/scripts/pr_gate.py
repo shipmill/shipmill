@@ -85,14 +85,17 @@ A veto (D-48, #1309): an open PR is BLOCKED, `  decided: vetoed by @<login> at <
 holds a veto triage_state.py would read as VETOED (its unhandled_veto): after the first comment
 whose first line is `<!-- shipmill:decided ... -->` by the --bot-login or an OWNER, MEMBER, or
 COLLABORATOR, a comment by an OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the
-agent marker, whose first word is `veto`, with no newer `<!-- shipmill:veto-handled ... -->` by
-such an author. It reads the newest 100 comments of each, in one GraphQL read of the PR's thread
-and those of the issues it closes or names as Part of #N, which the answer above reads too. A
-thread with older comments unread fails closed (#1330): when those 100 hold no veto it reads as
-VETOED but do hold such a veto with no newer veto-handled marker after it, its decided marker may
-be older than them, and the PR is BLOCKED, `  decided: the thread of #N is cut off at 100 comments:
-a veto in it can't be ruled out handled or not, so a person looks`. A vetoed PR reads BLOCKED
-whatever else holds it, a draft or a closed one aside.
+agent marker, whose first word is `veto`, or the --bot-login's relay of the maintainer's veto
+(D-103, #1482: its first line `Decision by @<login>` naming the maintainer as the answer's relay
+does, in the relay grammar, its answer line `own: veto [<text>]` or starting with `veto`; the line
+names that login), with no newer `<!-- shipmill:veto-handled ... -->` by such an author. It reads
+the newest 100 comments of each, in one GraphQL read of the PR's thread and those of the issues it
+closes or names as Part of #N, which the answer above reads too. A thread with older comments
+unread fails closed (#1330): when those 100 hold no veto it reads as VETOED but do hold such a
+veto with no newer veto-handled marker after it, its decided marker may be older than them, and
+the PR is BLOCKED, `  decided: the thread of #N is cut off at 100 comments: a veto in it can't be
+ruled out handled or not, so a person looks`. A vetoed PR reads BLOCKED whatever else holds it, a
+draft or a closed one aside.
 
 A spec pull request (spec 053), one that adds a file docs/specs/NNN-<slug>.md (the files API's
 `status: added`; an edit, a rename, or a copy is not checked), names its feature issue: a line
@@ -242,7 +245,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Container, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1887,28 +1890,34 @@ VETO_CUT_OFF = (
 )
 
 
-def open_veto_in(ts: ModuleType, read: list[tuple[str, str, str]], bot_login: str | None) -> bool:
-    """Whether a window of a thread's comments holds a veto (triage_state.py's vetoes) that no newer
-    veto-handled marker by the --bot-login or an OWNER, MEMBER, or COLLABORATOR in it answers: the
-    decided marker may be older than the window, so such a veto may count (#1330)"""
+def open_veto_in(
+    ts: ModuleType, read: list[tuple[str, str, str]], bot_login: str | None, maintainers: Container[str]
+) -> bool:
+    """Whether a window of a thread's comments holds a veto (triage_state.py's vetoes_or_relays) that
+    no newer veto-handled marker by the --bot-login or an OWNER, MEMBER, or COLLABORATOR in it
+    answers: the decided marker may be older than the window, so such a veto may count (#1330)"""
     veto, handled = -1, -1
     for i, (author, association, body) in enumerate(read):
         if ts.VETO_HANDLED_MARKER.match(ts.first_line(body)) and ts.trusted(author, association, bot_login):
             handled = i
-        elif ts.vetoes(read[i], bot_login):
+        elif ts.vetoes_or_relays(read[i], bot_login, maintainers):
             veto = i
     return veto > handled
 
 
-def vetoes_of(data: dict, number: int, thread: dict, issues: Issues, bot_login: str | None) -> tuple[str, ...]:
+def vetoes_of(
+    data: dict, number: int, thread: dict, issues: Issues, bot_login: str | None, maintainers: Container[str]
+) -> tuple[str, ...]:
     """Each unhandled veto of a decision taken at notify on the pull request or on an issue it closes
     (triage_state.py's keyword_closes), read as triage_state.py reads VETOED (unhandled_veto): after
     the first decided marker by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, a comment by an
     OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the agent marker, whose first
-    word is `veto`, with no newer veto-handled marker by such an author. The newest 100 comments of
-    each are read, as for the answer; a thread with older ones unread, where unhandled_veto finds
-    none but the window holds such a veto with no newer veto-handled marker, fails closed with
-    VETO_CUT_OFF, since its decided marker may be older than the window (#1330)"""
+    word is `veto`, or the --bot-login's relay of a veto naming a login in maintainers, as the
+    relayed answer names one (spec 055; D-103, #1482), with no newer veto-handled marker by such an
+    author; a relayed veto's line names the maintainer. The newest 100 comments of each are read, as
+    for the answer; a thread with older ones unread, where unhandled_veto finds none but the window
+    holds such a veto with no newer veto-handled marker, fails closed with VETO_CUT_OFF, since its
+    decided marker may be older than the window (#1330)"""
     ts = triage_state()
     closes = ts.keyword_closes(str(data.get("title") or ""), str(data.get("body") or ""))
     nodes = [(f"#{number}", thread)]
@@ -1920,12 +1929,13 @@ def vetoes_of(data: dict, number: int, thread: dict, issues: Issues, bot_login: 
     for where, node in nodes:
         comments, whole = comments_of(node, where)
         read = ts.comment_tuples(node)
-        at = ts.unhandled_veto(read, bot_login)
+        at = ts.unhandled_veto(read, bot_login, maintainers)
         if at is not None:
             when = moment(comments[at]["createdAt"], f"a comment of {where}'s createdAt")
             stamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: UP017 (3.10)
-            found.append(VETOED.format(login=read[at][0], at=stamp))
-        elif not whole and open_veto_in(ts, read, bot_login):
+            who = ts.relayed_veto(read[at], bot_login, maintainers) or read[at][0]
+            found.append(VETOED.format(login=who, at=stamp))
+        elif not whole and open_veto_in(ts, read, bot_login, maintainers):
             found.append(VETO_CUT_OFF.format(where=where))
     return tuple(found)
 
@@ -2625,17 +2635,18 @@ def main() -> int:
                 # the PR's thread and its issues', read once a pass for the checks below
                 thread: dict | None = None
                 issues: Issues | None = None
+                if base.maintainers not in maintainers:  # one per base read: its permission reads too
+                    maintainers[base.maintainers] = Maintainers(base.maintainers, args.repo)
+                who = maintainers[base.maintainers]
                 if data["state"] == "OPEN":  # an unhandled veto of a notify decision blocks it (D-48, #1309)
                     thread, issues = threads_of(data, number, args.repo)
-                    judged = replace(judged, vetoes=vetoes_of(data, number, thread, issues, args.bot_login))
+                    # a maintainer's veto relayed by the --bot-login counts too (D-103, #1482)
+                    judged = replace(judged, vetoes=vetoes_of(data, number, thread, issues, args.bot_login, who))
                 if thread is not None and notify_zone(zones, ACCEPTED_SPEC):  # spec 067
                     why = decided(data, number, args.repo, args.bot_login, bases.checkout, thread)
                     if why is not None:
                         judged = replace(judged, asks=(*judged.asks, f"{ACCEPTED_SPEC}: {why}"))
                 if judged.verdict == NEEDS_DECISION:  # the answer on GitHub lifts the asks (spec 055)
-                    if base.maintainers not in maintainers:  # one per base read: its permission reads too
-                        maintainers[base.maintainers] = Maintainers(base.maintainers, args.repo)
-                    who = maintainers[base.maintainers]
                     covered, why = acceptance(
                         data, number, args.repo, args.bot_login, bases.checkout, who, thread, issues
                     )

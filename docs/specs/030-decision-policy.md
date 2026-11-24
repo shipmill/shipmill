@@ -243,7 +243,15 @@ alone.
 **A veto** is a comment newer than the decided marker, by an OWNER, MEMBER, or
 COLLABORATOR other than the `--bot-login`, whose first word is `veto` in any case. An
 outsider's comment never counts (D-16), and neither does a marker or a veto in the
-middle of a comment. `skills/github-issue-triage/scripts/triage_state.py` reads an item
+middle of a comment. A veto the maintainer gives in a session counts too, once a session
+relays it (D-103, #1482): a comment by the `--bot-login` newer than the decided marker,
+whose first line is the relay ``Decision by `@<login>` `` naming the maintainer (the
+`--role maintainer` users for `triage_state.py`, the maintainer a relayed answer may name
+for `pr_gate.py`, spec 055), in the relay grammar (D-93), whose answer line is
+`own: veto` or `own: veto <text>`, or starts with the word `veto`. It reads as that
+maintainer's veto, not the bot's; a relay naming anyone else, out of the grammar, or
+answering with anything else, such as an option, is no veto.
+`skills/github-issue-triage/scripts/triage_state.py` reads an item
 labelled `decided` with a veto that no newer `<!-- shipmill:veto-handled -->` comment by
 the bot answers as `VETOED`: an action, read right after `DECIDED` and before any other
 state. It reads closed issues labelled `decided` too, those updated in the last 14 days,
