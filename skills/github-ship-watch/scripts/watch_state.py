@@ -300,6 +300,14 @@ Intake (github-issue-triage's triage_state.py):
                   the error's first line, in place of the CHAIN_NO_GATE and CHAIN_CYCLE
                   rows, while the rest of the watch stands; an action for a person, never
                   an agent's
+  CHAIN_STALLED   in the full report only (never under --tier or --sweep), from that same
+                  chains.py show run (spec 086): one row per head idle 7 days or more, a head
+                  an open issue that holds 1 or more open issues (held) and waits for neither
+                  items nor cycle (waiting_for); subject its reference, detail `holds K open
+                  issue(s), no event for D day(s), waits for <waiting_for>`, fix chains.py show
+                  on it. A malformed held, waiting_for, or idle_days is CHAIN_UNREADABLE.
+                  Reported, never an action and never an agent's: it leaves the exit code as
+                  it was
 
 Upstream reports (spec 038; only in a home repo's checkout, whose config has [product] repos,
 from github-issue-triage's `upstream_state.py <repo> --json`, run in the checkout with the
@@ -4341,6 +4349,65 @@ def chain_cycle_rows(repo: str, shown: object) -> list[Row]:
     return rows
 
 
+# spec 086: chains.py show's waiting_for values, and the two that mark an item no head (its
+# chain waits on another item first); a head idle this many days or more is a stalled chain
+WAITING_FOR = frozenset(
+    {
+        "decision",
+        "cycle",
+        "items",
+        "upstream",
+        "postponed",
+        "maintainer",
+        "person",
+        "pull request",
+        "no gate",
+        "agent",
+        "untrusted",
+        "unreadable",
+    }
+)
+NOT_HEAD = frozenset({"items", "cycle"})
+STALL_DAYS = 7
+
+
+def whole(item: dict[str, Any], key: str, ref: str, nullable: bool = False) -> int | None:
+    """A whole number of 0 or more a show row gives under key, or None where it may be null"""
+    value = item.get(key)
+    if value is None and nullable:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise Refused(f"error: chains.py show --json printed a malformed {key} {value!r} for {ref}")
+    return value
+
+
+def chain_stalled_rows(shown: object) -> list[Row]:
+    """CHAIN_STALLED (spec 086), one report-only row per head `chains.py show --json` gives
+    idle STALL_DAYS or more: an open issue (its idle_days not null) holding one or more,
+    whose waiting_for is neither items nor cycle. The row is built from the checked
+    reference, the numbers, and a waiting_for of chains.py's fixed words alone (D-16)"""
+    if not isinstance(shown, dict) or not isinstance(shown.get("rows"), list):
+        raise Refused('error: chains.py show --json printed no {"rows": [...]} object')
+    rows = []
+    for item in shown["rows"]:
+        if not isinstance(item, dict):
+            raise Refused("error: chains.py show --json printed a row that is no object")
+        ref = str(item.get("ref"))
+        if CHAIN_REF.match(ref) is None:
+            raise Refused(f"error: chains.py show --json printed a malformed reference {ref!r}")
+        held = whole(item, "held", ref)
+        idle = whole(item, "idle_days", ref, nullable=True)
+        waits = item.get("waiting_for")
+        if waits is not None and waits not in WAITING_FOR:
+            raise Refused(f"error: chains.py show --json printed a malformed waiting_for {waits!r} for {ref}")
+        if idle is None or held is None or held < 1 or waits is None or waits in NOT_HEAD or idle < STALL_DAYS:
+            continue
+        detail = f"holds {held} open issue(s), no event for {idle} day(s), waits for {waits}"
+        fix = f"see its chain: uv run --no-project python {CHAINS} show {ref}"
+        rows.append(Row("CHAIN_STALLED", ref, detail, fix))
+    return rows
+
+
 def chain_unreadable_row(repo: str, starts: list[str], error: str) -> Row:
     """CHAIN_UNREADABLE: the chain walk failed (a gh error, an issue past a page of labels or
     relations, a config it can't parse), so the chains weren't checked; the rest of the
@@ -4361,11 +4428,13 @@ def chain_rows(
     triage: str,
     bot_login: str | None = None,
     execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = capture,
+    stalled: bool = False,
 ) -> list[Row]:
-    """The CHAIN_NO_GATE and CHAIN_CYCLE rows of the chains the repo's open issues belong to:
-    one chains.py show over all of them, which reads each item once and each repo's config
-    once, and never reads or follows an untrusted author's issue (--trusted-only, D-16). A
-    walk that fails is one CHAIN_UNREADABLE row instead, never the watch's exit 2"""
+    """The CHAIN_NO_GATE and CHAIN_CYCLE rows of the chains the repo's open issues belong to,
+    and with stalled (the full report only, spec 086) the CHAIN_STALLED rows: one chains.py
+    show over all of them, which reads each item once and each repo's config once, and never
+    reads or follows an untrusted author's issue (--trusted-only, D-16). A walk that fails is
+    one CHAIN_UNREADABLE row instead, never the watch's exit 2"""
     starts = chain_starts(repo, triage)
     if not starts:
         return []
@@ -4376,7 +4445,8 @@ def chain_rows(
         return [chain_unreadable_row(repo, starts, proc.stderr or f"error: chains.py show exited {proc.returncode}")]
     try:
         shown = json.loads(proc.stdout)
-        return chain_no_gate_rows(shown) + chain_cycle_rows(repo, shown)
+        found = chain_no_gate_rows(shown) + chain_cycle_rows(repo, shown)
+        return found + (chain_stalled_rows(shown) if stalled else [])
     except json.JSONDecodeError as exc:
         return [chain_unreadable_row(repo, starts, f"error: chains.py show --json printed no JSON: {exc}")]
     except Refused as refused:
@@ -6606,7 +6676,8 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
             directions,
             queue_of=lambda prs: land_queue(args.repo, repo_dir, text, default, prs, now, args.tool),
         )
-        rows += chain_rows(args.repo, triage, args.bot_login)
+        # spec 086: CHAIN_STALLED from the same walk, in the full report only, never a tier's or the sweep's
+        rows += chain_rows(args.repo, triage, args.bot_login, stalled=host)
         rows += spec_rows(args.repo, repo_dir, branch, triage)  # spec 053, at the branch fetched above
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
     # a --sweep or --tier read prints no host row (spec 046), nor RUNS_ACTIVE, no tier's or the
