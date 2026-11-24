@@ -115,6 +115,23 @@ verdict; any other change reads NEEDS_DECISION, `  spec: <file> changes approved
 whoever opened the PR, a spec PR too, until the maintainer's answer accepts it; so does an approved
 or built spec the PR renames, named by its old path. Outside a checkout it isn't read.
 
+The files its issues allow (spec 085): an agent's open PR, not a draft, is checked against the
+allowed files of each issue it closes or names as `Part of #N`, read from the issue threads the veto
+reads (no new read). An issue's allowance is its newest comment whose first line starts `Triage:
+**implement**` or `Proposed plan:`, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, created
+before the PR: the backticked paths of each of its `Files:` lines outside a fence (after an optional
+list bullet) add up; without such a comment, or with one that has no `Files:` line, the issue
+declares none. When an issue declares one, the files API is read: each changed path, and a renamed
+file's old path, is covered when it equals an allowed path, sits under one ending in `/`, or matches
+one by spec 061's grammar (metrics.py's covered), or sits directly inside the default branch config's
+`[changelog] fragments` folder. A path none covers reads NEEDS_DECISION, `  files: <path> is outside
+what #A allows` (`#A, #B allow` naming every issue declaring one), 20 such lines and then `  files: and
+<k> more outside the allowed files`. It fails closed, NEEDS_DECISION, with `  files: #N's allowed files
+can't be read: <why>` for a counting `Files:` line naming no backticked path or an empty, absolute, or
+`..` one, and `  files: the thread of #N is cut off at 100 comments: its allowed files can't be read,
+so a person looks` when #N's newest 100 comments hold no counting one and older ones went unread. A
+person's PR, and an agent's whose issues declare none or that names no issue, is judged as before.
+
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
 A draft the --bot-login authored has no owner once its session ended (#914): its line says so, and
@@ -248,7 +265,7 @@ import urllib.parse
 from collections.abc import Callable, Container, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
@@ -286,6 +303,9 @@ TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "sc
 RETRO = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "retro.py"
 # github-issue-triage's specs.py: same-approval compares a spec PR's answered and judged heads (D-81)
 SPECS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "specs.py"
+# github-ship-watch's metrics.py: a plan's `Files:` line and spec 061's path grammar, one reading of
+# a path a `Files:` line names for every script (spec 085)
+METRICS = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "metrics.py"
 # a body's "Part of #N", as triage_state.py's closes() reads a partial PR
 PART_OF = re.compile(r"\bpart of:?\s+#([0-9]+)\b", re.IGNORECASE)
 CONFIG = ".github/shipmill.toml"
@@ -374,6 +394,7 @@ class Gate:
     spec_asks: tuple[str, ...] = ()  # the approved specs it changes past format: the answer lifts them (#1311)
     revert: str = ""  # why the App's revert PR waits for a person below [autonomy] revert = "act" (spec 079)
     incidents: tuple[str, ...] = ()  # the open incidents on the latest deploy that hold it (#1481)
+    files: tuple[str, ...] = ()  # an agent's changed files its issues don't allow, or why that can't be read (spec 085)
 
     @property
     def verdict(self) -> int:
@@ -387,7 +408,7 @@ class Gate:
             return REFUSED
         if self.never:
             return MAINTAINER_ONLY
-        if self.asks or self.spec_asks:
+        if self.asks or self.spec_asks or self.files:
             return NEEDS_DECISION
         if self.base_red or any(c.done and c.conclusion not in GREEN for c in self.checks):
             return FAILED
@@ -440,6 +461,7 @@ class Base:
     incident_label: str = INCIDENT_LABEL  # the config's [operate] incident_label
     hotfix_lane: bool = False  # the config has [lanes.hotfix]: a PR into release/X.Y is a hotfix
     config: str | None = None  # its .github/shipmill.toml, whose lanes' release workflows base_head reads (#1485)
+    fragments: str | None = None  # the config's [changelog] fragments folder (spec 013), covered by any allowance
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -778,7 +800,31 @@ def read_base(checkout: str, ref: str) -> Base:
     window = config is not None and has_land_window(config, where)
     revert = REVERT_LEVELS[0] if config is None else revert_level(config, where)
     environments, label, hotfix = ((), INCIDENT_LABEL, False) if config is None else operations(config, where)
-    return Base(ids, reviews, agents, ref, maintainers, window, revert, environments, label, hotfix, config)
+    fragments = None if config is None else fragments_folder(config, where)
+    return Base(ids, reviews, agents, ref, maintainers, window, revert, environments, label, hotfix, config, fragments)
+
+
+def fragments_folder(text: str, where: str) -> str | None:
+    """The config's [changelog] fragments folder (spec 013), whose files every pull request may add
+    (spec 085); None when it sets none, or names no folder relative to the repo's root as
+    changelog_guard.py reads one, so no file is covered by it: the safe side. On Python 3.10, without
+    tomllib, a plain string key of a plain [changelog] table is read"""
+    ws = watch_state()
+    if ws.tomllib is None:
+        folder: object = ws.toml_string(ws.toml_tables(text).get("changelog", ""), "fragments")
+    else:
+        try:
+            raw = ws.tomllib.loads(text)
+        except ws.tomllib.TOMLDecodeError as exc:
+            raise GateError(f"{where}: {exc}") from None
+        table = raw.get("changelog")
+        folder = table.get("fragments") if isinstance(table, dict) else None
+    if not isinstance(folder, str) or not folder or folder == ".":
+        return None
+    posix = PurePosixPath(folder)
+    if posix.is_absolute() or ".." in posix.parts or posix.as_posix() != folder:
+        return None
+    return folder
 
 
 def operations(text: str, where: str) -> tuple[tuple[str, ...], str, bool]:
@@ -1953,6 +1999,129 @@ def comments_of(node: dict, where: str) -> tuple[list[dict], bool]:
     return nodes, info.get("hasPreviousPage") is False
 
 
+def metrics() -> ModuleType:
+    return module("shipmill_metrics", METRICS)
+
+
+# spec 085: the comments whose first line gives an issue's allowed files, and the gate's lines for them
+ALLOWING = ("Triage: **implement**", "Proposed plan:")
+FILES_SHOWN = 20  # the outside paths printed one a line; the rest are counted
+OUTSIDE = "{path} is outside what {issues} {verb}"
+OUTSIDE_MORE = "and {more} more outside the allowed files"
+FILES_UNREAD = "#{issue}'s allowed files can't be read: {why}"
+FILES_CUT_OFF = "the thread of #{issue} is cut off at 100 comments: its allowed files can't be read, so a person looks"
+
+
+@dataclass(frozen=True)
+class Allowance:
+    """What an issue lets an agent's pull request change (spec 085): the paths of its counting
+    comment's `Files:` lines, None when it declares no allowance, or the line saying why they can't
+    be read, which holds the pull request (fail closed)"""
+
+    issue: int
+    paths: tuple[str, ...] | None = None
+    unread: str = ""
+
+
+def allowance(node: object, issue: int, opened: datetime, bot_login: str | None) -> Allowance:
+    """Issue's allowed files, read from its thread as GraphQL gives it (THREAD): the newest comment
+    whose first line starts `Triage: **implement**` or `Proposed plan:`, by the --bot-login or an
+    OWNER, MEMBER, or COLLABORATOR (retro.py's trusted), created before the pull request opened
+    (opened). Each of its lines outside a fence that starts `Files:`, after an optional list bullet,
+    adds its backticked paths (metrics.py's FILES_LINE and BACKTICKED, the plan's reading); such a
+    line naming no path, or an empty, absolute, or `..` one, can't be read. A counting comment with
+    no `Files:` line, no counting comment, or a number that is no issue declares none, save a thread
+    cut off at its newest 100 comments with no counting comment among them, which can't be read"""
+    if not isinstance(node, dict) or node.get("__typename") != "Issue":
+        return Allowance(issue)
+    rt, mt = retro(), metrics()
+    bots = frozenset({bot_login}) if bot_login else frozenset()
+    comments, whole = comments_of(node, f"#{issue}")
+    counting = [
+        c
+        for c in comments
+        if rt.first_line(c["body"]).startswith(ALLOWING)
+        and rt.trusted(c, bots)
+        and moment(c["createdAt"], f"a comment of #{issue}'s createdAt") < opened
+    ]
+    if not counting:
+        return Allowance(issue) if whole else Allowance(issue, unread=FILES_CUT_OFF.format(issue=issue))
+    paths: list[str] = []
+    files_lines = 0
+    for line in unfenced(counting[-1]["body"]):
+        found = mt.FILES_LINE.match(line)
+        if found is None:
+            continue
+        files_lines += 1
+        named = mt.BACKTICKED.findall(found.group("paths"))
+        why = files_problem(named)
+        if why:
+            return Allowance(issue, unread=FILES_UNREAD.format(issue=issue, why=why))
+        paths += named
+    return Allowance(issue, tuple(paths) if files_lines else None)
+
+
+def files_problem(named: list[str]) -> str:
+    """Why a `Files:` line's backticked paths can't be read, or "" when they can"""
+    if not named:
+        return "`Files:` names no path in backticks"
+    for path in named:
+        if not path.strip():
+            return "`Files:` names an empty path"
+        if path.startswith("/"):
+            return f"`Files:` names an absolute path, `{path}`"
+        if ".." in path:
+            return f"`Files:` names a path holding `..`, `{path}`"
+    return ""
+
+
+def files_hold(
+    data: dict, number: int, repo: str | None, thread: dict, issues: Issues, bot_login: str | None, base: Base
+) -> tuple[str, ...]:
+    """The files: lines of an agent's open pull request (spec 085), from the threads threads_of read:
+    each named issue's allowance that can't be read, else the changed paths outside the declared
+    allowances (files_outside); none when no named issue declares one, and then the files aren't read"""
+    opened = moment(thread.get("createdAt"), f"#{number}'s createdAt")
+    found = [allowance(issues.get(n), n, opened, bot_login) for n in named_issues(data, number)]
+    unread = tuple(a.unread for a in found if a.unread)
+    if unread:
+        return unread
+    if all(a.paths is None for a in found):
+        return ()
+    return files_outside(found, changed_paths(data, number, repo), base.fragments)
+
+
+def files_outside(allowances: Iterable[Allowance], changed: Iterable[str], fragments: str | None) -> tuple[str, ...]:
+    """Each changed path no declared allowance covers (metrics.py's covered: equal, under a path
+    ending in `/`, or a match by spec 061's grammar), naming every issue that declares one, a file
+    directly inside the fragments folder always covered; FILES_SHOWN of them, then how many more"""
+    declared = [a for a in allowances if a.paths is not None]
+    if not declared:
+        return ()
+    union = [p for a in declared for p in a.paths or ()]
+    covered = metrics().covered
+
+    def fragment(path: str) -> bool:
+        return fragments is not None and PurePosixPath(path).parent.as_posix() == fragments
+
+    outside = [path for path in dict.fromkeys(changed) if not covered(path, union) and not fragment(path)]
+    names = ", ".join(f"#{a.issue}" for a in sorted(declared, key=lambda a: a.issue))
+    verb = "allows" if len(declared) == 1 else "allow"
+    lines = [OUTSIDE.format(path=path, issues=names, verb=verb) for path in outside[:FILES_SHOWN]]
+    if len(outside) > FILES_SHOWN:
+        lines.append(OUTSIDE_MORE.format(more=len(outside) - FILES_SHOWN))
+    return tuple(lines)
+
+
+def changed_paths(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
+    """Every path the pull request changes, past gh pr view's first hundred too, and each renamed
+    file's old path, from the files API (spec 085)"""
+    data["files"] = all_files(data, number, repo)
+    if "previous" not in data:
+        data["statuses"] = files_api(data, number, repo)
+    return (*data["files"], *data["previous"])
+
+
 def newest_question(comments: list[dict], bots: frozenset[str]) -> int | None:
     """The index of the newest needs-decision question, as retro.py reads one: its first line is
     the marker, by an OWNER, MEMBER, or COLLABORATOR or the --bot-login"""
@@ -2519,6 +2688,7 @@ def render(gate: Gate) -> str:
     lines += [f"  spec: {reason}" for reason in (*gate.spec, *gate.spec_asks)]
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
+    lines += [f"  files: {line}" for line in gate.files]
     lines += [f"  notify: {reason}" for reason in gate.notices]
     lines += [f"  decided: {veto}" for veto in gate.vetoes]
     lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
@@ -2642,6 +2812,9 @@ def main() -> int:
                     thread, issues = threads_of(data, number, args.repo)
                     # a maintainer's veto relayed by the --bot-login counts too (D-103, #1482)
                     judged = replace(judged, vetoes=vetoes_of(data, number, thread, issues, args.bot_login, who))
+                if thread is not None and issues is not None and agent:  # the files its issues allow (spec 085)
+                    files = files_hold(data, number, args.repo, thread, issues, args.bot_login, base)
+                    judged = replace(judged, files=files)
                 if thread is not None and notify_zone(zones, ACCEPTED_SPEC):  # spec 067
                     why = decided(data, number, args.repo, args.bot_login, bases.checkout, thread)
                     if why is not None:
@@ -2651,7 +2824,7 @@ def main() -> int:
                         data, number, args.repo, args.bot_login, bases.checkout, who, thread, issues
                     )
                     if covered:
-                        judged = replace(judged, asks=(), spec_asks=())
+                        judged = replace(judged, asks=(), spec_asks=(), files=())
                     else:
                         judged = replace(judged, asks=(*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":
