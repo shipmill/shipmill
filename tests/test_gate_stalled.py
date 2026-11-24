@@ -20,7 +20,6 @@ from shipmill.claude_token import Token
 from shipmill.cli import _gate_exit
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
-    DEAD_WITHIN,
     RECORD,
     Action,
     Finding,
@@ -39,7 +38,7 @@ from shipmill.gate import (
 )
 from shipmill.github_auth import GitHubAuth
 from shipmill.gitrepo import Git
-from shipmill.walk import CURSOR, HANDED
+from shipmill.walk import CURSOR, HANDED, End
 
 from .test_app import REPO
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg
@@ -219,25 +218,20 @@ def test_s048_20_a_later_tick_stops_it_again_and_keeps_the_first_stop(checkout: 
     assert load_launch(state_dir(checkout) / RECORD).stopped == NOW + 40 * MINUTE  # type: ignore[union-attr]
 
 
-def test_s048_20_a_stopped_session_isnt_dead_and_its_item_waits_for_retry_hours(checkout: Git) -> None:
-    """Its log fell silent within DEAD_WITHIN of its launch, which alone would read it dead;
-    stopped, it ran, so DEAD_STREAK doesn't count it and its item isn't retried at once"""
+def test_s089_1_a_session_a_stalled_tick_stopped_ended_error_and_its_item_is_handed_again(checkout: Git) -> None:
+    """Spec 089 amends S-048-20: a session a STALLED tick stopped ended error, however its log
+    reads, so it is dead and its hand drops: its item is handed again, not held for retry_hours"""
     tick(checkout, headless(), FakeClaude(), Reads())
-    written(log_of(checkout), stream(INIT, SAID), NOW + DEAD_WITHIN / 2)
+    written(log_of(checkout), stream(INIT, SAID), NOW + MINUTE)
     tick(checkout, headless(), FakeClaude(), unread, now=NOW + 40 * MINUTE, stop=Stops())
     last = load_launch(state_dir(checkout) / RECORD)
     assert last is not None and last.stopped is not None
-    state = state_dir(checkout)
-    assert ended_dead(Launch(last.fingerprint, last.session, last.at, last.process, None, last.item), state) is not None
-    assert ended_dead(last, state) is None
-    gone = same(None)
+    dead = ended_dead(last, state_dir(checkout))
+    assert dead is not None and dead.end is End.ERROR and not dead.auth
     claude = FakeClaude()
-    decision, started, _, _ = tick(checkout, headless(), claude, Reads(), now=NOW + 45 * MINUTE, started=gone)
-    assert (decision.action, started, decision.dead) == (Action.UNCHANGED, None, None)
-    decision, started, _, _ = tick(
-        checkout, headless(), claude, Reads(), now=NOW + 25 * dt.timedelta(hours=1), started=gone
-    )
-    assert (decision.action, started) == (Action.LAUNCH, str(SESSION))
+    decision, started, _, _ = tick(checkout, headless(), claude, Reads(), now=NOW + 45 * MINUTE, started=same(None))
+    assert (decision.action, started) == (Action.SESSION_DEAD, str(SESSION))
+    assert decision.dead is not None and decision.dead.session == last.session
 
 
 def no_claude_auth(token: Token | None) -> ClaudeAuth:

@@ -778,6 +778,12 @@ def test_s005_19_a_command_that_cant_start_exits_2(tmp_path: Path) -> None:
 # S-005-20
 
 
+def ended_ok(git: Git) -> None:
+    """SESSION's log, its last result without an error: it ended ok (spec 089)"""
+    log_of(git).parent.mkdir(parents=True, exist_ok=True)
+    log_of(git).write_text('{"type": "result", "subtype": "success", "is_error": false}\n', encoding="utf-8")
+
+
 def write_headless_record(git: Git, started: str | None = STARTED) -> None:
     save_launch(state_dir(git) / RECORD, Launch(fingerprint([ISSUES]), str(SESSION), NOW, Process(PID, started)))
 
@@ -807,6 +813,7 @@ def test_s005_20_an_ended_session_or_a_reused_pid_decides_as_if_none_ran(
     checkout: Git, now_started: str | None
 ) -> None:
     write_headless_record(checkout)
+    ended_ok(checkout)  # spec 089: a session whose log is gone ended error, so dead
     claude = FakeClaude()
     rows = [Finding("ISSUES", REPO, "NEW #20", True)]
     decision, launched, _, _ = tick(checkout, headless(), claude, Reads(rows=rows), started=same(now_started))

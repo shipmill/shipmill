@@ -125,11 +125,9 @@ LAST_RESULT = "last-result.json"  # the last session that ended with a result: i
 VERIFY = "verify.json"  # the last check of [agents] verify: its fingerprint, time, and entries (spec 064)
 ERROR = "ERROR"  # tick.json's action for a tick a ReleaseError ended (S-048-9)
 DRY_RUN_FIX = "shipmill gate --dry-run"  # an error's fix when it names none: the same tick, printing it again
-# a headless session that ended this soon after its launch, by its log's last write, with no
-# result in its log, ran no work (#500)
+# an interactive session `claude agents` lists done this soon after its launch ran no work
+# (#500); a headless session's end is read from its log instead (spec 089, session_end)
 DEAD_WITHIN = dt.timedelta(seconds=60)
-# `claude -p` prints its result when it ends; a log whose only line is one of these holds none
-NO_RESULT = re.compile(r"(?:API )?Error\b")
 # after this many dead sessions in a row, the same findings wait for retry_hours again (#500)
 DEAD_STREAK = 3
 # what Claude Code prints when it can't authenticate; a session whose log holds one ended dead (#500)
@@ -1174,8 +1172,8 @@ def stalled(
 @dataclass(frozen=True, slots=True)
 class Dead:
     """A session that ended dead (#500); it doesn't count toward retry_hours. A headless one:
-    its log's last write came within DEAD_WITHIN of its launch, or its log holds an
-    authentication failure; last_line is the log's last line, cut short (a stream-json log's
+    its end, read from its log, is limit, auth, or error (spec 089), end holding it;
+    last_line is the log's last line, cut short (a stream-json log's
     as a person reads it, stream_last_line), the only text of it ever shown. An interactive
     one leaves no log, so state is how `claude agents` lists it (listed_dead), log is None
     and last_line "", and seconds is None when it can't tell"""
@@ -1188,6 +1186,7 @@ class Dead:
     deaths: Deaths  # this session and the dead ones right before it
     state: str | None = None  # an interactive session's state in `claude agents`: failed | done
     token: Path | None = None  # the token file the gate's sessions use (spec 035); None: the login
+    end: End | None = None  # a headless session's end, as session_end reads it (spec 089); None: interactive
 
     @property
     def fix(self) -> str:
@@ -1202,6 +1201,7 @@ class Dead:
             within = "" if self.seconds is None else f", within {self.seconds} s of its launch"
             return f"session {self.session} ended {self.state} in claude agents{within}{streak}"
         why = ", its log shows an authentication failure" if self.auth else ""
+        why = ", its log shows a usage limit" if self.end is End.LIMIT else why
         said = f"its log's last line: {self.last_line!r}" if self.last_line else "its log is empty"
         lead = f"session {self.session} ended {self.seconds} s after its launch{why}"
         return f"{lead}{streak}; {said}"
@@ -1237,12 +1237,6 @@ def last_line(text: str) -> str:
         return ""
     shown = re.sub(r"[\x00-\x1f\x7f]", " ", lines[-1]).strip()
     return shown if len(shown) <= 200 else shown[:199] + "…"
-
-
-def no_result(text: str) -> bool:
-    """A session's log holds no result: it is blank, or its only line is an error"""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return not lines or (len(lines) == 1 and NO_RESULT.match(lines[0]) is not None)
 
 
 def stream_event(line: str) -> dict[str, object] | None:
@@ -1323,31 +1317,23 @@ def stream_auth_failed(lines: Sequence[str]) -> bool:
 
 
 def ended_dead(last: Launch | None, state: Path) -> Dead | None:
-    """#500: the last headless launch, once still_working found its process gone, when it ended
-    dead: its log holds an authentication failure, or it ended within DEAD_WITHIN of its launch
-    with no result in its log, so a healthy session that finishes fast still counts. Its end is
-    its log's modification time, the log's last write; a launch without a log reads as one that
-    ran. An interactive launch has no log: listed_dead reads it. A stream-json log's result is
-    its `result` event (S-048-17); a text log, written before spec 048, is read as before. The
-    authentication failure check reads a stream-json tail's lines that aren't events and its
-    `result` events' text (#822), and a text log's whole tail. One a STALLED tick stopped ran
-    (spec 048), even when its log fell silent within DEAD_WITHIN of its launch"""
-    if last is None or last.process is None or last.stopped is not None:
+    """#500, spec 089: the last headless launch, once still_working found its process gone,
+    when it ended dead: its end, as session_end reads it from its log, is anything but ok
+    (limit, auth, or error), however long it ran; DEAD_WITHIN decides nothing here (S-089-1).
+    A session a STALLED tick stopped ended error, and so did one whose log is gone. An
+    interactive launch has no log: listed_dead reads it. Its end is its log's modification
+    time, the log's last write, which the summary shows with the log's last line"""
+    if last is None or last.process is None:
+        return None
+    end = session_end(state, last, last.session)
+    if end is End.OK:
         return None
     log = session_log(state, last.session)
-    if not log.is_file():
-        return None
-    written = log_written(log, last)
-    tail = log_tail(log)
-    seconds = max(0, int((written - last.at).total_seconds()))
-    streamed = is_stream_json(log)
-    lines = tail_lines(log) if streamed else []
-    auth = stream_auth_failed(lines) if streamed else AUTH_FAILURE.search(tail) is not None
-    result = has_result(lines) if streamed else not no_result(tail)
-    if not auth and (seconds > DEAD_WITHIN.total_seconds() or result):
-        return None
-    shown = stream_last_line(lines) if streamed else last_line(tail)
-    return Dead(last.session, log, seconds, auth, shown, counted(last))
+    seconds = max(0, int((log_written(log, last) - last.at).total_seconds()))
+    shown = ""
+    if log.is_file():
+        shown = stream_last_line(tail_lines(log)) if is_stream_json(log) else last_line(log_tail(log))
+    return Dead(last.session, log, seconds, end is End.AUTH, shown, counted(last), end=end)
 
 
 LIMITED = 429  # a stream-json event's api_error_status when a usage limit refused the request
@@ -1416,6 +1402,15 @@ def session_end(state: Path, last: Launch | None, session: str) -> End:
         return End.ERROR
     results = [e for e in events if e["type"] == "result"]
     return End.OK if results and results[-1]["is_error"] is False else End.ERROR
+
+
+def hand_end(state: Path, last: Launch | None, session: str) -> End | None:
+    """A hand's session's end, as session_end reads it, save the last launch's when it was
+    interactive, as in a gate switched to headless since: that session leaves no log, so its
+    hand records no end (spec 089's Out of scope)"""
+    if last is not None and last.process is None and last.session == session:
+        return None
+    return session_end(state, last, session)
 
 
 def counted(last: Launch) -> Deaths:
@@ -2019,11 +2014,14 @@ def tick_walk(
     sweep_now: bool = False,
     upgrades: Callable[[], SweptUpgrades] | None = None,
     permissions: Callable[[], SweptPermissions] | None = None,
-    ends: Callable[[str], End] | None = None,
+    ends: Callable[[str], End | None] | None = None,
 ) -> Ticked:
     """The change check, then the sweep when due, then the walk (spec 046). A headless gate's
     tick gets here only once no session of it runs, so each hand without an end first records
     its session's, as ends reads it (S-089-2); None, an interactive gate's, records none. A
+    hand whose session ended limit, auth, or error then drops, whichever session gate.json
+    names, save a capped dead session's, which DEAD_STREAK holds for retry_hours, and the drop
+    is a change, so the walk hands its item again (S-089-4). A
     sweep runs the config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
     sweep.json keeps what it did and the decision names it (S-047-10). A tick that doesn't
     sweep runs none (S-047-5). The permission notice (permissions, spec 060) runs right after
@@ -2049,8 +2047,12 @@ def tick_walk(
     unseen = dead is not None and not capped and any(h.session == dead.session for h in handed.hands.values())
     if not recorded and last is not None and now - last.at < retry:
         handed = Handed({**handed.hands, last.fingerprint: Hand(last.session, last.at)})
-    if ends is not None:  # spec 089: what ended means for the hand is #1551's and the specs after it
-        handed = handed.ending(ends)
+    ended = False  # spec 089: a hand whose session didn't end ok drops, a change
+    if ends is not None:
+        recorded_ends = handed.ending(ends)
+        fresh = [k for k, h in handed.hands.items() if h.ended is None]  # a held hand's end drops it no later tick
+        handed = recorded_ends.ended_ok(dead.session if dead is not None and capped else None, fresh)
+        ended = len(handed.hands) < len(recorded_ends.hands)
     if dead is not None and not capped:
         handed = handed.without(dead.session)
     known = Swept.load(state / SWEEP)
@@ -2073,6 +2075,7 @@ def tick_walk(
         or handed.expired(now, retry)
         or unseen  # a capped one holds its item: its expiry is the change
         or dropped  # #1447: an ended session's question on a pull request
+        or ended  # spec 089: a hand dropped on its session's end, its item handed again
     )
     if cursor is not None and not change and not sweeping:
         since = cursor.at.isoformat(timespec="minutes")
@@ -3056,7 +3059,7 @@ def decided(
         sweep_now,
         proposal,
         noticing,
-        partial(session_end, state, last) if headless else None,
+        partial(hand_end, state, last) if headless else None,
     )
     waits = waiting_rows(ticked, source, state / DECISIONS, repo) if headless else []
     if ticked.swept is not None and not dry_run:  # every read went through: the sweep stands, whatever the decision

@@ -112,6 +112,10 @@ def tick(
     return decision.action, launched, tick_lines(decision, launched, waiting, pruned, dry_run)
 
 
+# a stream-json log whose last result has no error: the session ended ok (spec 089)
+ENDED_OK = '{"type": "result", "subtype": "success", "is_error": false, "result": "Done: triaged #12"}\n'
+
+
 def died(git: Git, session: uuid.UUID, at: dt.datetime, after: dt.timedelta, text: str) -> Path:
     """A session's log as `claude -p` leaves it, last written `after` its launch at `at`"""
     log = log_of(git, session)
@@ -245,7 +249,7 @@ def test_a_dry_run_asks_but_writes_and_sends_nothing(checkout: Git) -> None:
 
 def test_a_tick_with_nothing_to_launch_asks_nothing(checkout: Git) -> None:
     launched_at(checkout, FIRST, NOW - dt.timedelta(hours=1))
-    died(checkout, FIRST, NOW - dt.timedelta(hours=1), dt.timedelta(minutes=30), "done\n")
+    died(checkout, FIRST, NOW - dt.timedelta(hours=1), dt.timedelta(minutes=30), ENDED_OK)
     auth = FakeAuth([])
     assert tick(checkout, headless(), FakeClaude(), auth, FakeNotifier())[0] is Action.UNCHANGED
     assert auth.asked == 0
@@ -338,7 +342,7 @@ def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_retry_hours(c
 
 def test_a_healthy_session_that_finished_in_seconds_is_an_attempt(checkout: Git) -> None:
     launched_at(checkout, FIRST, NOW - dt.timedelta(minutes=5))
-    died(checkout, FIRST, NOW - dt.timedelta(minutes=5), dt.timedelta(seconds=20), "Nothing needed a change.\n")
+    died(checkout, FIRST, NOW - dt.timedelta(minutes=5), dt.timedelta(seconds=20), ENDED_OK)
     assert tick(checkout, headless(), FakeClaude(), None, FakeNotifier())[0] is Action.UNCHANGED
 
 
@@ -356,7 +360,7 @@ def test_a_long_session_whose_log_shows_an_auth_failure_ended_dead(checkout: Git
 
 def test_a_session_that_ran_still_holds_its_findings_for_retry_hours(checkout: Git) -> None:
     launched_at(checkout, FIRST, NOW - dt.timedelta(hours=1))
-    died(checkout, FIRST, NOW - dt.timedelta(hours=1), dt.timedelta(seconds=61), "Done: triaged #12\n")
+    died(checkout, FIRST, NOW - dt.timedelta(hours=1), dt.timedelta(seconds=61), ENDED_OK)
     action, launched, _ = tick(checkout, headless(), FakeClaude(), None, FakeNotifier())
     assert (action, launched) == (Action.UNCHANGED, None)
 

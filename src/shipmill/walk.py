@@ -486,15 +486,34 @@ class Handed:
             new[subject_key(item, n)] = Hand(session, now, None if pull is None else pull.head)
         return Handed({**self.hands, **new})
 
-    def ending(self, end: Callable[[str], End]) -> Handed:
+    def ending(self, end: Callable[[str], End | None]) -> Handed:
         """Spec 089 (S-089-2): once no session of the gate runs, each hand without an end
-        records its session's, read once per session by end; a hand with one keeps it"""
-        ends: dict[str, End] = {}
+        records its session's, read once per session by end; a hand with one keeps it, and one
+        whose session end can't read (None, an interactive one's) stays without"""
+        ends: dict[str, End | None] = {}
         for hand in self.hands.values():
             if hand.ended is None and hand.session not in ends:
                 ends[hand.session] = end(hand.session)
         return Handed(
             {k: h if h.ended is not None else replace(h, ended=ends[h.session]) for k, h in self.hands.items()}
+        )
+
+    def ended_ok(self, held: str | None = None, recorded: Iterable[str] | None = None) -> Handed:
+        """Spec 089 (S-089-4): the hands whose session runs or ended ok; one whose session
+        ended limit, auth, or error drops on the tick that records its end (recorded, the keys
+        whose end this tick recorded; None, every one), whichever session gate.json names by
+        then, save the hands of held, a capped dead session's, which DEAD_STREAK holds for
+        retry_hours: kept with their end, they stay held once a later session runs, and are
+        handed again past retry_hours, never idle (S-089-3)"""
+        now = None if recorded is None else set(recorded)
+        return Handed(
+            {
+                k: h
+                for k, h in self.hands.items()
+                if h.ended in (None, End.OK)
+                or (held is not None and h.session == held)
+                or (now is not None and k not in now)
+            }
         )
 
     def marked(self, keys: Iterable[str]) -> Handed:
@@ -1097,8 +1116,9 @@ def walk(
     retry, as a handed.json from before spec 061 holds it; else it is the item cut to its
     subjects not taken, a subject taken when handed within retry or idle past it, and no item
     when every one is; a hand of the dead session (dead, a capped one whose hands handed keeps)
-    is never idle (spec 061). The updatedAt of a tier's issue subjects past retry is read once
-    for the tier, in one query per PAGE, and not at all when it has none"""
+    is never idle (spec 061), nor is one whose session ended anything but ok (S-089-3). The
+    updatedAt of a tier's issue subjects past retry is read once for the tier, in one query
+    per PAGE, and not at all when it has none"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand, str | None] | None = None
@@ -1137,7 +1157,7 @@ def walk(
                     left.append(n)
                 elif now - given.at < retry:
                     first = first or (key, given)
-                elif given.session != dead and idle(given, n, changes.pulls, issues):
+                elif given.ended in (None, End.OK) and given.session != dead and idle(given, n, changes.pulls, issues):
                     marked.append(key)
                     first = first or (key, replace(given, idle=True))
                 else:
