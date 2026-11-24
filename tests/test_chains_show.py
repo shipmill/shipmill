@@ -114,6 +114,12 @@ class Forge:
                 "pageInfo": {"hasNextPage": False},
                 "nodes": [{"login": n} for n in item.get("assignees", ())],
             },
+            "updatedAt": item.get("updated", "2026-01-01T00:00:00Z"),
+            "milestone": {"title": item["milestone"]} if item.get("milestone") else None,
+            "closedByPullRequestsReferences": {  # (state, updatedAt) of each pull request closing it
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"state": s, "updatedAt": at} for s, at in item.get("closers", ())],
+            },
         }
         if not native:
             return fields
