@@ -8,7 +8,8 @@ request's (--pr) by its files and their patches too, read through gh:
 
 - direction: docs/product.md, or a path under docs/product/
 - decision-policy: .github/shipmill.toml whose [decisions] table differs between the merge
-  base and the head, compared parsed, so a comment or a reorder doesn't count
+  base and the head, compared parsed, so a comment or a reorder doesn't count; or whose
+  [autonomy] raises a stage's level, resolved as `shipmill autonomy` resolves it (D-99)
 - security: any other path under .github/, or the config's other tables, compared parsed
 - protected: a path a REVIEW.md Protected areas glob on the base covers, as pr_gate.py matches
 - scope: a docs/specs/*.md whose header's status line reads approved at the head and not at
@@ -40,7 +41,8 @@ from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from shipmill import agent_marker, cli_command
-from shipmill.config import CONFIG_PATH, loads
+from shipmill.autonomy import AutonomyPolicy, EnvironmentName, Hold
+from shipmill.config import CONFIG_PATH, Table, loads
 from shipmill.decide import Candidate, Level, Part, Zone, candidates
 from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, Missing, PullChange, RunAttempt, RunJob, SpecIssue
@@ -55,6 +57,9 @@ DIRECTION_DIR = "docs/product/"
 GITHUB_DIR = ".github/"
 CONFIG = CONFIG_PATH.as_posix()
 DECISIONS_TABLE = "decisions"
+AUTONOMY_TABLE = "autonomy"
+AGENTS_TABLE = "agents"
+ENVIRONMENTS_TABLE = "environments"
 SPECS = "docs/specs/*.md"
 LOGS = ("DECISIONS.md", "docs/decisions.md")  # decisions.py's order
 DEFAULT_REF = "origin/HEAD"
@@ -386,7 +391,8 @@ def classify_change(base: Base, pulls: Pulls, change: PullChange) -> Classificat
 
 def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -> None:
     """decision-policy when [decisions] differs parsed between the merge base and the head,
-    security when another table does; a side that doesn't parse counts as both"""
+    or a stage's [autonomy] level rises (D-99); security when a table other than
+    [decisions] differs; a side that doesn't parse counts as both"""
     sides: list[Mapping[str, Any]] = []
     at_base = file.status != "added" and (file.previous or file.path) == CONFIG
     at_head = file.status != "removed" and file.path == CONFIG
@@ -405,7 +411,48 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
     if before.get(DECISIONS_TABLE, {}) != after.get(DECISIONS_TABLE, {}):  # an empty table sets nothing
         found.add(Zone.DECISION_POLICY, f"{CONFIG} changes its [{DECISIONS_TABLE}] table")
     if _rest(before) != _rest(after):
+        if at_head:  # a removed config leaves no levels to run by
+            _raise(found, change, before, after)
         found.add(Zone.SECURITY, f"{CONFIG} changes outside [{DECISIONS_TABLE}]", CONFIG)
+
+
+def _raise(found: _Found, change: PullChange, before: Mapping[str, Any], after: Mapping[str, Any]) -> None:
+    """decision-policy when a stage's [autonomy] level rises from the merge base to the head
+    (D-99); a side whose levels can't be read counts, as a raise can't be ruled out"""
+    sides: list[tuple[AutonomyPolicy, tuple[EnvironmentName, ...]]] = []
+    for sha, raw in ((change.base, before), (change.head, after)):
+        try:
+            sides.append(stage_policy(raw, f"{CONFIG} at {sha[:7]}"))
+        except ReleaseError as exc:
+            reason = f"{CONFIG}'s [{AUTONOMY_TABLE}] levels can't be read at {sha[:7]} ({exc})"
+            found.add(Zone.DECISION_POLICY, f"{reason}, so a raise can't be ruled out")
+            return
+    rises = raised(sides[0][0], *sides[1])
+    if rises:
+        found.add(Zone.DECISION_POLICY, f"{CONFIG} raises [{AUTONOMY_TABLE}] levels: {', '.join(rises)} (D-99)")
+
+
+def stage_policy(raw: Mapping[str, Any], where: str) -> tuple[AutonomyPolicy, tuple[EnvironmentName, ...]]:
+    """The config's [autonomy] as `shipmill autonomy` resolves it: its defaults, the legacy
+    reading of [agents] prompt (S-040-6), and the environments [environments] names"""
+    top = Table(raw, where)
+    policy = AutonomyPolicy.parse(top.table(AUTONOMY_TABLE, optional=True))
+    if AGENTS_TABLE in raw:
+        policy = policy.read_prompt(top.table(AGENTS_TABLE).string("prompt", default=""))
+    return policy, tuple(EnvironmentName(name) for name in top.table(ENVIRONMENTS_TABLE, optional=True).raw)
+
+
+def raised(base: AutonomyPolicy, head: AutonomyPolicy, environments: Sequence[EnvironmentName]) -> list[str]:
+    """Each stage whose level, the hold left out, rises from the base to the head, as
+    `<stage> <base level> -> <head level>`; a stage the base lacks, such as a new
+    deploy.<env>, is read at the base's default for it"""
+    hold = Hold()
+    was = {row.stage: row.configured for row in base.levels(hold, {*head.deploy, *environments})}
+    return [
+        f"{row.stage} {was[row.stage]} -> {row.configured}"
+        for row in head.levels(hold, environments)
+        if row.configured.rank > was[row.stage].rank
+    ]
 
 
 def _is_spec(path: str) -> bool:
