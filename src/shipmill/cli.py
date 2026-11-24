@@ -410,6 +410,7 @@ from shipmill.launchd import (
     read_job,
     remove,
 )
+from shipmill.leak_push import COMMAND as LEAK_PUSH
 from shipmill.leak_push import PUSH_FIX, Push, outgoing
 from shipmill.leaks import (
     FIX,
@@ -2935,7 +2936,7 @@ def _leaks_push(
     )
     top = Path(git.run("rev-parse", "--show-toplevel").strip())
     vet = _Vet(private, top, _host_visibility(environ, capture), environ)
-    vet.check("shipmill leaks push", sent.texts, sent.repo, PUSH_FIX, sent.placed)
+    vet.check(LEAK_PUSH, sent.texts, sent.repo, PUSH_FIX, sent.placed)
     return 0
 
 

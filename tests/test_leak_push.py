@@ -261,6 +261,40 @@ def test_s081_9_a_merge_is_read_against_its_first_parent(box: Box) -> None:
     assert "notes.md" not in said
 
 
+def test_a_source_that_names_no_commit_is_refused_naming_it_and_claims_no_leak(box: Box) -> None:
+    """#1542: a ref the push names that doesn't exist yet, such as one an earlier part of the same
+    Bash command creates, is a check that can't read the push, never a finding"""
+    for source in ("new", "new:new", "refs/heads/new"):
+        with pytest.raises(ReleaseError) as caught:
+            leaks_push(box, "origin", source)
+        assert not isinstance(caught.value, LeakRefused)
+        said = str(caught.value)
+        assert "`new`" in said or "`refs/heads/new`" in said
+        assert "doesn't exist in this checkout yet" in said
+        assert "unknown revision" not in said
+
+
+def test_a_tag_on_a_tree_or_blob_still_lets_tags_and_mirror_pass(box: Box) -> None:
+    """#1542: a ref that exists but names no commit, such as a tag on a tree, isn't missing;
+    `--tags` and `--mirror` pass with it as they did before the ref check"""
+    private(box)
+    box.git.run("tag", "tree-tag", "HEAD^{tree}")
+    assert leaks_push(box, "--tags", "origin") == 0
+    assert leaks_push(box, "--mirror", "origin") == 0
+
+
+@pytest.mark.parametrize(
+    "refspec",
+    ["main", "HEAD", "refs/heads/main", "main:feat/y", "HEAD:refs/heads/feat/y", "+main", "v2", "refs/tags/v2"],
+)
+def test_every_source_form_that_names_a_commit_is_still_read(box: Box, refspec: str) -> None:
+    """#1542: a branch, HEAD, src:dst, a full ref name, and an annotated tag each resolve"""
+    private(box)
+    sha = box.commit({"notes.md": "acme rocket\n"})
+    box.git.run("tag", "-a", "v2", "-m", "release", "HEAD")
+    assert f"commit {sha[:7]}" in "\n".join(refused(box, "origin", refspec))
+
+
 # -- S-081-10 ------------------------------------------------------------------------------------
 
 

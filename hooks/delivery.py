@@ -1779,6 +1779,13 @@ LEAKS_SOURCE = "D-94"
 LEAKS_TIMEOUT = 45  # seconds `shipmill leaks push` may take; past them the push is refused
 LEAKS_FLAGS = ("--all", "--branches", "--tags", "--mirror")  # the push's flags that pick its refs
 LEAKS_WARNING = "shipmill leaks: warning:"
+# How the check's exit 2 says why (#1542), as the pinned CLI writes it; a test keeps each equal to
+# the package's: findings open with the refusal line of shipmill.leaks.refusal for
+# shipmill.leak_push.COMMAND, and a source ref that names no commit says
+# shipmill.leak_push.MISSING_REF. Any other exit 2 is a check that couldn't read the push
+LEAKS_FOUND = "shipmill leaks push: refused, nothing was sent ("
+LEAKS_MISSING_REF = "doesn't exist in this checkout yet"
+LEAKS_ERROR = "shipmill: "  # the CLI's prefix for an error that isn't a finding
 
 
 def run_timed(cmd: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -1812,7 +1819,7 @@ def leaks_refusal(cmd: Simple, ctx: Context, stderr: TextIO) -> Refusal | None:
     with the push's remote and refspecs, and is refused with the command's findings when it
     exits 2, and when it can't start, exits otherwise, or doesn't finish in 45 seconds: no
     push goes unchecked. No other command starts it. A push that goes on passes on its
-    high-entropy warnings"""
+    high-entropy warnings. Only a refusal with findings says to rewrite commits (#1542)"""
     call = git_call(cmd)
     if call is None or cmd.words[call.sub] != "push":
         return None
@@ -1837,15 +1844,31 @@ def leaks_refusal(cmd: Simple, ctx: Context, stderr: TextIO) -> Refusal | None:
             stderr.write("".join(f"{line}\n" for line in said if line.startswith(LEAKS_WARNING)))
             return None
         if result.returncode == 2:
-            instead = (
-                "rewrite the unpushed commits without what the check names below (amend or rebase them,"
-                f" never a pushed one), then run: {cmd.text()}"
-            )
-            return Refusal(LEAKS, cmd.text(), LEAKS_TEXT, LEAKS_SOURCE, instead, tuple(said))
+            return Refusal(LEAKS, cmd.text(), LEAKS_TEXT, LEAKS_SOURCE, leaks_instead(said, shown, cmd), tuple(said))
         why = f"`{shown}` exited {result.returncode}"
         details = tuple(said)
     instead = f"the leak check couldn't run ({why}); fix what stops it, then run: {cmd.text()}"
     return Refusal(LEAKS, cmd.text(), LEAKS_TEXT, LEAKS_SOURCE, instead, details)
+
+
+def leaks_instead(said: Sequence[str], shown: str, cmd: Simple) -> str:
+    """The Instead line of a push `leaks push` refused with exit 2 (#1542): the rewrite advice
+    only for findings; for a source ref that doesn't exist yet, to run the push as its own
+    command once it does; for any other exit 2, that the check couldn't read the push and why"""
+    if any(line.startswith(LEAKS_FOUND) for line in said):
+        return (
+            "rewrite the unpushed commits without what the check names below (amend or rebase them,"
+            f" never a pushed one), then run: {cmd.text()}"
+        )
+    if any(LEAKS_MISSING_REF in line for line in said):
+        return (
+            "a ref the push sends doesn't exist yet when this hook runs (the hook checks the whole"
+            " command before any part of it runs, so a ref an earlier part creates isn't there);"
+            f" run the commands before the push on their own first, then run: {cmd.text()}"
+        )
+    errors = [line.removeprefix(LEAKS_ERROR) for line in said if line.startswith(LEAKS_ERROR)]
+    why = errors[0] if errors else f"`{shown}` exited 2"
+    return f"the leak check couldn't read the push ({why}); fix what stops it, then run: {cmd.text()}"
 
 
 # --- The modes -------------------------------------------------------------------------------
