@@ -464,7 +464,8 @@ def test_1491_a_relay_naming_its_person_bare_is_refused_as_the_host_too(tmp_path
     "body",
     [
         SPAN_RELAY,
-        "<!-- shipmill:needs-decision -->\n@romamo Decision needed: which one?",
+        # #1484: a question on a pull request names its head, or it is refused before the mention is read
+        f"<!-- shipmill:needs-decision -->\n@romamo Decision needed: which one?\n<!-- shipmill:head {'a' * 40} -->",
         "<!-- shipmill:decided zone=scope until=2026-11-24T10:20:00Z -->\n@romamo Decided without waiting: this",
         "Thanks @romamo.\n\nDecision by @romamo, relayed by Claude Code",  # not a relay: its first line isn't
     ],
