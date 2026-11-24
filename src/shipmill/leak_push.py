@@ -20,6 +20,10 @@ from shipmill.gitrepo import Git
 from shipmill.leaks import Finding, Text
 
 SHORT = 7  # a commit's characters a finding names
+COMMAND = "shipmill leaks push"  # the command a refusal names
+# what `leaks push` says of a source ref that names no commit, such as a branch an earlier part
+# of the same Bash command creates; hooks/delivery.py's LEAKS_MISSING_REF mirrors it (#1542)
+MISSING_REF = "doesn't exist in this checkout yet"
 PUSH_FIX = (
     "Instead: rewrite the unpushed commits without it (amend or rebase them, never a pushed one)\n"
     "and push again; describe a case by its traits, never by the project, customer, or host it\n"
@@ -253,6 +257,12 @@ def outgoing(git: Git, push: Push) -> Outgoing:
     texts: list[Text] = []
     lines: dict[str, tuple[int, ...]] = {}
     sources = list(dict.fromkeys(ref.source for ref in refs))
+    for source in sources:
+        if not git.ok("rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"):
+            raise ReleaseError(
+                f"the push's source `{source}` {MISSING_REF}: it names no commit, so the leak check"
+                " can't read what the push sends"
+            )
     shas = (
         git.run("rev-list", "--reverse", "--topo-order", *sources, "--not", f"--remotes={remote}").split()
         if sources
