@@ -1,6 +1,6 @@
 # S-070: Choose how fast an accepted outcome ships
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -127,3 +127,19 @@ of them: they wait on the maintainer's choice, which no session makes.
 - shipmill/shipmill#1255: S-070-14, S-070-15
 
 ## Verification
+
+- S-070-1: `tests/test_class_of_service.py` read an `expedite` label whose newest labeled event names a User as expedite, and the same label by the App, by the `--bot-login`, or with no readable actor as standard; `tests/test_expedite_release.py` read the planner's GraphQL answer by the same rule; passed
+- S-070-2: `tests/test_class_of_service.py` reported `CLASS_CONFLICT` with the fix "remove one of `expedite` and `fixed-date` from #N" for both labels a person added, and none when the App added one; the planner's `Outcome.expedite` reads both as standard (`tests/test_expedite_release.py`); passed
+- S-070-3: `tests/test_expedite_order.py` marked the opportunity's row, its sub-issues' rows, and the pull request closing a sub-issue as expedite in a tier 3 read, and no other row; passed
+- S-070-4: `tests/test_expedite_order.py` ordered expedite rows of tiers 3 and 6 before the standard rows of their tier, kept S-046-12's order within each group, and kept tiers 1 and 2 first; passed
+- S-070-5: `tests/test_expedite_release.py` planned the same decisions with and without an opportunity carrying no class label, read nothing new without `[agents]`, and `walk.order` sorted rows with no expedite mark exactly as S-046-12's key; the existing planner, lane, and veto tests passed unchanged
+- S-070-6: `tests/test_expedite_order.py` ran `triage_state.py --wip` and listed expedite issues first among the ready ones, counted in progress, with room never below 0; passed
+- S-070-7: `tests/test_expedite_release.py` planned a push 10 minutes after the merge closing the last open sub-issue (30 `quiet_minutes`, no window) and released stable with `expedite #40 complete`; an open sub-issue, a last close by hand or by another repository's pull request, a merge not in main, the App's label, both labels, and an unaccepted opportunity made nothing due
+- S-070-8: `tests/test_expedite_release.py`, with `promote_from = "rc"`, released `1.1.0rc2` with `expedite #40 complete`, and the stable lane's promotion on its own quiet time decided the same with and without the outcome
+- S-070-9: `tests/test_expedite_release.py` made the lane due by an outcome and got the usual skip or proposal for a `shipmill-hold` issue (`held by shipmill-hold #9`), a `release-blocker`, a `Breaking` entry (proposed, not released), and an open veto window with `veto_lanes = ["stable"]`; it read `release.yml` and `land.yml`, where CI runs on the release commit and `land` runs only on its success, whatever made the lane due
+- S-070-10: `tests/test_expedite_release.py` released v1.0.1 on the outcome, merged another fix, and the next plan found no trigger due; with nothing merged since the release, nothing was read
+- S-070-11: `tests/test_class_of_service.py` reported `FIXED_DATE_AT_RISK` for due dates 2 days away and past with work open or no sub-issue, and nothing for 3 days away or every sub-issue closed; passed
+- S-070-12: `tests/test_class_of_service.py` reported `FIXED_DATE_NO_DATE` for a fixed-date opportunity in no milestone and in one without a due date; passed
+- S-070-13: `tests/test_class_of_service.py` counted the three class rows as waiting on the maintainer in `shipmill status`, and a gate tick with only these rows launched no session; passed
+- S-070-14: `tests/test_class_of_service_labels.py` ran `setup_state.py` with `[agents]` and got `LABELS_MISSING` naming `expedite` and `fixed-date`, and none without `[agents]`; passed
+- S-070-15: `tests/test_class_of_service_labels.py` read product intake's opportunity comment naming both labels beside `planned`, and the spec gate's split filing build issues with no class label; passed

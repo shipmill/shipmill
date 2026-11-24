@@ -362,13 +362,44 @@ class Planner:
             start = window.latest_start(self.now)
             if start is not None and (last is None or last < start):
                 return f"window '{window.text}' opened at {start:%Y-%m-%d %H:%M} UTC"
+        waiting: milestones.Verdict | milestones.Held | None = None
         if rule.milestone:
             milestone = self.github.milestone(str(candidate.version.release))
             if milestone is not None and milestone.open_issues == 0 and milestone.closed_issues > 0:
                 found = self.milestone_verdict(candidate, head)
-                return found.reason if found.done else found
-            if milestone is not None and milestone.open_issues:
-                return milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
+                if found.done:
+                    return found.reason
+                waiting = found
+            elif milestone is not None and milestone.open_issues:
+                waiting = milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
+        # a milestone still waiting is no gate, as quiet time shows: an expedite outcome is due over it
+        expedited = self._expedited(lane, candidate)
+        return expedited if expedited is not None else waiting
+
+    def _expedited(self, lane: Lane, candidate: _Candidate) -> str | None:
+        """`expedite #N complete` when the candidate ships the merge that completed an expedite
+        outcome #N (spec 070): the stable lane's trigger, or the rc lane's when stable promotes,
+        so a promotion keeps its own triggers. Read only with [agents], whose classes these are,
+        and only when the lane's range holds a commit; S-070-10, a merge the lane's newest tag
+        holds makes nothing due"""
+        stable = self.policy.lanes.get(Lane.STABLE)
+        if self.policy.agents is None or stable is None or lane is not (Lane.RC if stable.promote else Lane.STABLE):
+            return None
+        tags = self._lane_tags(lane)
+        newest = max(tags, key=lambda t: t.date) if tags else None
+        if newest is None:  # no release of the lane yet: what merged lately, as the veto windows read
+            since = self.now - veto.LONGEST
+            for outcome in self.github.expedite_outcomes(since):
+                commit = outcome.completing
+                if commit is not None and self.git.is_ancestor(commit, candidate.base):
+                    return f"expedite #{outcome.number} complete"
+            return None
+        commits = self.git.commits_since(newest.commit, candidate.base)
+        if not commits:
+            return None
+        for outcome in self.github.expedite_outcomes(min(commits.values()) - veto.SLACK):
+            if outcome.completing in commits:
+                return f"expedite #{outcome.number} complete"
         return None
 
     def milestone_verdict(self, candidate: _Candidate, head: str) -> milestones.Verdict:

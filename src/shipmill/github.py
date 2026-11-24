@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -87,6 +87,32 @@ _SHIPPED_QUERY = (
     f"nodes {{ number updatedAt mergedAt mergeCommit {{ oid }} {_SHIPPED_COMMENTS} "
     f"closingIssuesReferences(first: {SHIPPED_CLOSES}) {{ totalCount "
     f"nodes {{ number repository {{ nameWithOwner }} {_SHIPPED_COMMENTS} }} }} }} }} }} }}"
+)
+# what expedite_outcomes reads (spec 070): the issues labelled expedite, open and recently
+# closed, each with its labels, its newest label events, its sub-issues, and the closer of each
+# close; a list, an issue's labels, or its sub-issues longer than read is refused
+OPPORTUNITY_LABEL = "opportunity"
+PLANNED_LABEL = "planned"  # an accepted opportunity carries both (D-10)
+EXPEDITE_LABEL = "expedite"
+FIXED_DATE_LABEL = "fixed-date"
+EXPEDITE_READ = 100  # expedite issues read per state
+LABELS_READ = 100
+LABEL_EVENTS_READ = 100  # an issue's newest labeled events, as watch_state.py's LABELED_LAST
+SUB_ISSUES_READ = 100  # as watch_state.py's SUB_ISSUES_FIRST
+_EXPEDITE_QUERY = (
+    "query($owner: String!, $name: String!, $since: DateTime!) { repository(owner: $owner, name: $name) { "
+    "nameWithOwner "
+    f'open: issues(labels: ["{EXPEDITE_LABEL}"], states: OPEN, first: {EXPEDITE_READ}) '
+    "{ pageInfo { hasNextPage } nodes { ...outcome } } "
+    f'closed: issues(labels: ["{EXPEDITE_LABEL}"], states: CLOSED, first: {EXPEDITE_READ}, '
+    "filterBy: {since: $since}) { pageInfo { hasNextPage } nodes { ...outcome } } } } "
+    "fragment closing on Issue { number state repository { nameWithOwner } "
+    "closes: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { createdAt "
+    "closer { __typename ... on PullRequest { merged mergeCommit { oid } } } } } } } "
+    f"fragment outcome on Issue {{ ...closing labels(first: {LABELS_READ}) {{ totalCount nodes {{ name }} }} "
+    f"labelled: timelineItems(itemTypes: [LABELED_EVENT], last: {LABEL_EVENTS_READ}) "
+    "{ nodes { ... on LabeledEvent { label { name } actor { __typename login } } } } "
+    f"subIssues(first: {SUB_ISSUES_READ}) {{ totalCount nodes {{ ...closing }} }} }}"
 )
 _LABEL_DESCRIPTIONS = {
     PROPOSAL_LABEL: "Opened by shipmill: a release or deploy waiting for a person",
@@ -339,6 +365,61 @@ class ShippedPull:
 
 
 @dataclass(frozen=True, slots=True)
+class Closing:
+    """An issue of an expedite outcome as it closed: its number, whether it is in this
+    repository, when it last closed, and the merge commit of the pull request that closed it
+    then; closed_at is None while it is open, merge None when no merged pull request closed it"""
+
+    number: int
+    here: bool
+    closed_at: dt.datetime | None
+    merge: str | None  # the merge commit's full SHA
+
+    @property
+    def open(self) -> bool:
+        return self.closed_at is None
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """An issue labelled expedite and its sub-issues (spec 070): its labels, the class labels a
+    person added (the newest labeled event for each names a User, never a Bot), and how it and
+    each sub-issue closed"""
+
+    issue: Closing
+    labels: frozenset[str]
+    counted: frozenset[str]  # of EXPEDITE_LABEL and FIXED_DATE_LABEL, those a person added
+    subs: tuple[Closing, ...]
+
+    @property
+    def number(self) -> int:
+        return self.issue.number
+
+    @property
+    def expedite(self) -> bool:
+        """An accepted opportunity of class expedite: labelled opportunity and planned, its
+        expedite label a person's, and no fixed-date a person added beside it (S-070-1, S-070-2)"""
+        accepted = {OPPORTUNITY_LABEL, PLANNED_LABEL} <= self.labels
+        return accepted and EXPEDITE_LABEL in self.counted and FIXED_DATE_LABEL not in self.counted
+
+    @property
+    def completing(self) -> str | None:
+        """The merge commit that completed the outcome: of the pull request that closed the
+        last of its sub-issues to close, once all are closed, or with no sub-issue, the one that
+        closed the opportunity itself; None while it isn't complete, or when no merged pull
+        request of this repository closed it"""
+        if not self.expedite:
+            return None
+        if not self.subs:
+            last = self.issue
+        elif any(s.open for s in self.subs):
+            return None
+        else:
+            last = max(self.subs, key=lambda s: (s.closed_at or dt.datetime.min.replace(tzinfo=dt.UTC), s.number))
+        return last.merge if last.here and not last.open else None
+
+
+@dataclass(frozen=True, slots=True)
 class Issue:
     number: int
     title: str
@@ -554,6 +635,12 @@ class GitHub(Protocol):
         """Every merged pull request updated at or after since, so every one merged since, by
         number, with its comments and the issues it closes (spec 059); read only for a lane in
         [gates] veto_lanes"""
+        ...
+
+    def expedite_outcomes(self, since: dt.datetime) -> list[Outcome]:
+        """The issues labelled expedite that are open, or closed and updated at or after since,
+        by number, each with its sub-issues (spec 070); one request, read only for a config
+        with [agents]"""
         ...
 
 
@@ -1151,6 +1238,117 @@ class GhCli:
             f"more than {SHIPPED_PAGES * SHIPPED_PER_PAGE} merged pull requests were updated since"
             f" {since:%Y-%m-%d %H:%M} UTC; shipmill reads fewer for [gates] veto_lanes"
         )
+
+    def expedite_outcomes(self, since: dt.datetime) -> list[Outcome]:
+        stamp = since.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        found = json.loads(
+            self._gh(
+                "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"since={stamp}",
+                "-f", f"query={_EXPEDITE_QUERY}",
+            )
+        )  # fmt: skip
+        return parse_expedite_outcomes(found)
+
+
+def parse_expedite_outcomes(found: Any) -> list[Outcome]:
+    """expedite_outcomes' GraphQL answer, by number; anything else is refused, as is a list, an
+    issue's labels, or its sub-issues longer than read, since an outcome missed would wait for
+    quiet time, and one read in part could release before it is complete"""
+
+    def refuse(what: str) -> ReleaseError:
+        return ReleaseError(f"gh api graphql printed {what} for the expedite outcomes: {str(found)[:300]}")
+
+    if not isinstance(found, dict) or found.get("errors"):
+        raise refuse("errors or no object")
+    data = found.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict) or not isinstance(repository.get("nameWithOwner"), str):
+        raise refuse("no repository")
+    here = str(repository["nameWithOwner"]).lower()
+    outcomes: dict[int, Outcome] = {}
+    for state in ("open", "closed"):
+        connection = repository.get(state)
+        info = connection.get("pageInfo") if isinstance(connection, dict) else None
+        if (
+            not isinstance(connection, dict)
+            or not isinstance(connection.get("nodes"), list)
+            or not isinstance(info, dict)
+        ):
+            raise refuse(f"no {state} issues")
+        if info.get("hasNextPage") is not False:
+            raise refuse(f"more than {EXPEDITE_READ} {state} issues labelled {EXPEDITE_LABEL}, or no pageInfo")
+        for node in connection["nodes"]:
+            outcome = _outcome(node, here, refuse)
+            outcomes[outcome.number] = outcome
+    return [outcomes[n] for n in sorted(outcomes)]
+
+
+def _closing(node: Any, here: str, refuse: Callable[[str], ReleaseError]) -> Closing:
+    """An issue of expedite_outcomes' answer as it closed: the closer of its last close counts
+    when it is a merged pull request with a merge commit"""
+    if not isinstance(node, dict) or not isinstance(node.get("number"), int) or isinstance(node.get("number"), bool):
+        raise refuse("an issue without a number")
+    number = int(node["number"])
+    repo = node.get("repository")
+    if not isinstance(repo, dict) or not isinstance(repo.get("nameWithOwner"), str):
+        raise refuse(f"#{number} without a repository")
+    state = node.get("state")
+    if state not in ("OPEN", "CLOSED"):
+        raise refuse(f"#{number} with state {state!r}")
+    closes = node.get("closes")
+    events = closes.get("nodes") if isinstance(closes, dict) else None
+    if not isinstance(events, list):
+        raise refuse(f"#{number} without its close events")
+    if state == "OPEN":
+        return Closing(number, str(repo["nameWithOwner"]).lower() == here, None, None)
+    if len(events) != 1 or not isinstance(events[0], dict) or not isinstance(events[0].get("createdAt"), str):
+        raise refuse(f"#{number}, closed, without its close event")
+    closer = events[0].get("closer")
+    merge = None
+    if isinstance(closer, dict) and closer.get("__typename") == "PullRequest" and closer.get("merged") is True:
+        merge = _oid(closer, "mergeCommit")
+    elif closer is not None and not isinstance(closer, dict):
+        raise refuse(f"#{number} with closer {closer!r}")
+    return Closing(number, str(repo["nameWithOwner"]).lower() == here, _time(events[0]["createdAt"]), merge)
+
+
+def _person_added(events: list[Any], label: str) -> bool:
+    """Whether the newest labeled event adding label names a User as its actor, as
+    triage_state.py's added_by_person reads it: a Bot (the App), a login ending in [bot], an
+    actor that can't be read, or no such event read counts as no label (N-3, D-10)"""
+    adding = [e for e in events if isinstance(e, dict) and (e.get("label") or {}).get("name") == label]
+    if not adding:
+        return False
+    actor = adding[-1].get("actor")
+    if not isinstance(actor, dict) or actor.get("__typename") != "User":
+        return False
+    login = actor.get("login")
+    return isinstance(login, str) and bool(login) and not login.endswith("[bot]")
+
+
+def _outcome(node: Any, here: str, refuse: Callable[[str], ReleaseError]) -> Outcome:
+    issue = _closing(node, here, refuse)
+    labels = node.get("labels")
+    names = labels.get("nodes") if isinstance(labels, dict) else None
+    if not isinstance(names, list) or not isinstance(labels.get("totalCount"), int):
+        raise refuse(f"#{issue.number} without its labels")
+    if labels["totalCount"] > LABELS_READ:
+        raise refuse(f"#{issue.number} with more than {LABELS_READ} labels")
+    found = frozenset(str(n["name"]) for n in names if isinstance(n, dict) and isinstance(n.get("name"), str))
+    labelled = node.get("labelled")
+    events = labelled.get("nodes") if isinstance(labelled, dict) else None
+    if not isinstance(events, list) or not all(
+        isinstance(e, dict) and isinstance(e.get("label"), dict) for e in events
+    ):
+        raise refuse(f"#{issue.number} without its label events")
+    counted = frozenset(x for x in (EXPEDITE_LABEL, FIXED_DATE_LABEL) if x in found and _person_added(events, x))
+    subs = node.get("subIssues")
+    nodes = subs.get("nodes") if isinstance(subs, dict) else None
+    if not isinstance(nodes, list) or not isinstance(subs.get("totalCount"), int):
+        raise refuse(f"#{issue.number} without its sub-issues")
+    if subs["totalCount"] > SUB_ISSUES_READ:
+        raise refuse(f"#{issue.number} with more than {SUB_ISSUES_READ} sub-issues")
+    return Outcome(issue, found, counted, tuple(_closing(s, here, refuse) for s in nodes))
 
 
 @dataclass(frozen=True, slots=True)
