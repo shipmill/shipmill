@@ -109,8 +109,9 @@ For each open issue:
                    that closed before the newest triage comment holds nothing: that
                    comment decided it again (#1493), and the issue reads by its other
                    rules (BLOCKED "labelled blocked", POSTPONED, or its verdict). A
-                   sub-issue, a hold whose close time is unknown, and a person's
-                   item's holds count whenever they closed
+                   sub-issue, a hold whose close time is unknown, one the newest
+                   triage comment names, and a person's item's holds count
+                   whenever they closed
   POSTPONED        has the postponed label. When its newest triage comment has a line
                    "Revisit on: `<path>`, `<path>`" (spec 061), its note is "waits on
                    <paths>"
@@ -2405,12 +2406,14 @@ def classify_open(
     verdict = max((i for i, c in enumerate(comments) if c["body"].lstrip().startswith(marker)), default=-1)
     # A refused PR named before the newest triage comment was decided again: it holds nothing.
     # So does a hold that closed before that comment (#1493), save a sub-issue, which always
-    # counts, and a person's item's, whose hand-off starts at its newest hold's close
+    # counts, a person's item's, whose hand-off starts at its newest hold's close, and one that
+    # comment or a later one names, which put the hold on rather than took it up
     decided = timestamp(comments[verdict]["createdAt"]) if verdict >= 0 and not human else None
     taken = {
         r
-        for r in named
+        for r, i in named.items()
         if decided is not None
+        and i < verdict
         and marks.get(r) != "(child)"
         and states.get(r) in CLOSED_STATES
         and r in closes
