@@ -362,16 +362,19 @@ class Planner:
             start = window.latest_start(self.now)
             if start is not None and (last is None or last < start):
                 return f"window '{window.text}' opened at {start:%Y-%m-%d %H:%M} UTC"
+        waiting: milestones.Verdict | milestones.Held | None = None
         if rule.milestone:
             milestone = self.github.milestone(str(candidate.version.release))
             if milestone is not None and milestone.open_issues == 0 and milestone.closed_issues > 0:
                 found = self.milestone_verdict(candidate, head)
-                return found.reason if found.done else found
-            if milestone is not None and milestone.open_issues:
-                held = milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
-                if held is not None:
-                    return held
-        return self._expedited(lane, candidate)
+                if found.done:
+                    return found.reason
+                waiting = found
+            elif milestone is not None and milestone.open_issues:
+                waiting = milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
+        # a milestone still waiting is no gate, as quiet time shows: an expedite outcome is due over it
+        expedited = self._expedited(lane, candidate)
+        return expedited if expedited is not None else waiting
 
     def _expedited(self, lane: Lane, candidate: _Candidate) -> str | None:
         """`expedite #N complete` when the candidate ships the merge that completed an expedite

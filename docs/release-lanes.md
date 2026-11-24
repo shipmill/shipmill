@@ -205,8 +205,9 @@ request that closed the last of them (or, with no sub-issue, the opportunity its
 the candidate holds that merge and the lane's newest tag doesn't, the stable lane is due with
 the reason `expedite #N complete`, or, when stable promotes, the rc lane is, and the
 promotion keeps its own triggers. It is read only when quiet time, the windows, and a
-milestone made nothing due, in one GraphQL query of the issues labelled `expedite`; every
-gate still applies. A config without `[agents]` reads nothing new.
+milestone made nothing due, in one GraphQL query of the issues labelled `expedite`; a
+milestone still waiting, on its open issues or its goal, doesn't stop it, as it doesn't stop
+quiet time, and every gate still applies. A config without `[agents]` reads nothing new.
 
 `shipmill milestones` prints the same reasons as a MILESTONE_WAITING row. A stable release
 made by another trigger ships what is merged and keeps its bump, so it can take an

@@ -12,7 +12,16 @@ import pytest
 
 from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
-from shipmill.github import Closing, IssueComment, Milestone, Outcome, ShippedPull, parse_expedite_outcomes
+from shipmill.github import (
+    Closing,
+    IssueComment,
+    Milestone,
+    MilestoneIssues,
+    OpenIssue,
+    Outcome,
+    ShippedPull,
+    parse_expedite_outcomes,
+)
 from shipmill.planner import BREAKING, Decision, Event
 from shipmill.walk import EXPEDITED, TIERS, order, tier_of
 
@@ -92,6 +101,18 @@ def test_s070_7_an_open_milestone_with_work_open_does_not_stop_the_expedite_trig
     gate: the outcome still makes it due, as quiet time would"""
     repo, merge = repos.after(tmp_path, _stable, STABLE + "milestone = true\n" + AGENTS, "Fixed")
     repo.github.milestones["1.0.1"] = Milestone(1, 1)
+    _due(repo, merge)
+    assert _plan(repo).reason == "stable 1.0.1: 1 pending entries; expedite #40 complete"
+
+
+def test_s070_7_a_milestone_parked_on_holds_does_not_stop_the_expedite_trigger(tmp_path: Path, repos: Repos) -> None:
+    """A milestone whose open issues all wait on a decision (spec 068) names its hold, but is no
+    gate: quiet time releases over it, and so does an expedite outcome"""
+    repo, merge = repos.after(tmp_path, _stable, STABLE + "milestone = true\n" + AGENTS, "Fixed")
+    repo.github.milestones["1.0.1"] = Milestone(1, 1)
+    parked = OpenIssue(7, "Pick a name", frozenset({"needs-decision"}))
+    repo.github.milestone_lists["1.0.1"] = MilestoneIssues("o/demo", ((7, ""),), (parked,))
+    assert "milestone" in _plan(repo).reason  # the hold is named while nothing is due
     _due(repo, merge)
     assert _plan(repo).reason == "stable 1.0.1: 1 pending entries; expedite #40 complete"
 
