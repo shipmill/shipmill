@@ -7,6 +7,28 @@ bot.
 
 ## [Unreleased]
 
+## [0.167.0] - 2026-11-24
+
+### Changed
+
+- D-102 to D-104 record the maintainer's answers: a public write is checked for private repositories by name and an `[agents]` repo refuses public writes while the private terms file is missing (#1480), a relayed veto counts as the maintainer's own (#1482), and an agent never decides on its own on an item naming a CVE or GHSA id (#1483)
+- Gate: a headless session is dead when its log's end is anything but `ok` (a usage limit, an authentication failure, or no result without an error), however long it ran, instead of when it ended within 60 s of its launch; a session a STALLED tick stopped is dead too. A hand whose session ended `limit`, `auth`, or `error` drops from `handed.json` on the tick that records the end, whichever session `gate.json` names by then, so its item is handed again, and only a hand whose session ended `ok` turns idle: hands already stuck idle behind sessions a usage limit stopped return to the queue on the first tick after the upgrade. A capped dead session's hands still hold its item for `retry_hours` until spec 089's backoff replaces that hold (#1551)
+
+### Fixed
+
+- A maintainer's veto relayed by a session through the App now stops a merge: the App's relay after an item's decided marker, in the relay grammar, naming the maintainer, whose answer line is `own: veto [<text>]` or starts with `veto`, reads as that maintainer's veto, so `triage_state.py` reads the item VETOED (naming the maintainer, read from the `--role maintainer` flag) and `pr_gate.py` holds the pull request until a veto-handled comment follows it; a relay naming anyone else, out of the grammar, or answering an option is no veto (#1482)
+
+### Security
+
+- `shipmill gh` refuses with exit 2 a comment holding the `shipmill:decided` marker on an issue or pull request whose body or comments name a CVE or GHSA id, or whose thread can't be read, and points to the needs-decision question instead, so a decision on a known vulnerability is asked whatever its zone's level (D-104, S-030-25) (#1483)
+
+### Added
+
+- `pr_gate.py` holds an agent's pull request that changes a file outside what its issues allow: the `Files:` lines of each named issue's newest `Triage: **implement**` or `Proposed plan:` comment by the `--bot-login` or a trusted person, written before the pull request opened, read with spec 061's grammar, the default branch's `[changelog] fragments` folder always allowed; such a pull request reads NEEDS_DECISION, exit 5, with `files: <path> is outside what #<n> allows` lines, and fails closed on a `Files:` line it can't read or a thread cut off at 100 comments (#1523)
+- `chains.py show --json` says, on each row, how much open work waits on the item and what it waits for itself: `held` (every open issue that waits on it, directly or through others, across repos, each once, never itself), `held_direct`, `milestones` (the waiters' `owner/repo title`, sorted, each once), `waiting_for` (the first that applies of `decision`, `cycle`, `items`, `upstream`, `postponed`, `maintainer`, `person`, `pull request`, `no gate`, `agent`), and `idle_days` (whole days since the newer of the issue's `updatedAt` and its open closing pull request's); an untrusted, unreadable, or closed issue adds nothing to any count, and the table lines and exit codes are unchanged (spec 086) (#1526)
+- `.github/shipmill.toml` takes an optional `[decisions.earned]` table (the lowest level a pull request may earn in `protected` and `security`, never below the zone's floor, and `max_lines`, 1 to 10000, default 200) and `[decisions] clean_releases` (1 to 20, default 3), and the zone table gains `area-record` after `protected`, defaulting to `act` with no floor; `shipmill decide levels` shows each zone's bound (`"earned"` in each JSON row, `null` without one), and a config without either key reads as before; nothing earns a level or reads an area's record yet (spec 083) (#1544)
+- Gate: once a headless session is gone, each of its hands in `handed.json` records how it ended as `ended`, read from its stream-json log: `ok` (its last `result` has `is_error: false`), `limit` (an `api_error_status` of 429 or a rejected `rate_limit_event`), `auth` (an `api_error_status` of 401 or an authentication failure), or `error` (anything else, a session that ran past 60 s with no result included); a log whose events don't have the types Claude Code writes fails the tick instead of guessing, and a `handed.json` written before keeps loading; the watch reads the new field too. The end changes nothing yet: spec 089's later issues act on it (#1550)
+
 ## [0.166.0] - 2026-11-24
 
 ### Changed
@@ -2995,7 +3017,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.166.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.167.0...HEAD
+[0.167.0]: https://github.com/shipmill/shipmill/compare/v0.166.0...v0.167.0
 [0.166.0]: https://github.com/shipmill/shipmill/compare/v0.165.0...v0.166.0
 [0.165.0]: https://github.com/shipmill/shipmill/compare/v0.164.1...v0.165.0
 [0.164.1]: https://github.com/shipmill/shipmill/compare/v0.164.0...v0.164.1

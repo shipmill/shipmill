@@ -1,3 +1,0 @@
-### Added
-
-- `chains.py show --json` says, on each row, how much open work waits on the item and what it waits for itself: `held` (every open issue that waits on it, directly or through others, across repos, each once, never itself), `held_direct`, `milestones` (the waiters' `owner/repo title`, sorted, each once), `waiting_for` (the first that applies of `decision`, `cycle`, `items`, `upstream`, `postponed`, `maintainer`, `person`, `pull request`, `no gate`, `agent`), and `idle_days` (whole days since the newer of the issue's `updatedAt` and its open closing pull request's); an untrusted, unreadable, or closed issue adds nothing to any count, and the table lines and exit codes are unchanged (spec 086) (#1526)
