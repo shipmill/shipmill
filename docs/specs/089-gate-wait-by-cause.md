@@ -83,6 +83,9 @@ state and runs its prune as a QUIET one does.
   `<credential>`, so the next tick reads no record and launches. A gate with no token file lifts
   it on the first tick `claude auth status` reports a login. One notification per pause, as
   CLAUDE_AUTH sends today
+- **A token change ends either pause.** A usage limit belongs to the credential, so replacing
+  the token file's content ends a `limit` pause too: the next tick reads no record for the new
+  `<credential>`, launches, and probes with the new token should a limit hold there as well
 - A pause counts no attempt against any item: the item that hit it is handed again once it
   lifts
 
@@ -116,7 +119,7 @@ a coming tick".
 - S-089-6: While a record for its credential holds, a tick of any gate on the host starts no session, reads PAUSED naming the cause and its end, and counts no attempt against the item that hit it
 - S-089-7: While a `limit` pause holds, each tick runs `claude -p "/usage"` with `CLAUDE_CODE_OAUTH_TOKEN` from the token file, and the first tick whose output shows no window full removes the record and may launch
 - S-089-8: When the `/usage` output can't be read or the probe exits non-zero, a `limit` pause lifts at the record's `resetsAt`, or after `retry_hours` when it has none
-- S-089-9: After the token file's content changes, the next tick reads no record for the new credential and launches the held item; a gate with no token file lifts an `auth` pause once `claude auth status` reports a login
+- S-089-9: After the token file's content changes, under a `limit` or an `auth` pause alike, the next tick reads no record for the new credential and launches the held item; a gate with no token file lifts an `auth` pause once `claude auth status` reports a login
 - S-089-10: An `auth` pause sends one notification, and later ticks under the same pause send none
 - S-089-11: An item whose session ended `error` is handed again 15 minutes, then 1 hour, then 4 hours after each death in its run; after `DEAD_STREAK` `error` ends in a row it is held for `retry_hours` and reported SESSION_DEAD, and a session ending `ok` on it resets the run
 - S-089-12: An idle subject whose newest `<!-- shipmill:waits-on owner/repo#N -->` comment by the `--bot-login` names an item updated after the hand's `at` is handed again on that walk; the same marker by any other author leaves it idle
@@ -129,9 +132,6 @@ a coming tick".
 - Billing gate sessions to Console API credit: #1478
 - Sharing state between gates beyond the credential's pause (two gates on one item): #1465
 - Interactive sessions' ends: they leave no log, and `listed_dead` keeps reading them as today
-- Why a session ran on 2026-11-23 at 10:10 UTC while the 07:21 limit message said the week reset
-  on Nov 25: unexplained; the probe reads the windows as they are instead of trusting the
-  message
 
 ## Decisions relied on
 
