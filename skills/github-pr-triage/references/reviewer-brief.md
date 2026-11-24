@@ -72,7 +72,7 @@ Post-merge review of GitHub PR #{N} of {owner/repo} ("{title}"). It is already m
 
 ## Verify a refusal
 
-Use this for each PR whose reviewer reports REFUSE, before anything is recorded or handed back (spec 075). Send it to a fresh agent (`subagent_type: general-purpose`, `isolation: "worktree"`), never the first reviewer and never the landing session itself, all such agents in one message, and in the foreground in a headless session, as reviewers are. Give it the PR, the reviewed head, and each blocking finding's id, file and line, and claim, copied from the report; never the first reviewer's verdict or the rest of its report.
+Use this for each PR whose reviewer reports REFUSE, before anything is recorded or handed back (spec 075). Send it to a fresh agent (`subagent_type: general-purpose`, `isolation: "worktree"`), never the first reviewer and never the landing session itself, all such agents in one message, and in the foreground in a headless session, as reviewers are. Give it the PR, the reviewed head, and each blocking finding's id, file and line, and claim, copied from the report; never the first reviewer's verdict or the rest of its report. Fill in `{base}`, the PR's `baseRefName`, and, for a PR whose head branch is in the repo, `{head_branch}`, its `headRefName`: the verifier's worktree holds a branch named for the PR, never a detached HEAD, because the gate's prune keeps a detached worktree forever (S-002-4) and finds a landed PR only by such a name or its upstream (D-91).
 
 ```text
 Verify findings on GitHub PR #{N} of {owner/repo} ("{title}") at head {reviewed_head}. The repo is at {repo_path}, and you are in an isolated worktree of it. Goal: settle each finding below by the code. Do NOT push, comment on GitHub, merge, or fix anything.
@@ -81,7 +81,7 @@ Verify findings on GitHub PR #{N} of {owner/repo} ("{title}") at head {reviewed_
 The findings:
 {findings: one line each, `F-n`, file:line, the claim in one sentence}
 
-1. `git fetch origin`, `git fetch origin pull/{N}/head:verify-{N}`, then `git checkout --detach {reviewed_head}`. Read `git diff origin/{base}...HEAD` and the code each finding names.
+1. `git fetch origin`, `git fetch origin pull/{N}/head`, then `git checkout -B review-{N}-verify {reviewed_head}`, your own branch (the first reviewer's worktree holds `review-{N}`), then {for a PR whose head branch is in {owner/repo}, not a fork:} `git branch --set-upstream-to=origin/{head_branch} review-{N}-verify`, so `shipmill worktrees` finds the PR once it merges (D-91). Read `git diff origin/{base}...HEAD` and the code each finding names.
 2. Mark every finding with exactly one of:
    - `confirmed`, with the failure scenario: the input or steps, what happens, and what should; run it where it can be run (a failing test or command and its output), otherwise trace it through the code with file and line
    - `rejected`, with the file and line of the code that already handles it, or of the rule or test that shows the claim is wrong
