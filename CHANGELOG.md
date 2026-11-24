@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.164.1] - 2026-11-24
+
+### Fixed
+
+- The delivery hook's leak check no longer claims a leak when it refuses a `git push` of a branch the same Bash command creates, such as `git switch -c new && git commit -m x && git push -u origin new`: `shipmill leaks push` refuses a source ref that doesn't exist with an error naming it, and the hook, which reads the whole command before any part of it runs, says the ref doesn't exist yet and to run the commands before the push first; only a refusal with findings says to rewrite the unpushed commits, any other check that can't read the push says why, and the push stays refused with exit 2 either way (#1542)
+
 ## [0.164.0] - 2026-11-24
 
 ### Added
@@ -2973,7 +2979,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.164.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.164.1...HEAD
+[0.164.1]: https://github.com/shipmill/shipmill/compare/v0.164.0...v0.164.1
 [0.164.0]: https://github.com/shipmill/shipmill/compare/v0.163.2...v0.164.0
 [0.163.2]: https://github.com/shipmill/shipmill/compare/v0.163.1...v0.163.2
 [0.163.1]: https://github.com/shipmill/shipmill/compare/v0.163.0...v0.163.1
