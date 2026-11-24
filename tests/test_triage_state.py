@@ -612,6 +612,15 @@ def test_1493_a_spec_merged_after_the_triage_comment_unblocks_its_feature_issue(
     assert found == ("UNBLOCKED", "o/r#40:merged")
 
 
+def test_1493_a_hold_the_newest_triage_comment_names_still_unblocks(ts: ModuleType) -> None:
+    # the spec PR merged a minute before the comment naming it was posted: that comment took
+    # nothing up, it put the hold on, so the issue still reads UNBLOCKED
+    item = issue(("2026-11-01T10:00:00Z", "Triage: **feature**. The spec waits on #40."))
+    states, closes = {("o", "r", 40): "MERGED"}, {("o", "r", 40): "2026-11-01T09:59:00Z"}
+    found = ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT, closes)
+    assert found == ("UNBLOCKED", "o/r#40:merged")
+
+
 def test_1493_children_closed_before_the_newest_triage_comment_still_count(ts: ModuleType) -> None:
     item = issue(("2026-11-01T10:00:00Z", "Triage: **implement**"), REDECIDED)
     node = {"number": 13, "state": "CLOSED", "closedAt": "2026-11-05T10:00:00Z", "repository": {"nameWithOwner": "o/r"}}
