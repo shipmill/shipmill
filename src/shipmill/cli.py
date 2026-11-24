@@ -267,6 +267,7 @@ from shipmill.app_gh import (
     decided_in,
     edited_args,
     feed_gh,
+    has_agents,
     hold_decided,
     hold_method,
     hold_relay_mention,
@@ -425,6 +426,9 @@ from shipmill.leaks import (
     Visibility,
     account_home,
     high_entropy,
+    missing_private,
+    private_repos,
+    references,
     refusal,
     scan,
     secrets,
@@ -2891,7 +2895,10 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> bytes | None:
     private file that doesn't load or a secret file that can't be read, findings or not. The
     repo's visibility is read once, and only when a term is listed (S-081-3, S-081-4). gitleaks
     8.19 or newer on PATH adds its findings (S-081-7); a write that goes on prints its
-    high-entropy warnings (S-081-8). Nothing turns it off (S-081-16)"""
+    high-entropy warnings (S-081-8). To a public repo, a write naming an owner/name the token at
+    hand reads as private exits 2 (S-081-18), and so does every write from a checkout with
+    [agents] while the private file is missing (S-081-19, D-102); the visibility is then read
+    too, each repo once. Nothing turns it off (S-081-16)"""
     if is_read(sent.gh_args):
         return None
     private = Private.load(private_home)
@@ -2905,7 +2912,8 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> bytes | None:
         return taken[0].decode("utf-8", errors="replace")
 
     texts = sent_texts(sent.gh_args, read)
-    vet = _Vet(private, sent.top, functools.partial(_visibility, reach=reach), reach.env)
+    visibility = functools.cache(functools.partial(_visibility, reach=reach))  # each repo read once
+    vet = _Vet(private, sent.top, visibility, reach.env, references=True, agents=has_agents(sent.top))
     vet.check("shipmill gh", texts, write_repo(sent.gh_args, sent.default))
     return taken[0] if taken else None
 
@@ -3001,12 +3009,15 @@ def _leaks_check(
 class _Vet:
     """What the leak check reads besides the texts (spec 081): the private file as loaded, the
     checkout whose untracked .env files hold secrets (None outside one), the reader of a repo's
-    visibility, and the env gitleaks is looked up in"""
+    visibility, and the env gitleaks is looked up in; for `shipmill gh` (D-102), whether owner/name
+    references are read (S-081-18) and whether the checkout has [agents] (S-081-19)"""
 
     private: Private
     top: Path | None
     visibility: Callable[[str], Visibility | None]
     environ: Mapping[str, str]
+    references: bool = False
+    agents: bool = False
 
     def check(
         self,
@@ -3019,13 +3030,21 @@ class _Vet:
         """Exits 2 with command's refusal when texts, sent to repo (None: to no repo), hold a
         private term and the repo is public, or a secret's exact value or a known token format
         in any repo; else prints their high-entropy warnings (S-081-8). The repo's visibility is
-        read only when a term is listed (S-081-3, S-081-4); placed puts each finding where its
-        text came from"""
+        read only when a term is listed, the texts name another repo, or the private file is
+        missing in a checkout with [agents] (S-081-3, S-081-4); to a public repo, the latter is
+        refused (S-081-19) and each repo named is read once (S-081-18). placed puts each
+        finding where its text came from"""
         known = secrets(self.top, _tracked_dotenvs(self.top), self.private)
-        visibility = self.visibility(repo) if self.private.terms and repo is not None else None
-        destination = Destination(repo, visibility)
+        named = references(texts, repo) if self.references else []
+        unguarded = self.agents and not self.private.present
+        read = bool(self.private.terms or named or unguarded) and repo is not None
+        destination = Destination(repo, self.visibility(repo) if read and repo is not None else None)
+        if unguarded and destination.public:
+            raise missing_private(command, destination, self.private.path)
         terms = self.private.terms if destination.public else ()
         findings = placed(scan(texts, terms, known, Gitleaks.find(self.environ)))
+        if named and destination.public:
+            findings.extend(private_repos(texts, named, self.visibility))
         if findings:
             raise refusal(command, destination, findings, fix)
         for line in warning_lines(placed(high_entropy(texts))):

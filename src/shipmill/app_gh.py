@@ -25,7 +25,7 @@ from shipmill import cli_command
 from shipmill.agent_marker import BODY_LIMIT, carries, closed_with, decided_by, marked, stripped
 from shipmill.agents import MergeMethod
 from shipmill.classify import Pulls
-from shipmill.config import CONFIG_PATH
+from shipmill.config import CONFIG_PATH, read_unchecked
 from shipmill.credit import DECISION_BY, first_line
 from shipmill.errors import ReleaseError
 from shipmill.github import MergeMethods
@@ -1594,6 +1594,15 @@ def feed_gh(argv: Sequence[str], env: Mapping[str, str], stdin: bytes) -> int:
     for the leak check (spec 081), so gh reads the very bytes that were checked"""
     code = subprocess.run(list(argv), env=dict(env), input=stdin, check=False).returncode
     return code if code >= 0 else 128 - code
+
+
+def has_agents(top: Path | None) -> bool:
+    """S-081-19, D-102: whether the checkout at top (None: outside one git reads) has a config
+    with an [agents] section, where a public write needs the private file; a config that isn't
+    TOML exits 2 naming it"""
+    if top is None or not (top / CONFIG_PATH).is_file():
+        return False
+    return "agents" in read_unchecked(top / CONFIG_PATH)
 
 
 _REPOS_PATH = re.compile(r"repos/([^/]+)/([^/]+)(?:/.*)?", re.IGNORECASE)
