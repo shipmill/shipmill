@@ -4,6 +4,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -168,3 +169,79 @@ def test_s030_17_the_310_reader_refuses_what_tomllib_refuses(tmp_path: Path) -> 
         with pytest.raises(module.LogError, match=r"can't read \[decisions\] on Python 3.10"):
             module.decisions_table_310(unreadable, path)
     assert module.decisions_table_310("[ decisions ]\nveto_hours = 0\n", path) == {"veto_hours": 0}
+
+
+def script_module() -> object:
+    spec = importlib.util.spec_from_file_location("decisions_script", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+EARNED = (
+    '[decisions]\nclean_releases = 2\n\n[decisions.earned]\nprotected = "act"\nsecurity = "notify"\nmax_lines = 200\n'
+)
+
+
+def test_s083_2_policy_reads_earned_and_clean_releases_with_every_level_unchanged(tmp_path: Path) -> None:
+    module: Any = script_module()
+    path = tmp_path / "shipmill.toml"
+    path.write_text(EARNED, encoding="utf-8")
+    found = module.policy(path)
+    assert found.levels == {zone: default for zone, (default, _) in module.ZONES.items()}
+    assert (found.earned, found.max_lines, found.clean_releases) == ({"protected": "act", "security": "notify"}, 200, 2)
+    path.write_text('[decisions]\nprotected = "notify"\n', encoding="utf-8")
+    plain = module.policy(path)
+    assert (plain.earned, plain.max_lines, plain.clean_releases) == (None, 200, 3)  # D-63: as before
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            '[decisions.earned]\nscope = "act"\n',
+            "[decisions.earned] scope takes no earned level: only protected and security do",
+        ),
+        ('[decisions.earned]\nprotected = "maybe"\n', "[decisions.earned] protected = 'maybe': a level is one of"),
+        ('[decisions.earned]\nsecurity = "act"\n', "[decisions.earned] security = 'act' is below its floor notify"),
+        ("[decisions.earned]\nmax_lines = 0\n", "[decisions.earned] max_lines must be an integer from 1 to 10000"),
+        ("[decisions.earned]\nmax_lines = 10001\n", "[decisions.earned] max_lines must be an integer from 1 to 10000"),
+        ('[decisions.earned]\nmax_lines = "200"\n', "[decisions.earned] max_lines must be an integer from 1 to 10000"),
+        ("[decisions]\nclean_releases = 0\n", "[decisions] clean_releases must be an integer from 1 to 20"),
+        ("[decisions]\nclean_releases = 21\n", "[decisions] clean_releases must be an integer from 1 to 20"),
+        ("[decisions]\nclean_releases = true\n", "[decisions] clean_releases must be an integer from 1 to 20"),
+        ('[decisions]\nearned = "act"\n', "[decisions] earned must be a table"),
+    ],
+)
+def test_s083_2_policy_refuses_each_malformed_value(tmp_path: Path, text: str, message: str) -> None:
+    module: Any = script_module()
+    path = tmp_path / "shipmill.toml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(module.LogError) as caught:
+        module.policy(path)
+    assert message in str(caught.value)
+
+
+def test_s083_2_the_310_reader_asks_for_311_for_a_config_holding_earned(tmp_path: Path) -> None:
+    """policy() reads [decisions] with decisions_table_310 on Python 3.10, which has no tomllib"""
+    module: Any = script_module()
+    path = tmp_path / "shipmill.toml"
+    for text in (EARNED, '[decisions.earned]\nprotected = "act"\n', '[decisions]\nearned = { protected = "act" }\n'):
+        with pytest.raises(module.LogError, match=r"can't read \[decisions\] on Python 3.10: use 3.11\+"):
+            module.decisions_table_310(text, path)
+    assert module.decisions_table_310("[decisions]\nclean_releases = 2\n", path) == {"clean_releases": 2}
+
+
+def test_s083_3_the_script_lists_area_record_after_protected_at_act(tmp_path: Path) -> None:
+    module: Any = script_module()
+    zones = list(module.ZONES)
+    assert zones[zones.index("protected") + 1] == "area-record"
+    assert module.ZONES["area-record"] == ("act", None)
+    path = tmp_path / "shipmill.toml"
+    assert module.policy(path).levels["area-record"] == "act"  # no file
+    path.write_text('[decisions]\nscope = "ask"\n', encoding="utf-8")
+    assert module.policy(path).levels["area-record"] == "act"  # no key
+    path.write_text('[decisions]\narea-record = "ask"\n', encoding="utf-8")
+    assert module.policy(path).levels["area-record"] == "ask"

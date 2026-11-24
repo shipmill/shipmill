@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from shipmill.decide import DecisionPolicy, Level, VetoHours, Zone, zones
+from shipmill.decide import CleanReleases, DecisionPolicy, Earned, Level, VetoHours, Zone, zones
 from shipmill.errors import ReleaseError
 from shipmill.gate import skills_dir
 from shipmill.policy import Policy
@@ -18,7 +18,7 @@ from .conftest import POLICY
 WHERE = "shipmill.toml [decisions]"
 ZONE_IDS = (
     "direction, decision-policy, scope, accepted-spec, rule-departure, contract-change, contract-addition, security, "
-    "deploy-step, protected, interpretation, triage-verdict, implementation, unknown"
+    "deploy-step, protected, area-record, interpretation, triage-verdict, implementation, unknown"
 )
 LEVELS = "['act', 'notify', 'ask', 'never']"
 DEFAULTS = {
@@ -32,6 +32,7 @@ DEFAULTS = {
     Zone.SECURITY: Level.ASK,
     Zone.DEPLOY_STEP: Level.ASK,
     Zone.PROTECTED: Level.ASK,
+    Zone.AREA_RECORD: Level.ACT,
     Zone.INTERPRETATION: Level.NOTIFY,
     Zone.TRIAGE_VERDICT: Level.NOTIFY,
     Zone.IMPLEMENTATION: Level.ACT,
@@ -247,6 +248,145 @@ def test_s030_4_a_bad_decisions_section_exits_2(name: str, tmp_path: Path) -> No
     assert done.returncode == 2
     assert done.stderr.startswith(f"shipmill: {WHERE}: ")
     assert part in done.stderr
+
+
+# -- spec 083: [decisions.earned], clean_releases, and the area-record zone ----------------------
+
+
+def earned(*lines: str) -> str:
+    return "\n[decisions.earned]\n" + "".join(f"{line}\n" for line in lines)
+
+
+def test_s083_1_the_earned_table_keeps_its_bounds_and_max_lines() -> None:
+    policy = decisions(earned('protected = "act"', 'security = "notify"', "max_lines = 200"))
+    assert policy.earned == Earned({Zone.PROTECTED: Level.ACT, Zone.SECURITY: Level.NOTIFY}, 200)
+    assert (policy.bound(Zone.PROTECTED), policy.bound(Zone.SECURITY)) == (Level.ACT, Level.NOTIFY)
+    assert policy.bound(Zone.SCOPE) is None
+    assert policy.levels == DEFAULTS  # a bound leaves every zone's level as it is
+    assert decisions(earned('protected = "notify"')).earned == Earned({Zone.PROTECTED: Level.NOTIFY}, 200)
+    assert decisions(earned("max_lines = 1")).earned == Earned({}, 1)
+    assert decisions(earned("max_lines = 10000")).earned == Earned({}, 10000)
+
+
+def test_s083_1_without_the_table_nothing_earns_and_the_policy_is_as_before() -> None:
+    """D-63: a config without [decisions.earned] or clean_releases parses as it did"""
+    policy = decisions(section('protected = "notify"'))
+    assert policy.earned is None
+    assert all(policy.bound(zone) is None for zone in Zone)
+    assert int(policy.clean_releases) == 3
+    assert decisions(section()) == DecisionPolicy()
+
+
+def test_s083_1_clean_releases_takes_an_integer_from_1_to_20() -> None:
+    assert int(decisions(section("clean_releases = 1")).clean_releases) == 1
+    assert int(decisions(section("clean_releases = 20")).clean_releases) == 20
+    assert decisions(section("clean_releases = 5")).levels == DEFAULTS
+
+
+@pytest.mark.parametrize("zone", [z.value for z in Zone if z not in (Zone.PROTECTED, Zone.SECURITY)])
+def test_s083_1_a_bound_on_another_zone_is_refused_naming_the_key(zone: str) -> None:
+    assert refused(earned(f'{zone} = "ask"')) == (
+        f"{WHERE}: [decisions.earned] {zone} takes no earned level: only protected and security do"
+    )
+
+
+@pytest.mark.parametrize("key", ["release", "land", "colour"])
+def test_s083_1_a_key_that_is_no_earning_zone_is_refused_too(key: str) -> None:
+    assert refused(earned(f'{key} = "act"')) == (
+        f"{WHERE}: [decisions.earned] {key} takes no earned level: only protected and security do"
+    )
+
+
+@pytest.mark.parametrize("value", ['"maybe"', '"ACT"', "1", "true"])
+def test_s083_1_a_bound_that_is_no_level_is_refused(value: str) -> None:
+    got = repr(tomllib.loads(f"v = {value}")["v"])
+    assert refused(earned(f"protected = {value}")) == (
+        f"{WHERE}: [decisions.earned] protected must be one of {LEVELS}, got {got}"
+    )
+
+
+def test_s083_1_a_bound_below_its_zones_floor_is_refused() -> None:
+    assert refused(earned('security = "act"')) == (
+        f'{WHERE}: [decisions.earned] security = "act" is below its floor notify:'
+        " a change to workflows, secrets, or permissions is always told (D-48)"
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "10001", "-1", "200.0", '"200"', "true"])
+def test_s083_1_a_max_lines_outside_1_to_10000_or_not_an_integer_is_refused(value: str) -> None:
+    got = repr(tomllib.loads(f"v = {value}")["v"])
+    assert refused(earned(f"max_lines = {value}")) == (
+        f"{WHERE}: [decisions.earned] max_lines must be an integer from 1 to 10000, got {got}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("0", "clean_releases must be in 1..20, got 0"),
+        ("21", "clean_releases must be in 1..20, got 21"),
+        ("3.0", "clean_releases must be an integer, got 3.0"),
+        ('"3"', "clean_releases must be an integer, got '3'"),
+        ("true", "clean_releases must be an integer, got True"),
+    ],
+)
+def test_s083_1_a_clean_releases_outside_1_to_20_or_not_an_integer_is_refused(value: str, message: str) -> None:
+    assert refused(section(f"clean_releases = {value}")) == f"{WHERE}: {message}"
+
+
+def test_s083_1_an_earned_key_that_is_not_a_table_is_refused() -> None:
+    assert refused(section('earned = "act"')) == (f"{WHERE}: earned must be a table, [decisions.earned], got 'act'")
+
+
+EARNED_EXITS = {
+    "another zone": (earned('scope = "act"'), "[decisions.earned] scope takes no earned level"),
+    "no level": (earned('protected = "maybe"'), "[decisions.earned] protected must be one of"),
+    "below the floor": (earned('security = "act"'), '[decisions.earned] security = "act" is below its floor notify'),
+    "max_lines": (earned("max_lines = 0"), "[decisions.earned] max_lines must be an integer from 1 to 10000"),
+    "clean_releases": (section("clean_releases = 21"), "clean_releases must be in 1..20"),
+}
+
+
+# proves: S-083-1
+@pytest.mark.parametrize("name", EARNED_EXITS)
+def test_s083_1_a_bad_earned_table_or_clean_releases_exits_2(name: str, tmp_path: Path) -> None:
+    text, part = EARNED_EXITS[name]
+    path = tmp_path / ".github" / "shipmill.toml"
+    path.parent.mkdir()
+    path.write_text(POLICY + text, encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(tmp_path), "settle-minutes"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr.startswith(f"shipmill: {WHERE}: ")
+    assert part in done.stderr
+
+
+def test_s083_1_a_policy_built_in_code_holds_the_earned_rules() -> None:
+    with pytest.raises(ReleaseError, match="scope takes no earned level"):
+        Earned({Zone.SCOPE: Level.ACT})
+    with pytest.raises(ReleaseError, match="is below its floor notify"):
+        Earned({Zone.SECURITY: Level.ACT})
+    with pytest.raises(ReleaseError, match="max_lines must be an integer from 1 to 10000"):
+        Earned({}, 0)
+    with pytest.raises(ReleaseError, match=r"clean_releases must be in 1\.\.20, got 0"):
+        CleanReleases(0)
+
+
+def test_s083_3_area_record_follows_protected_at_act_with_no_floor() -> None:
+    order = list(Zone)
+    assert order[order.index(Zone.PROTECTED) + 1] is Zone.AREA_RECORD
+    rule = zones()[Zone.AREA_RECORD]
+    assert (rule.default, rule.floor) == (Level.ACT, None)
+    assert decisions("").level(Zone.AREA_RECORD) is Level.ACT  # D-63: no repository changes on upgrade
+    assert not decisions("").is_configured(Zone.AREA_RECORD)
+    policy = decisions(section('area-record = "ask"'))
+    assert (policy.level(Zone.AREA_RECORD), policy.is_configured(Zone.AREA_RECORD)) == (Level.ASK, True)
+    for level in Level:  # no floor: [decisions] sets it to any level
+        assert decisions(section(f'area-record = "{level.value}"')).level(Zone.AREA_RECORD) is level
 
 
 def test_every_zone_has_a_rule_and_its_default_meets_its_floor() -> None:
