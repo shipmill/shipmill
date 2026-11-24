@@ -433,6 +433,46 @@ class Issue:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthoredIssue:
+    """An issue with who opened it: whether the account is a Bot, and its author_association
+    (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...), as the issues REST endpoint gives them"""
+
+    issue: Issue
+    bot: bool
+    association: str
+
+
+def authored_of(entries: Sequence[Any]) -> list[AuthoredIssue]:
+    """The issues of a REST issues listing, newest first; a pull request it lists is skipped,
+    and an entry without a readable number, title, body, author, or association stops it"""
+    found = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ReleaseError(f"GitHub listed {str(entry)[:300]}, not an issue")
+        if "pull_request" in entry:
+            continue
+        number, title, body = entry.get("number"), entry.get("title"), entry.get("body")
+        user, association = entry.get("user"), entry.get("author_association")
+        kind = user.get("type") if isinstance(user, dict) else None
+        closed = entry.get("closed_at")
+        if (
+            not isinstance(number, int)
+            or isinstance(number, bool)
+            or not isinstance(title, str)
+            or not (body is None or isinstance(body, str))
+            or not isinstance(kind, str)
+            or not isinstance(association, str)
+            or not (closed is None or isinstance(closed, str))
+        ):
+            raise ReleaseError(
+                f"GitHub listed an issue without a number, title, body, author, and association: {str(entry)[:300]}"
+            )
+        issue = Issue(number, title, body or "", None if closed is None else _time(closed))
+        found.append(AuthoredIssue(issue, kind == "Bot", association))
+    return sorted(found, key=lambda a: a.issue.number, reverse=True)
+
+
+@dataclass(frozen=True, slots=True)
 class PullRequest:
     number: int
     head: str  # the head branch's name
@@ -959,6 +999,12 @@ class GhCli:
 
     def labelled_issues(self, label: str) -> list[Issue]:
         return parse_labelled(self._gh(*labelled_command(label)))
+
+    def authored_issues(self, label: str) -> list[AuthoredIssue]:
+        """Every issue with the label, open and closed, with who opened it, across the listing's
+        pages, newest first (spec 083); a GET"""
+        where = f"repos/{{owner}}/{{repo}}/issues?labels={quote(label, safe='')}&state=all&per_page=100"
+        return authored_of(self._pages(where))
 
     def open_labelled_issues(self, label: str) -> list[Issue]:
         found = json.loads(
