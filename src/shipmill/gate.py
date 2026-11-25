@@ -85,7 +85,7 @@ from shipmill.plugin import (
 )
 from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import GATE_MAINTAINER, LoginReader, ResolvedRole, arguments
-from shipmill.sandbox import Sandbox, SandboxConfig, Where
+from shipmill.sandbox import Sandbox, SandboxConfig, Unconfined, Where, confinement, editable, widening
 from shipmill.sandbox import launch as sandbox_launch
 from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
@@ -2218,21 +2218,45 @@ def trusted_sandbox(git: Git, platform: str = sys.platform) -> SandboxConfig:
     return opened
 
 
+def sandbox_where(git: Git, repo: str, home: Path) -> Where:
+    """The host paths a sandboxed launch in git's checkout is built from: the checkout, its git
+    common dir as git names it (a linked worktree's differs from the checkout's .git), the main
+    working tree, and the state dir"""
+    common = Path(git.run("rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve()
+    checkout = git.root.resolve()
+    return Where(home, checkout, common, session_project(checkout, str(common)), common / "shipmill", repo)
+
+
+def sandbox_preflight(where: Where, declared: SandboxConfig, confines: Callable[[], Unconfined | None]) -> None:
+    """Before a sandboxed launch: a host that can't confine (S-087-17), then a settings file
+    that would widen the session's sandbox (S-087-13), fails the tick with its fix, before any
+    session is stopped or started"""
+    unconfined = confines()
+    if unconfined is not None:
+        raise unconfined.error()
+    widened = widening(where.checkout, where.home, editable(where, declared))
+    if widened is not None:
+        raise widened.error()
+
+
 def sandbox_for(
-    git: Git, repo: str, home: Path, declared: Callable[[Git], SandboxConfig] = trusted_sandbox
+    git: Git,
+    repo: str,
+    home: Path,
+    declared: Callable[[Git], SandboxConfig] = trusted_sandbox,
+    confines: Callable[[], Unconfined | None] = confinement,
 ) -> Sandboxer:
     """Spec 087: the sandbox of a headless launch in git's checkout, built at the launch from
-    the checkout, its git common dir as git names it (a linked worktree's differs from the
-    checkout's .git), the main working tree, the state dir, the App key the session's env
-    names, and declared's [agents.sandbox]"""
+    sandbox_where's paths, the App key the session's env names, and declared's
+    [agents.sandbox], once sandbox_preflight passes; confines asks whether the host can
+    confine at all"""
 
     def build(env: Mapping[str, str] | None) -> Sandbox:
-        common = Path(git.run("rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve()
-        checkout = git.root.resolve()
-        main = session_project(checkout, str(common))
-        where = Where(home, checkout, common, main, common / "shipmill", repo)
+        where = sandbox_where(git, repo, home)
+        found = declared(git)
+        sandbox_preflight(where, found, confines)
         key = None if env is None or not env.get(APP_KEY) else Path(env[APP_KEY])
-        return sandbox_launch(where, declared(git), key, STATE_FILES)
+        return sandbox_launch(where, found, key, STATE_FILES)
 
     return build
 

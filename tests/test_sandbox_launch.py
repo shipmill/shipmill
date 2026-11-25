@@ -96,7 +96,8 @@ NONE_DECLARED = SandboxConfig()
 
 
 def sandboxer(git: Git, home: Path, config: SandboxConfig = NONE_DECLARED) -> Sandboxer:
-    return sandbox_for(git, REPO, home, declared(config))
+    """The host confines, whatever it is: no test runs the real Linux probe (S-087-17)"""
+    return sandbox_for(git, REPO, home, declared(config), lambda: None)
 
 
 def tick(

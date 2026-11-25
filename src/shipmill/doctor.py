@@ -28,6 +28,7 @@ from shipmill.agents import (
     WriteAs,
     identity_choices,
 )
+from shipmill.agents import Mode as AgentsMode
 from shipmill.app import (
     OPTIONAL_PERMISSIONS,
     PRODUCT_PERMISSIONS,
@@ -69,7 +70,7 @@ from shipmill.downstream import (
     not_installed,
 )
 from shipmill.errors import ReleaseError
-from shipmill.gate import VERIFY, skills_dir, state_dir
+from shipmill.gate import VERIFY, sandbox_where, skills_dir, state_dir
 from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
@@ -85,6 +86,17 @@ from shipmill.product import check as check_product
 from shipmill.requires import FILE as CONFIG_FILE
 from shipmill.requires import Requires
 from shipmill.requires import check as check_requires
+from shipmill.sandbox import (
+    DEFAULT_DOMAINS,
+    WIDENING_FIX,
+    GrantKind,
+    SandboxConfig,
+    Tunnel,
+    Unconfined,
+    confinement,
+    editable,
+    widening,
+)
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
 from shipmill.verify import Result, Verified
@@ -258,6 +270,9 @@ def doctor(
     rules: Callable[[], RulesReader | None] | None = None,
     leaks: LeakProbe | None = None,
     identity: IdentityProbe | None = None,
+    sandboxed: bool = False,
+    platform: str = sys.platform,
+    confines: Callable[[], Unconfined | None] | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -287,7 +302,9 @@ def doctor(
     reads the leak check's private file, secrets, and scanner, only with [agents] (spec 081);
     None checks none. identity reads whether [agents] app_id's token reads repo for the
     identity row, which every repo gets (S-082-10); None, or a probe without the key, leaves
-    the App unchecked"""
+    the App unchecked. sandboxed says the gate runs with --sandbox (spec 087), for the sandbox
+    row headless mode gets; platform is the host's, as the gate reads the config on it, and
+    confines asks whether it can confine (S-087-17), None asking it of this host"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -297,7 +314,7 @@ def doctor(
     stale = checkout_check(Git(root))
     try:
         found = config_path(root)
-        policy, refused = _load(found)
+        policy, refused = _load(found, platform)
     except RolesError:  # S-036-2: a malformed [agents.roles] exits 2, as every reader of the config does
         raise
     except ReleaseError as exc:
@@ -332,6 +349,10 @@ def doctor(
             checks.append(auth_check(auth(None if uses is None else uses.token)))
         if policy.agents.verify:  # D-9: no list, no row and no read of the gate's state
             checks.extend(verify_checks(policy.agents.verify, state_dir(Git(root)) / VERIFY))
+        if policy.agents.mode is AgentsMode.HEADLESS:  # D-9: no sandbox row without headless mode
+            probe = (lambda: confinement(platform)) if confines is None else confines
+            user_home = Path.home() if home is None else home
+            checks.append(sandbox_check(root, repo, user_home, policy.agents.sandbox, sandboxed, probe))
     else:  # S-082-10, D-9: a release-only repo gets the row, as a PASS
         checks.append(identity_check(None, repo, identity))
     checks.extend(decisions_checks(policy, raw, github))
@@ -602,6 +623,74 @@ def veto_lanes_check(policy: Policy) -> Check | None:
     )
 
 
+SANDBOX_ROW = "sandbox"  # doctor's row for a headless gate's sandbox (spec 087)
+SANDBOX_OFF = "off: headless sessions run unconfined; pass --sandbox"
+
+
+def sandbox_check(
+    root: Path,
+    repo: str | None,
+    home: Path,
+    declared: SandboxConfig,
+    on: bool,
+    confines: Callable[[], Unconfined | None],
+) -> Check:
+    """S-087-18: with headless mode, one sandbox row. WARN while the gate runs without
+    --sandbox; FAIL with the tick's text and fix for a host that can't confine (S-087-17) or a
+    settings file that would widen the session's sandbox (S-087-13); else PASS with what
+    [agents.sandbox] opens, and what its grant table may"""
+    if not on:
+        return Check("WARN", SANDBOX_ROW, SANDBOX_OFF)
+    unconfined = confines()
+    if unconfined is not None:
+        return Check("FAIL", SANDBOX_ROW, f"{unconfined.message}; fix: {unconfined.fix}")
+    if repo is None:
+        return Check("WARN", SANDBOX_ROW, "can't check the settings files: the checkout's origin names no GitHub repo")
+    where = sandbox_where(Git(root), repo, home)
+    try:
+        widened = widening(where.checkout, home, editable(where, declared))
+    except ReleaseError as exc:
+        return Check("FAIL", SANDBOX_ROW, f"{exc}; fix: {exc.fix}")
+    if widened is not None:
+        return Check("FAIL", SANDBOX_ROW, f"{widened.message}; fix: {WIDENING_FIX}")
+    return Check("PASS", SANDBOX_ROW, sandbox_summary(declared))
+
+
+def sandbox_summary(declared: SandboxConfig) -> str:
+    """What a sandboxed session may reach beyond the strict sandbox, and what a grant may add"""
+    opened = [
+        f"{len(DEFAULT_DOMAINS)} default domains",
+        *(str(d) for d in declared.domains),
+        f"{len(declared.read)} read and {len(declared.write)} write exceptions",
+        f"{len(declared.tunnels)} tunnels",
+        f"local ports {'on' if declared.local_ports else 'off'}",
+    ]
+    return f"on: {', '.join(opened)}; grants: {grant_summary(declared.grant)}"
+
+
+def grant_summary(grant: SandboxConfig | None) -> str:
+    """Each kind [agents.sandbox.grant] declares, with its entries; none without the table"""
+    if grant is None:
+        return "none"
+
+    def tunnel(t: Tunnel) -> str:
+        return f"{t.ssh} {int(t.local)}:{t.remote}"
+
+    entries: dict[GrantKind, list[str]] = {
+        GrantKind.DOMAINS: [str(d) for d in grant.domains],
+        GrantKind.READ: [str(p) for p in grant.read],
+        GrantKind.WRITE: [str(p) for p in grant.write],
+        GrantKind.TUNNELS: [tunnel(t) for t in grant.tunnels],
+    }
+    kinds = []
+    for kind in GrantKind:
+        if kind is GrantKind.LOCAL_PORTS:
+            kinds += [kind.value] if grant.local_ports else []
+        elif entries[kind]:
+            kinds.append(f"{kind.value} ({', '.join(entries[kind])})")
+    return ", ".join(kinds) or "none"
+
+
 VERIFY_ROW = "verify command"  # doctor's row for each [agents] verify command (spec 064)
 
 
@@ -818,12 +907,12 @@ def _downstream_app(app_id: int, d: Downstream, installed: Installed) -> Check:
     )
 
 
-def _load(found: Path) -> tuple[Policy, ReleaseError | None]:
+def _load(found: Path, platform: str = sys.platform) -> tuple[Policy, ReleaseError | None]:
     """The policy, and the refusal of its [product] table when that table alone is what the
     policy can't parse: then the policy is read without it, so doctor reports the table as one
     FAIL row and runs its other checks (S-038-27). Any other refusal raises, as before"""
     try:
-        return Policy.load(found), None
+        return Policy.load(found, platform), None
     except RolesError:
         raise
     except ReleaseError as exc:
@@ -833,7 +922,7 @@ def _load(found: Path) -> tuple[Policy, ReleaseError | None]:
         if PRODUCT not in raw:
             raise
         try:
-            policy = Policy.parse({k: v for k, v in raw.items() if k != PRODUCT}, found.name)
+            policy = Policy.parse({k: v for k, v in raw.items() if k != PRODUCT}, found.name, platform)
         except ReleaseError:
             raise exc from None
         return policy, exc

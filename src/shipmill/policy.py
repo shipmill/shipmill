@@ -4,6 +4,7 @@ release rewrites and publishes"""
 
 import re
 import shlex
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -271,15 +272,16 @@ class Policy:
         return self._bump.minor_paths
 
     @classmethod
-    def load(cls, path: Path) -> Policy:
+    def load(cls, path: Path, platform: str = sys.platform) -> Policy:
         if not path.is_file():
             raise ReleaseError(f"no release policy at {path}")
-        policy = cls.parse(read(path), path.name)
+        policy = cls.parse(read(path), path.name, platform)
         catalogue.report(policy.refused)  # once per command, on stderr (S-052-5)
         return policy
 
     @classmethod
-    def parse(cls, raw: Mapping[str, Any], where: str) -> Policy:
+    def parse(cls, raw: Mapping[str, Any], where: str, platform: str = sys.platform) -> Policy:
+        """platform is the host's, which [agents.sandbox] local_ports and tunnels depend on (S-087-26)"""
         requires.check(raw)  # first: a config newer than this CLI says so, not "unknown keys" (spec 031)
         top = Table(raw, where)
         top.allow(
@@ -340,7 +342,7 @@ class Policy:
         autonomy_table = top.table("autonomy", optional=True)
         autonomy = AutonomyPolicy.parse(autonomy_table)
         autonomy.require_environments(declared.keys(), autonomy_table.where)
-        agents = AgentsConfig.parse(top.table("agents")) if "agents" in raw else None
+        agents = AgentsConfig.parse(top.table("agents"), platform) if "agents" in raw else None
         if agents is not None:  # spec 040's legacy reading; a config without [agents] has no prompt
             agents = agents.with_autonomy(autonomy)
             autonomy = agents.autonomy
