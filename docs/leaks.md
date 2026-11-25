@@ -19,6 +19,7 @@ outside every repo, next to the App's key:
 # ~/.config/shipmill/private.toml
 terms = ["Acme Rocket", "acmerocket", "rocket.example"]
 secret_files = ["~/work/acme-rocket/.env"]
+repos = ["acme/rocket", "acme-labs/*"]
 ```
 
 - `terms`: the private names, a list of strings of at least 3 characters each. A term
@@ -26,8 +27,14 @@ secret_files = ["~/work/acme-rocket/.env"]
   of whitespace matches its space) but not `AcmeRocketry`. List each spelling you use
 - `secret_files`: dotenv files (`~` is your home) whose values are secrets, read beside the
   checkout's own `.env` files
+- `repos`: your private repos on GitHub, each `owner/name`, or `owner/*` for every repo of
+  an owner, matched in any case as GitHub matches them. A write naming one is refused
+  whatever any token reads (`private-repo`, below), which matters most in a gate session:
+  it writes with the App's installation token, which reads another installation's private
+  repo as missing (D-107). An entry that is neither form is named by its place, never its
+  text
 
-Both keys are optional, and an empty file is a valid one. In a checkout whose
+All three keys are optional, and an empty file is a valid one. In a checkout whose
 `.github/shipmill.toml` has `[agents]`, the file must exist: while it is missing, every
 `shipmill gh` write to a public repo is refused with exit 2, so a new machine running agents
 doesn't leak by default (D-102):
@@ -41,7 +48,8 @@ private names under terms, as docs/leaks.md describes
 
 In a checkout without `[agents]`, a missing file means no term is checked, and the secrets
 come from the checkout alone. A file shipmill can't read as this (an unknown key, a wrong type, a term
-under 3 characters, a file that isn't TOML, or a `secret_files` path it can't read) stops
+under 3 characters, a `repos` entry that isn't `owner/name` or `owner/*`, a file that isn't
+TOML, or a `secret_files` path it can't read) stops
 every check that reads it: each agent write and push is refused, with exit 2 naming the file
 and the problem, until you fix it. An unknown key is named by its line, never its text, since
 a misplaced term can be one.
@@ -79,9 +87,12 @@ can't switch the check off for itself.
   comment or a repo's `.gitleaks.toml` lets nothing through
 - **`private-repo`.** Each `owner/name` reference in the text, a `github.com/<owner>/<name>`
   URL or a bare pair standing alone (not a path, a branch such as `fix/123-x`, an npm scope,
-  or another host's URL), is read once with the token the write uses; one GitHub reports
-  `private` or `internal` is a finding. One that token can't read counts as no private repo,
-  and the write's own repo isn't read twice. This needs no private file
+  or another host's URL), is a finding when the private file's `repos` lists it, without
+  being read. Any other is read once with the token the write uses, and one GitHub reports
+  `private` or `internal` is a finding too. One neither listed nor readable by that token
+  counts as no private repo, and the write's own repo isn't read twice. The token's read
+  needs no private file; the App's installation token reads no other installation's private
+  repo, so list yours under `repos`
 - **`high-entropy`.** A run of 32 or more characters that looks random (not a commit SHA or
   a checksum, and not in a lock file) prints a `shipmill leaks: warning:` line on stderr and
   changes nothing else
@@ -139,6 +150,7 @@ prints a `leaks` block:
 
 ```
 PASS leaks: terms on: 3 terms from ~/.config/shipmill/private.toml
+PASS leaks: repos on: 2 repos from ~/.config/shipmill/private.toml
 PASS leaks: secrets: values by file: .env 2, ~/work/acme-rocket/.env 4
 PASS leaks: scanner: built-in formats and gitleaks 8.21.2
 ```
@@ -146,6 +158,8 @@ PASS leaks: scanner: built-in formats and gitleaks 8.21.2
 - `terms` gives how many terms the file lists, never the terms. With none it reads `off`,
   a WARN when the repo is public or its visibility can't be read; with no file it also names
   the `touch` step, since `shipmill gh` refuses public writes from the checkout until it exists
+- `repos` gives how many repos the file lists, never one. A file that lists none is a WARN
+  (D-107); a missing file adds no `repos` line, since the `terms` line already names the step
 - `secrets` names each secret file read and how many values it gave, never a name or a
   value
 - `scanner` names gitleaks' version, or says it isn't on PATH and the built-in formats

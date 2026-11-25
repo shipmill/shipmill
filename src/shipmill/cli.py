@@ -3134,7 +3134,7 @@ class _Vet:
         terms = self.private.terms if destination.public else ()
         findings = placed(scan(texts, terms, known, Gitleaks.find(self.environ)))
         if named and destination.public:
-            findings.extend(private_repos(texts, named, self.visibility))
+            findings.extend(private_repos(texts, named, self.visibility, self.private.repos))
         if findings:
             raise refusal(command, destination, findings, fix)
         for line in warning_lines(placed(high_entropy(texts))):

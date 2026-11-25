@@ -1278,6 +1278,8 @@ def leaks_checks(root: Path, probe: LeakProbe) -> list[Check]:
         checks.append(Check("FAIL", LEAKS_ROW, detail))
     else:
         checks.append(_terms_check(private, probe))
+        if private.present:  # a missing file's terms row already names the touch step
+            checks.append(_repos_check(private))
         checks.append(_secrets_check(root, private))
     checks.append(_scanner_check(probe))
     return checks
@@ -1305,6 +1307,20 @@ def _terms_check(private: Private, probe: LeakProbe) -> Check:
     detail = (
         f"{off}, and {seen}, so a private name in an agent's write goes out unchecked: list your private"
         f" names under terms in {_SHOWN_PRIVATE}, as docs/leaks.md describes"
+    )
+    return Check("WARN", LEAKS_ROW, detail)
+
+
+def _repos_check(private: Private) -> Check:
+    """S-081-20, D-107: the repos line: how many the private file lists, never one, or a WARN
+    when it lists none, since the App's token reads no other installation's private repo"""
+    count = len(private.repos)
+    if count:
+        return Check("PASS", LEAKS_ROW, f"repos on: {count} repo{'' if count == 1 else 's'} from {_SHOWN_PRIVATE}")
+    detail = (
+        f"repos off: {_SHOWN_PRIVATE} lists no repos, so an agent's write to a public repo is refused for"
+        " naming a private repo only when the token at hand can read it, which the App's token can't for"
+        " another installation's: list your private repos under repos, as docs/leaks.md describes"
     )
     return Check("WARN", LEAKS_ROW, detail)
 
