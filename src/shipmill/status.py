@@ -22,7 +22,7 @@ from typing import Any
 
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import AgentsConfig, Mode, app_id_of
+from shipmill.agents import AgentsConfig, Filler, Mode, app_id_of
 from shipmill.app import Identity, default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
 from shipmill.catch_up import Main as Main  # the gate's catch-up reads the branch the same way (#886)
@@ -380,6 +380,8 @@ class Facts:
     autonomy: AutonomyPolicy = field(default_factory=AutonomyPolicy)
     environments: tuple[EnvironmentName, ...] = ()
     refused: tuple[Refusal, ...] = ()  # spec 052: the refused keys the checkout's config sets
+    # S-094-4: spec 036's resolved maintainer role, whose assigned items wait on them (#1641)
+    maintainer: tuple[Filler, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

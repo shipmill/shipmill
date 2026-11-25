@@ -3732,6 +3732,7 @@ def _status(
         autonomy=autonomy,
         environments=environments,
         refused=refused.in_checkout(top),  # S-052-9
+        maintainer=roles.maintainer(resolved).fillers,
     )
     sys.stdout.write(status.report(facts).text(slug))
     return code  # S-009-14: spec 008's code, whatever the verdict
@@ -3815,6 +3816,7 @@ def _status_item(
             upgrades=upgrades.result(),
             autonomy=autonomy,
             environments=environments,
+            maintainer=roles.maintainer(resolved).fillers,  # S-094-4
         )
 
         def read_detail(number: int) -> item_status.PullDetail:
@@ -3941,6 +3943,7 @@ def _read_open(
             upgrades=upgrades.result(),
             autonomy=autonomy,
             environments=environments,
+            maintainer=roles.maintainer(resolved).fillers,  # S-094-4
         )
         listed = details.result()
         # S-094-10: no read per item; a pull request opened between the two lists has no checks,
