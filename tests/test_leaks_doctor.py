@@ -101,6 +101,36 @@ def test_s081_15_terms_on_reads_no_visibility(agents_repo: Repo, tmp_path: Path)
     assert block(agents_repo, LeakProbe(home, lambda: None, unread))[0].status == "PASS"
 
 
+@pytest.mark.parametrize("visibility", [Visibility.PUBLIC, Visibility.PRIVATE, None])
+def test_s081_20_a_file_that_lists_no_repos_warns(
+    agents_repo: Repo, tmp_path: Path, visibility: Visibility | None
+) -> None:
+    """D-107: the App's token reads no other installation's private repo, so only the list
+    catches one named in an agent's write"""
+    home = tmp_path / "home"
+    private(home, 'terms = ["Acme Rocket"]\n')
+    (repos_row,) = [c for c in block(agents_repo, probe(home, visibility)) if c.detail.startswith("repos")]
+    assert repos_row.status == "WARN"
+    assert repos_row.detail.startswith("repos off: ~/.config/shipmill/private.toml lists no repos")
+    assert "docs/leaks.md" in repos_row.detail
+
+
+def test_s081_20_listed_repos_print_their_count_and_never_a_name(agents_repo: Repo, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    private(home, 'repos = ["acme/secret", "acme-labs/*"]\n')
+    found = block(agents_repo, probe(home))
+    (repos_row,) = [c for c in found if c.detail.startswith("repos")]
+    assert repos_row == Check("PASS", "leaks", "repos on: 2 repos from ~/.config/shipmill/private.toml")
+    text = " ".join(c.detail for c in found).lower()
+    assert "acme/secret" not in text and "acme-labs" not in text
+
+
+def test_s081_20_a_missing_file_adds_no_repos_row(agents_repo: Repo, tmp_path: Path) -> None:
+    """The terms row already names the touch step for a missing file"""
+    found = block(agents_repo, probe(tmp_path / "home"))
+    assert not [c for c in found if c.detail.startswith("repos")]
+
+
 def test_s081_15_secrets_name_each_file_and_its_count_never_a_name_or_value(agents_repo: Repo, tmp_path: Path) -> None:
     home = tmp_path / "home"
     exported = tmp_path / "acme-rocket.env"

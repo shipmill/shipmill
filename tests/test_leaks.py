@@ -24,6 +24,7 @@ from shipmill.leaks import (
     Detector,
     Gitleaks,
     LeakRefused,
+    Private,
     Secret,
     Term,
     Text,
@@ -481,7 +482,7 @@ def test_s081_4_an_unknown_key_names_its_line_never_the_key(tmp_path: Path, host
             gh_capture=Reads("private"),
         )
     said = str(caught.value)
-    assert said == f"{path} has an unknown key at line {line}; it takes only terms and secret_files (spec 081)"
+    assert said == f"{path} has an unknown key at line {line}; it takes only terms, secret_files, and repos (spec 081)"
     assert caught.value.__cause__ is None and caught.value.__context__ is None  # no parser text rides along
 
 
@@ -1335,3 +1336,130 @@ def test_s081_19_a_checkout_without_agents_reads_no_file_as_no_terms(tmp_path: P
     root = checkout(tmp_path, None)
     (host.home / PRIVATE_FILE).unlink()
     gh(root, ["--as-host", "issue", "comment", "250", "--body", CLEAN], host)
+
+
+# -- S-081-20: the private file's repos, which the App's token can't read (D-107) -----------------
+
+
+@dataclass
+class AppSees(Reads):
+    """Reads as the App's installation token does: the write's own repo reads public, and every
+    other repo, a private one of another installation included, reads as a 404"""
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+        code, out = super().__call__(argv, env)
+        if "--jq" not in argv:
+            return code, out
+        return (0, "public\n") if argv[2].removeprefix("repos/").lower() == REPO.lower() else (1, "HTTP 404")
+
+
+@pytest.mark.parametrize(
+    ("listed", "text"),
+    [
+        (HIDDEN, f"see {HIDDEN} for the fix"),
+        (HIDDEN, f"see https://github.com/{HIDDEN}/issues/2"),
+        (HIDDEN, f"cloned from git@github.com:{HIDDEN}.git"),
+        ("ACME/Secret", f"see {HIDDEN}"),
+        (HIDDEN, "see Acme/SECRET"),
+        ("acme/*", f"see {HIDDEN}"),
+        ("Acme/*", "see https://github.com/acme/launchpad"),
+    ],
+)
+def test_s081_20_a_listed_repo_the_token_cant_read_is_refused(
+    tmp_path: Path, host: Host, listed: str, text: str
+) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    private(host, f'repos = ["{listed}"]\n')
+    said = refused(root, ["issue", "comment", "250", "--body", text], host, AppSees())
+    assert said.startswith(f"shipmill gh: refused, nothing was sent ({REPO} is public)\n")
+    assert "private-repo: the body" in said
+    assert said.endswith(FIX)
+
+
+def test_s081_20_as_the_app_too(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    private(host, f'repos = ["{HIDDEN}"]\n')
+    key = str(key_file(tmp_path))
+    said = refused(root, ["--app-key", key, "issue", "comment", "250", "--body", f"see {HIDDEN}"], host, AppSees())
+    assert f"private-repo: the body, line 1, names the private repo {HIDDEN}" in said
+
+
+def test_s081_20_a_listed_repo_is_refused_without_reading_it(tmp_path: Path, host: Host) -> None:
+    """Listed is private whatever a token reads: a listed repo another token reads public is
+    still refused, and only the write's own repo is read"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    private(host, f'repos = ["{PUBLIC}"]\n')
+    capture = Named()
+    said = refused(root, ["issue", "comment", "250", "--body", f"see {PUBLIC} and {PUBLIC}"], host, capture)
+    assert said.count("private-repo: ") == 2
+    assert capture.reads == [REPO]
+
+
+def test_s081_20_an_unlisted_repo_the_token_cant_read_passes(tmp_path: Path, host: Host) -> None:
+    """An owner/* covers that owner's repos only, and a repo neither listed nor read private
+    is no finding"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    private(host, 'repos = ["acme/*", "acme-labs/rocket"]\n')
+    capture = AppSees()
+    gh(root, ["issue", "comment", "250", "--body", "see acme-labs/other and widgetco/acme"], host, capture)
+    assert capture.reads == [REPO, "acme-labs/other", "widgetco/acme"]
+
+
+def test_s081_20_the_token_still_adds_what_it_reads_private(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    private(host, 'repos = ["acme/launchpad"]\n')
+    said = refused(root, ["issue", "comment", "250", "--body", f"see {HIDDEN} and acme/launchpad"], host, Named())
+    assert f"names the private repo {HIDDEN}" in said
+    assert "names the private repo acme/launchpad" in said
+
+
+def test_s081_20_a_write_to_a_private_repo_checks_no_listed_repo(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    private(host, f'repos = ["{HIDDEN}"]\n')
+    gh(root, ["issue", "comment", "250", "--body", f"see {HIDDEN}"], host, Named(destination="private"))
+
+
+def test_s081_20_an_empty_file_and_one_without_repos_stay_valid(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    blank(home)
+    assert Private.load(home).repos == ()
+    (home / PRIVATE_FILE).write_text('terms = ["Acme Rocket"]\nrepos = []\n', encoding="utf-8")
+    assert Private.load(home).repos == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ('repos = "acme/secret"\n', "repos must be a list of strings"),
+        ("repos = [1]\n", "repos must be a list of strings"),
+        ('repos = ["acme/secret", ["acme/rocket"]]\n', "repos must be a list of strings"),
+        ('repos = ["acme"]\n', "repos holds an entry that isn't owner/name or owner/* (entry 1)"),
+        (
+            'repos = ["acme/secret", "acme/secret/x"]\n',
+            "repos holds an entry that isn't owner/name or owner/* (entry 2)",
+        ),
+        ('repos = ["*/secret"]\n', "repos holds an entry that isn't owner/name or owner/* (entry 1)"),
+        ('repos = ["acme/"]\n', "repos holds an entry that isn't owner/name or owner/* (entry 1)"),
+        ('repos = [" acme/secret"]\n', "repos holds an entry that isn't owner/name or owner/* (entry 1)"),
+        ('repos = ["https://github.com/acme/secret"]\n', "repos holds an entry that isn't owner/name or owner/*"),
+        ('repos = ["acme/se*"]\n', "repos holds an entry that isn't owner/name or owner/* (entry 1)"),
+    ],
+)
+def test_s081_20_a_malformed_repos_entry_fails_naming_the_file_and_key_never_the_entry(
+    tmp_path: Path, text: str, said: str
+) -> None:
+    home = tmp_path / "home"
+    path = home / PRIVATE_FILE
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ReleaseError) as caught:
+        Private.load(home)
+    message = str(caught.value)
+    assert message.startswith(f"{path}'s {said}")
+    assert "secret" not in message.replace(str(path), "").replace("secret_files", "")
+
+
+def test_s081_20_a_malformed_repos_entry_refuses_every_write(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    private(host, 'repos = ["acme"]\n')
+    failed(root, ["issue", "comment", "250", "--body", CLEAN], host, "repos holds an entry")
