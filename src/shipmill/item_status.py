@@ -71,6 +71,27 @@ class Who(StrEnum):
         ]
 
 
+class Holder(StrEnum):
+    """Who holds an open item, one of the summary's lines (spec 091, finer in spec 094)"""
+
+    MAINTAINER = "maintainer"
+    AGENT = "agent"
+    ATTENTION = "attention"
+    PEOPLE = "people"
+    ELSEWHERE = "elsewhere"
+    POSTPONED = "postponed"
+    NOBODY = "nobody"
+
+
+# S-094-4: a condition's holder from its who, unless the condition names another
+WHO_HOLDER = {
+    Who.MAINTAINER: Holder.MAINTAINER,
+    Who.AGENT: Holder.AGENT,
+    Who.PERSON: Holder.PEOPLE,
+    Who.EVENT: Holder.NOBODY,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Ref:
     """The item --item names: its number, and its kind when a URL gave one"""
@@ -136,9 +157,17 @@ class Condition:
     who: Who
     clears: str
     held: bool = False  # spec 091: the gate's record holds it (GATE_RETRY, GATE_IDLE, GATE_PAUSED)
+    where: Holder | None = None  # S-094-4: a holder other than its who's
+
+    @property
+    def holder(self) -> Holder:
+        """S-094-4: attention when the gate's record holds it, else where, else its who's"""
+        if self.held:
+            return Holder.ATTENTION
+        return self.where if self.where is not None else WHO_HOLDER[self.who]
 
     def record(self) -> dict[str, str]:
-        return {"reason": self.reason, "who": self.who.value, "clears": self.clears}
+        return {"reason": self.reason, "who": self.who.value, "clears": self.clears, "holder": self.holder.value}
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +219,9 @@ VERDICT_WAITS: dict[str, tuple[str, Who, str]] = {
     "duplicate": ("is a duplicate and waits to be closed", Who.MAINTAINER, "close it"),
     "upstream": ("waits on the repo that owns the fault", Who.EVENT, "the upstream report closing"),
 }
+# S-094-4: the verdicts whose holder is not their who's
+VERDICT_HOLDER = {"postponed": Holder.POSTPONED, "upstream": Holder.ELSEWHERE}
+CHILDREN = "children "  # triage_state.py's note of a parent starts with its children's progress
 
 
 def not_open(ref: Ref, repo: str) -> ReleaseError:
@@ -353,8 +385,14 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
             Condition("waits on the answer to its needs-decision question", Who.MAINTAINER, "answer the question on it")
         ]
     if state == "BLOCKED":
+        own = Holder.POSTPONED if note.startswith(CHILDREN) else None  # S-094-4: a plan moving through its children
         found = [
-            Condition(f"waits on {w['ref']} ({w['state'].lower()})", Who.EVENT, f"{w['ref']} closing or merging")
+            Condition(
+                f"waits on {w['ref']} ({w['state'].lower()})",
+                Who.EVENT,
+                f"{w['ref']} closing or merging",
+                where=own if w["ref"].rpartition("#")[0].casefold() == facts.repo.casefold() else Holder.ELSEWHERE,
+            )
             for w in WAIT.finditer(note)
             if w["state"].lower() not in ("closed", "merged", "not_planned")
         ]
@@ -365,6 +403,7 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                     f"the veto window of {window['pr']}'s approval is open",
                     Who.EVENT,
                     f"the window passing at {window['until']}",
+                    where=own,
                 )
             )
         if note == "labelled blocked":
@@ -373,13 +412,14 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                     "labelled blocked",
                     Who.MAINTAINER,
                     f"gh issue edit {issue.number} -R {facts.repo} --remove-label blocked once it can go on",
+                    where=Holder.ELSEWHERE,  # S-094-4: it waits on an outside event, which the label marks
                 )
             )
-        return found or [Condition("blocked", Who.EVENT, "the items it waits on closing or merging")]
+        return found or [Condition("blocked", Who.EVENT, "the items it waits on closing or merging", where=own)]
     if state == "POSTPONED":
         paths = note.removeprefix("waits on ") if note.startswith("waits on ") else None
         when = "a stable release that changes " + paths if paths else "the next stable release, when triage revisits it"
-        return [Condition("postponed", Who.EVENT, when)]
+        return [Condition("postponed", Who.EVENT, when, where=Holder.POSTPONED)]
     if state == "WITH_PERSON":
         people = " ".join([*(f"@{p}" for p in issue.assignees), *issue.teams])
         return [Condition(f"a person's item: waits on {people}", Who.PERSON, "its assignees do the step and close it")]
@@ -394,7 +434,14 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
             for n in opened
         ]
     if state == "UPSTREAM":
-        return [Condition("an upstream report: waits on the repo that owns the fault", Who.EVENT, "that repo's fix")]
+        return [
+            Condition(
+                "an upstream report: waits on the repo that owns the fault",
+                Who.EVENT,
+                "that repo's fix",
+                where=Holder.ELSEWHERE,
+            )
+        ]
     if state == "UPSTREAM_UNOWNED":  # #1487: nobody linked it to an issue in another repo or took it
         return [
             Condition(
@@ -411,7 +458,9 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                 )
             ]
         reason, who, clears = VERDICT_WAITS[issue.verdict]
-        return [Condition(f"triaged as {issue.verdict}: {reason}", who, clears)]
+        return [
+            Condition(f"triaged as {issue.verdict}: {reason}", who, clears, where=VERDICT_HOLDER.get(issue.verdict))
+        ]
     return []
 
 

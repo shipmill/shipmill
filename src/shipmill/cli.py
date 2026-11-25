@@ -41,7 +41,9 @@
                   a GitHub URL) says why one open issue or pull request is not closed: its
                   bucket and each condition that keeps it open, with who clears it (spec 088);
                   --summary says in a few lines whether the gate works and who holds the open
-                  work: you, the agent, needs attention, or nobody (spec 091)
+                  work: you, the agent, needs attention, people, elsewhere, postponed, or nobody
+                  (spec 091); its --json gives each open item's holder, why, and what clears it,
+                  and --summary --host does so for every gate job on this host (spec 094)
   factory         read-only: this host's machinery for the repo, one line per check (gate,
                   sessions, github app, shipmill, checkout, worktrees), each run on its own;
                   --json for one JSON object (spec 044)
@@ -797,8 +799,13 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "say in a few lines whether the gate works and who holds the open work (spec 091);"
-            " with --json, one JSON object"
+            " with --json, one JSON object with a record per open item (spec 094)"
         ),
+    )
+    p.add_argument(
+        "--host",
+        action="store_true",
+        help="with --summary, summarize every gate job's repo on this host, each from its checkout (spec 094)",
     )
 
     p = sub.add_parser("factory", help="print this host's machinery for the repo, one line per check (spec 044)")
@@ -1418,7 +1425,7 @@ def main(
     if args.command == "status":
         host = login or (lambda: host_login(root))
         hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
-        return _status(root, args, state or run_state, hub_api, hub_signer, host, gate_maintainer=maintainer)
+        return _status(root, args, state or run_state, hub_api, hub_signer, host, home, gate_maintainer=maintainer)
     if args.command == "factory":
         hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
         return _factory(root, args, state or run_state, hub_api, hub_signer, github, sessions, user_home)
@@ -3586,6 +3593,30 @@ def _status(
     (gate_maintainer) when non-empty, else the host's login (login, #1314); a malformed
     [agents.roles], a malformed gate_maintainer, or an unreadable login needed for it exits 2
     before any read"""
+    if args.host:  # spec 094: every gate job on this host, before the checkout's own reads
+        if not args.summary or args.slug is not None:
+            raise ReleaseError("--host reads every gate job on this host; use --summary --host [--json], with no repo")
+
+        def any_bot_login(app_id: int, key: Path) -> str | None:
+            try:
+                return app_login(signer, api)(app_id, key)
+            except ReleaseError as exc:
+                print(
+                    f"shipmill: the App's bot login is unknown, so its questions read unanswered: {exc}",
+                    file=sys.stderr,
+                )
+                return None
+
+        return _status_fleet(
+            args.json,
+            run,
+            login,
+            gate_maintainer,
+            any_bot_login,
+            home if home is not None else Path.home(),
+            platform,
+            now if now is not None else dt.datetime.now(dt.UTC),
+        )
     git = Git(root)
     if not git.ok("rev-parse", "--show-toplevel"):  # S-008-9: first, before any other git call
         raise ReleaseError(f"{root} is not a git checkout; run status in a checkout of the repo, or pass --repo PATH")
@@ -3786,9 +3817,14 @@ def _status_item(
         holds, chain_error = walked.result()
         reach = item_links.Reach(own.result(), holds, chain_error)
         why = item_status.explain(facts, ref, read_detail, window, reach)
+        # S-094-8: the record the summary gives the item, built by the same code
+        record = status_summary.items(facts, read_detail, window, [ref.number])[ref.number] if as_json else None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    sys.stdout.write(json.dumps(why.record()) + "\n" if as_json else why.text())
+    if record is None:
+        sys.stdout.write(why.text())
+    else:  # S-094-9: the schema first
+        sys.stdout.write(json.dumps({"schema": status_summary.SCHEMA, **why.record(), **record.placing()}) + "\n")
     return 0
 
 
@@ -3805,6 +3841,24 @@ def _status_summary(
     when: dt.datetime,
     bot_login: Callable[[int, Path], str | None],
 ) -> int:
+    """Spec 091: the summary of the checkout's repo, as text or one JSON object"""
+    summary = _read_summary(top, slug, run, resolved, autonomy, environments, home, platform, when, bot_login)
+    sys.stdout.write(json.dumps(summary.record()) + "\n" if as_json else summary.text(when))
+    return 0
+
+
+def _read_summary(
+    top: Path,
+    slug: str,
+    run: StateRunner,
+    resolved: tuple[roles.ResolvedRole, ...],
+    autonomy: AutonomyPolicy,
+    environments: tuple[EnvironmentName, ...],
+    home: Path,
+    platform: str,
+    when: dt.datetime,
+    bot_login: Callable[[int, Path], str | None],
+) -> status_summary.Summary:
     """Spec 091: the readings --item makes, for every open item at once, beside each other: the
     bot's login, the open pull requests and each one's checks and review, the upgrades, the
     landing branch, triage_state.py's states, watch_state.py's rows, and the default branch's
@@ -3825,8 +3879,7 @@ def _status_summary(
         proc = run(watch_command(slug, top, read, json=True, host=False))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
         if state_failed(proc):
-            print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
-            return 2
+            raise ReleaseError(f"watch_state.py failed (exit {proc.returncode})")
         git = Git(top)
         main = status.read_main(git, branch.result())  # after watch_state.py's fetch
         facts = status.Facts(
@@ -3846,13 +3899,50 @@ def _status_summary(
             environments=environments,
         )
         window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
-        found = status_summary.split(facts, lambda n: details[n].result(), window)
+        found = status_summary.items(facts, lambda n: details[n].result(), window)
         state = status_summary.read_gate_state(state_dir(git), gate.agents is not None, landed.result())
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    summary = status_summary.summarize(facts, state, found)
-    sys.stdout.write(json.dumps(summary.record()) + "\n" if as_json else summary.text(when))
-    return 0
+    return status_summary.summarize(facts, state, found)
+
+
+def _status_fleet(
+    as_json: bool,
+    run: StateRunner,
+    login: LoginReader,
+    gate_maintainer: str,
+    bot_login: Callable[[int, Path], str | None],
+    home: Path,
+    platform: str,
+    when: dt.datetime,
+) -> int:
+    """Spec 094: the summary of every gate job's repo on this host, in plist order, each read
+    from its job's WorkingDirectory, the gate's checkout; a repo whose summary fails is its own
+    entry's error and the others still print (D-55, S-094-11). Exit 2 when one failed"""
+    entries: list[dict[str, object]] = []
+    texts: list[str] = []
+    for repo in gate_repos(home):
+        try:
+            job = read_job(repo, home)
+            checkout = None if job is None else job.get("WorkingDirectory")
+            if not isinstance(checkout, str):
+                raise ReleaseError(f"the launchd job for {repo} has no WorkingDirectory")
+            top = Path(checkout)
+            check_checkout(Git(top), repo)
+            resolved = roles.resolve(roles.configured(top), login, gate_maintainer)
+            autonomy, environments = status.read_autonomy(top)
+            summary = _read_summary(top, repo, run, resolved, autonomy, environments, home, platform, when, bot_login)
+        except status.CHECK_FAILURES as exc:
+            entries.append({"schema": status_summary.SCHEMA, "repo": repo, "error": status.first_line(exc)})
+            texts.append(f"{repo}: unread: {status.first_line(exc)}\n")
+            continue
+        entries.append(summary.record())
+        texts.append(summary.text(when))
+    if as_json:
+        sys.stdout.write(json.dumps({"schema": status_summary.SCHEMA, "repos": entries}) + "\n")
+    else:
+        sys.stdout.write("\n".join(texts) if texts else "no gate job on this host\n")
+    return 2 if any("error" in e for e in entries) else 0
 
 
 def _with_tick(gate: status.Gate, git: Git) -> status.Gate:

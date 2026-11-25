@@ -13,9 +13,9 @@ from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.gate import LAST_RESULT, RECORD, TICK, LastResult, Launch, Running, TickRecord, save_launch
 from shipmill.gitrepo import Git
-from shipmill.item_status import Condition, Who
+from shipmill.item_status import Condition, Holder, Who
 from shipmill.status import Facts, Issue, Pull, Row
-from shipmill.status_summary import GateState, Holder, Split, linked, own_holder, read_gate_state, resolve, split
+from shipmill.status_summary import GateState, Split, linked, own_holder, read_gate_state, resolve, split
 from shipmill.walk import Landed
 from tests.test_status_item import NONE, WRITES, Fake
 from tests.test_status_picture import REPO, facts, gate, host, repo_with_release
@@ -60,7 +60,8 @@ def run_summary(root: Path, capsys: pytest.CaptureFixture[str], *args: str) -> t
     return code, capsys.readouterr().out, fake
 
 
-def test_s091_1_summary_prints_totals_gate_and_the_four_lines_in_order(
+# proves: S-094-7
+def test_s091_1_s094_7_summary_prints_totals_gate_and_the_lines_in_order(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = repo_with_release(tmp_path / "repo")
@@ -73,6 +74,9 @@ def test_s091_1_summary_prints_totals_gate_and_the_four_lines_in_order(
         "waits on you",
         "agent takes it",
         "needs attention",
+        "waits on people",
+        "waits elsewhere",
+        "postponed",
         "waits on nobody",
     ]
     assert lines[2] == "  waits on you     1 issue, 1 pull request"  # an opportunity; no [agents] for #9
@@ -162,7 +166,7 @@ def test_s091_4_every_open_item_counts_on_exactly_one_line() -> None:
     assert [line_of(got, n) for n in (1, 2, 3, 4)] == [
         Holder.MAINTAINER,
         Holder.AGENT,
-        Holder.NOBODY,
+        Holder.POSTPONED,  # S-094-4: no longer nobody
         Holder.MAINTAINER,
     ]
 
@@ -191,16 +195,17 @@ def test_s091_5_held_conditions_win_over_every_who() -> None:
     assert own_holder([Condition("m", Who.MAINTAINER, "c"), held]) is Holder.ATTENTION
 
 
+# proves: S-094-5
 @pytest.mark.parametrize(
     ("whos", "holder"),
     [
         ((Who.EVENT, Who.AGENT, Who.MAINTAINER), Holder.MAINTAINER),
         ((Who.EVENT, Who.AGENT), Holder.AGENT),
-        ((Who.EVENT, Who.PERSON), Holder.NOBODY),
-        ((Who.PERSON,), Holder.NOBODY),
+        ((Who.EVENT, Who.PERSON), Holder.PEOPLE),  # S-094-5: a person before an event
+        ((Who.EVENT,), Holder.NOBODY),
     ],
 )
-def test_s091_6_maintainer_then_agent_then_nobody(whos: tuple[Who, ...], holder: Holder) -> None:
+def test_s091_6_s094_5_maintainer_then_agent_then_people_then_nobody(whos: tuple[Who, ...], holder: Holder) -> None:
     assert own_holder([Condition(str(i), w, "c") for i, w in enumerate(whos)]) is holder
 
 
@@ -231,12 +236,14 @@ def test_s091_7_the_first_line_among_its_own_and_its_links_and_cycles_end() -> N
     assert looped[3] is Holder.ATTENTION
 
 
+# proves: S-094-7, S-094-9
 def test_s091_8_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = configured(repo_with_release(tmp_path / "repo"))
     code, out, _ = run_summary(root, capsys, "--json")
     assert code == 0 and out.count("\n") == 1
     found = json.loads(out)
-    assert set(found) == {"repo", "gate", "totals", "split"}
+    assert set(found) == {"schema", "repo", "gate", "totals", "split", "items"}
+    assert next(iter(found)) == "schema" and found["schema"] == 1  # S-094-9: its first key
     assert found["repo"] == REPO
     assert found["totals"] == {"issues": 1, "pulls": 1}
     assert found["gate"] == {
@@ -249,10 +256,15 @@ def test_s091_8_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixture
         "result_error": None,
         "landed": {"number": 8, "at": "2026-11-25T11:00:00+00:00"},
     }
-    assert set(found["split"]) == {"maintainer", "agent", "attention", "nobody"}
+    assert set(found["split"]) == {"maintainer", "agent", "attention", "people", "elsewhere", "postponed", "nobody"}
     assert found["split"]["maintainer"] == {"issues": [4], "pulls": []}
     assert found["split"]["agent"] == {"issues": [], "pulls": [9]}  # its check failed: a session fixes it
-    assert not any(found["split"][h] != {"issues": [], "pulls": []} for h in ("attention", "nobody"))
+    empty = ("attention", "people", "elsewhere", "postponed", "nobody")
+    assert not any(found["split"][h] != {"issues": [], "pulls": []} for h in empty)
+    assert [(i["number"], i["kind"], i["holder"]) for i in found["items"]] == [
+        (4, "issue", "maintainer"),
+        (9, "pull", "agent"),
+    ]
     unconfigured = repo_with_release(tmp_path / "bare")
     _, bare, _ = run_summary(unconfigured, capsys, "--json")
     assert json.loads(bare)["gate"] == {"configured": False}

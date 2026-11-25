@@ -1,6 +1,6 @@
 # S-094: Give each open item's holder, why, and what clears it in one JSON, per repo and per host
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -166,4 +166,14 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+- S-094-1: `shipmill status --summary --json` on shipmill/shipmill gave 84 records for 78 issues and 6 pull requests, ascending, each with the nine keys and on its split line
+- S-094-2: the same run's #1516 read `via` 1622, its spec pull request's needs-decision question, with that item's why and clears; #322 read its own `postponed` condition
+- S-094-3: #1516's `waits_on` was `["shipmill/shipmill#1622"]`, the open item its BLOCKED note names
+- S-094-4: #338 (labelled blocked) read `elsewhere`, the postponed issues `postponed`; the table's other rows are each a case of `test_s094_4_each_condition_has_its_finer_holder`
+- S-094-5: the run split 62 to the maintainer, 4 to the agent, 1 elsewhere, 17 postponed, each item once; a parent with children read `postponed` in its test
+- S-094-6: the run marked 53 issues triaged as opportunities `accept: "opportunity"`, each held by the maintainer
+- S-094-7: `shipmill status --summary` printed the seven lines, waits on people, waits elsewhere, and postponed before waits on nobody
+- S-094-8: `status --item N --json` for #1516, #338, #322, and #1626 matched the summary's record of N key for key, with `"schema": 1`
+- S-094-9: both JSON outputs started with `"schema": 1`
+- S-094-10: `shipmill status --summary --host --json` on the maintainer's host printed `{"schema": 1, "repos": [...]}` with one entry per gate job on the host, in plist order, each read from its job's checkout
+- S-094-11: in the same run the repos whose reads hit GitHub's rate limit were entries with `repo` and `error`, the others still printed, and the command exited 2; `--host` without `--summary` or with a repo exited 2 in its test
