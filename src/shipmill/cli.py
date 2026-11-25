@@ -39,7 +39,9 @@
                   on one factory line; --rows for github-ship-watch's table, --json for its JSON
                   lines and an AUTONOMY line with every stage's level; --item REF (a number or
                   a GitHub URL) says why one open issue or pull request is not closed: its
-                  bucket and each condition that keeps it open, with who clears it (spec 088)
+                  bucket and each condition that keeps it open, with who clears it (spec 088);
+                  --summary says in a few lines whether the gate works and who holds the open
+                  work: you, the agent, needs attention, or nobody (spec 091)
   factory         read-only: this host's machinery for the repo, one line per check (gate,
                   sessions, github app, shipmill, checkout, worktrees), each run on its own;
                   --json for one JSON object (spec 044)
@@ -187,6 +189,7 @@ from shipmill import (
     roles,
     spec_open,
     status,
+    status_summary,
 )
 from shipmill import verify as verifying
 from shipmill.agents import (
@@ -786,6 +789,14 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "say why one open issue or pull request is not closed: its bucket and every condition that keeps"
             " it open, with who clears it (spec 088); REF is its number or its GitHub URL"
+        ),
+    )
+    p.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "say in a few lines whether the gate works and who holds the open work (spec 091);"
+            " with --json, one JSON object"
         ),
     )
 
@@ -3561,6 +3572,8 @@ def _status(
         check_checkout(Git(top), slug)
     if args.item is not None and args.rows:
         raise ReleaseError("--item explains one item and can't be combined with --rows; use --item REF [--json]")
+    if args.summary and (args.rows or args.item is not None):  # S-091-1: before any read
+        raise ReleaseError("--summary can't be combined with --rows or --item; use --summary [--json]")
     ref = None if args.item is None else item_status.parse_ref(args.item, slug)  # S-088-2: before any read
     picture = ref is not None or not (args.rows or args.json)
     resolved = roles.resolve(roles.configured(top), login, gate_maintainer)
@@ -3584,6 +3597,10 @@ def _status(
                 )
             return None
 
+    if args.summary:  # spec 091: the gate's state and who holds the open work, in a few lines
+        return _status_summary(
+            top, slug, args.json, run, resolved, autonomy, environments, home, platform, when, bot_login
+        )
     if ref is not None:  # spec 088: one item's explanation, from the readings it uses (#1469)
         return _status_item(
             top, slug, ref, args.json, run, resolved, autonomy, environments, home, platform, when, bot_login
@@ -3745,6 +3762,69 @@ def _status_item(
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     sys.stdout.write(json.dumps(why.record()) + "\n" if as_json else why.text())
+    return 0
+
+
+def _status_summary(
+    top: Path,
+    slug: str,
+    as_json: bool,
+    run: StateRunner,
+    resolved: tuple[roles.ResolvedRole, ...],
+    autonomy: AutonomyPolicy,
+    environments: tuple[EnvironmentName, ...],
+    home: Path,
+    platform: str,
+    when: dt.datetime,
+    bot_login: Callable[[int, Path], str | None],
+) -> int:
+    """Spec 091: the readings --item makes, for every open item at once, beside each other: the
+    bot's login, the open pull requests and each one's checks and review, the upgrades, the
+    landing branch, triage_state.py's states, watch_state.py's rows, and the default branch's
+    last landed pull request; then the gate's state files, each failing on its own part (D-55).
+    None of the host's other checks is read: they are shipmill factory's"""
+    pool = ThreadPoolExecutor(max_workers=8)
+    try:
+        login = pool.submit(status.read_login, slug, top, home, platform, bot_login)
+        gate = status.agents_gate(top, platform)
+        pulls = pool.submit(status.read_pulls, slug, run)
+        upgrades = pool.submit(status.read_upgrades, slug, top, run)
+        branch = pool.submit(status.landing_branch, slug, top, run)
+        landed = pool.submit(status_summary.read_landed, slug, run)
+        details = {p.number: pool.submit(item_status.read_pull_detail, slug, p.number, run) for p in pulls.result()}
+        bot = login.result()
+        issues = pool.submit(status.read_issues, slug, run, bot, resolved)
+        read = StateRead(bot_login=bot, roles=resolved)
+        proc = run(watch_command(slug, top, read, json=True, host=False))
+        sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
+        if state_failed(proc):
+            print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
+            return 2
+        git = Git(top)
+        main = status.read_main(git, branch.result())  # after watch_state.py's fetch
+        facts = status.Facts(
+            repo=slug,
+            rows=status.parse_rows(proc.stdout),
+            issues=issues.result(),
+            pulls=pulls.result(),
+            main=main,
+            version=status.describe(git, main.remote),
+            gate=gate,
+            cli=importlib.metadata.version("shipmill"),
+            now=when,
+            checkout=top,
+            command=cli_command(),
+            upgrades=upgrades.result(),
+            autonomy=autonomy,
+            environments=environments,
+        )
+        window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
+        found = status_summary.split(facts, lambda n: details[n].result(), window)
+        state = status_summary.read_gate_state(state_dir(git), gate.agents is not None, landed.result())
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    summary = status_summary.summarize(facts, state, found)
+    sys.stdout.write(json.dumps(summary.record()) + "\n" if as_json else summary.text(when))
     return 0
 
 
