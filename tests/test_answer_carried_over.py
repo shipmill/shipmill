@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from .test_allowed_files import answered as answer_gate
+from .test_allowed_files import outside, verdict
 from .test_pr_gate import (
     APPROVED_SPEC,
     CHANGES_BEHAVIOUR,
     DIRECTION,
+    ISSUE_BODIES,
     PROTECTED_ASK,
     REVIEW,
     SPEC,
@@ -121,6 +124,23 @@ def test_s055_20_an_approved_spec_that_fails_same_approval_asks_again(tmp_path: 
     # the lines alone are main's: same-approval is what asks again
     assert gate.main_change_only(str(work), "origin/main", answered, head, ()) is True
     assert gate.main_change_only(str(work), "origin/main", answered, head, (SPEC,)) is False
+
+
+def test_s055_20_s085_14_a_carried_over_answer_lifts_the_other_asks_but_no_files_line(tmp_path: Path) -> None:
+    """D-109: only the head the question names or S-055-5's same change lifts a files: line, so an
+    answer carried over a rebase lifts the protected area's ask and keeps the agent's PR held on
+    the file its issue doesn't allow"""
+    work, answered, head = rebased(
+        tmp_path,
+        {"src/land.py": "tag = 1\n", SHARED: OURS},
+        {SHARED: MAINS},
+        {"src/land.py": "tag = 1\n", SHARED: RESOLVED},
+    )
+    data = headed(head, ((head, at(13)),), body=ISSUE_BODIES[1], files=("src/land.py", SHARED))
+    pr_thread = thread(asked(head=answered), comment("1", at(12)))
+    proc = answer_gate(tmp_path, data, pr_thread, thread(verdict("src/land.py")), work)
+    assert proc.returncode == gate.NEEDS_DECISION, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [outside(SHARED), carried(answered)], proc.stdout
 
 
 def test_s055_20_a_head_git_cant_read_carries_nothing_over(tmp_path: Path) -> None:
