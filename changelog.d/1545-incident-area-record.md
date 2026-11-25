@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill decide record [--json]` prints the production record of each area (a changed path's parent directory) that a failed release touched: an incident `shipmill operate` opened, by a bot or a trusted author, raises the areas of the failed tag's diff from its rollback's tag (or, for `to=-`, the newest earlier tag by version), and the area reads `RAISED` until `[decisions] clean_releases` later tags that reached `success` in the same environment, had no incident, and touched it clear it; a read that fails, a tag the checkout lacks, or a trusted incident whose hidden line doesn't read exits 2 and prints no area (spec 083) (#1545)

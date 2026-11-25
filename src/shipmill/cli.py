@@ -18,7 +18,9 @@
                   and where the level comes from (default, config, autonomy, or fixed), from the working
                   tree's config or --ref's; classify prints the zones code detects for --pr N or --files
                   PATH..., each with its level and reason, the strictest level, and the D-n candidates,
-                  the levels read at --ref (default origin/HEAD), never from the change; --json for both
+                  the levels read at --ref (default origin/HEAD), never from the change; record prints
+                  each area a failed release touched, RAISED or CLEARED, with the clean releases since
+                  (spec 083); --json for each
   autonomy        every stage's [autonomy] level (spec 040): triage, fix, land, release, each deploy
                   environment, rollback, intake, and upgrade, each configured, under the shipmill-hold
                   stop switch, and its source (default, config, prompt, or hold), from the config at --ref
@@ -160,6 +162,7 @@ from typing import TextIO
 
 from shipmill import (
     agent_as_person,
+    area_record,
     cli_command,
     decide,
     deprecations,
@@ -635,6 +638,12 @@ def _parser() -> argparse.ArgumentParser:
     changed.add_argument("--pr", type=int, metavar="N", help="the pull request, its files and diff read through gh")
     changed.add_argument("--files", nargs="+", metavar="PATH", help="changed paths; the diff rules don't apply")
     q.add_argument("--json", action="store_true", help="print the classification as one JSON object")
+    q = deciding.add_parser(
+        "record",
+        help="print each area a failed release touched, raised or cleared, with the clean releases since (spec 083)",
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("--json", action="store_true", help="print the record as one JSON object")
 
     p = sub.add_parser(
         "autonomy",
@@ -1292,6 +1301,7 @@ def main(
     merge_gate: GateRun | None = None,
     history_reads: Callable[[Path], review_history.Reads] | None = None,
     gh_feed: GhFeed | None = None,
+    record_reads: area_record.Reads | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1311,7 +1321,8 @@ def main(
     doctor's landing row reads (spec 054), and merge_gate for the pr_gate.py a `shipmill gh` merge
     runs (spec 055), and history_reads for what `review history` reads of GitHub in a checkout
     (spec 073), and gh_feed for running `shipmill gh`'s gh with the stdin the leak check read
-    (spec 081), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
+    (spec 081), and record_reads for the issues and deployments `decide record` reads (spec 083),
+    as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
     gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
@@ -1405,6 +1416,8 @@ def main(
         return _review_history(root, args, history_of, now or dt.datetime.now(dt.UTC))
     if args.command == "review":
         return _review(root, args)
+    if args.command == "decide" and args.decide == "record":
+        return _decide_record(root, args.json, record_reads or GhCli(root))
     if args.command == "decide":
         return _decide(root, args, pulls or GhCli(root))
     if args.command == "autonomy":
@@ -4067,6 +4080,19 @@ def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
         sys.stdout.write(
             json.dumps(found.record() | {"refused": refused.records(base.policy.refused)}, indent=2) + "\n"
         )
+    else:
+        sys.stdout.write(found.text())
+    return 0
+
+
+def _decide_record(root: Path, as_json: bool, reads: area_record.Reads) -> int:
+    """Spec 083: the production record of each area a failed release touched, by the working
+    tree's [operate] incident_label and [decisions] clean_releases; printed only once every
+    read is done, so a read that fails prints no area"""
+    policy = Policy.load(config_path(root))
+    found = area_record.read(Git(root), reads, policy.operate.incident_label, policy.decisions.clean_releases)
+    if as_json:
+        print(json.dumps(found.record(), indent=2))
     else:
         sys.stdout.write(found.text())
     return 0
