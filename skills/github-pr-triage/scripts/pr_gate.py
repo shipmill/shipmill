@@ -131,10 +131,12 @@ what #A allows` (`#A, #B allow` naming every issue declaring one), 20 such lines
 <k> more outside the allowed files`. It fails closed, NEEDS_DECISION, with `  files: #N's allowed files
 can't be read: <why>` for a counting `Files:` line naming no backticked path or an empty, absolute, or
 `..` one, and `  files: the thread of #N is cut off at 100 comments: its allowed files can't be read,
-so a person looks` when #N's newest 100 comments hold no counting one and older ones went unread. The
-maintainer's answer above lifts the `files:` lines with the other asks, for the heads it covers; a
-verdict written after the PR opened widens nothing. A person's PR, and an agent's whose issues
-declare none or that names no issue, is judged as before.
+so a person looks` when #N's newest 100 comments hold no counting one and older ones went unread. A
+counting comment edited after the PR opened (its lastEditedAt) holds it, NEEDS_DECISION, with `  files:
+the allowance on #N changed after this pull request opened` (S-085-13, D-106). The maintainer's
+answer above lifts the `files:` lines with the other asks, for the heads it covers; a verdict written
+after the PR opened widens nothing. A person's PR, and an agent's whose issues declare none or that
+names no issue, is judged as before.
 
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
@@ -1900,7 +1902,7 @@ def specs_script() -> ModuleType:
 # comments, and a pull request's force-pushes; the github-pr-triage eval cases record this read
 THREAD = (
     "createdAt comments(last: 100) { pageInfo { hasPreviousPage } "
-    "nodes { author { __typename login } authorAssociation body createdAt } }"
+    "nodes { author { __typename login } authorAssociation body createdAt lastEditedAt } }"
 )
 FORCE_PUSHES = (
     "timelineItems(last: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) { pageInfo { hasPreviousPage } "
@@ -2051,6 +2053,7 @@ OUTSIDE = "{path} is outside what {issues} {verb}"
 OUTSIDE_MORE = "and {more} more outside the allowed files"
 FILES_UNREAD = "#{issue}'s allowed files can't be read: {why}"
 FILES_CUT_OFF = "the thread of #{issue} is cut off at 100 comments: its allowed files can't be read, so a person looks"
+FILES_EDITED = "the allowance on #{issue} changed after this pull request opened"  # S-085-13, D-106
 
 
 @dataclass(frozen=True)
@@ -2072,7 +2075,9 @@ def allowance(node: object, issue: int, opened: datetime, bot_login: str | None)
     adds its backticked paths (metrics.py's FILES_LINE and BACKTICKED, the plan's reading); such a
     line naming no path, or an empty, absolute, or `..` one, can't be read. A counting comment with
     no `Files:` line, no counting comment, or a number that is no issue declares none, save a thread
-    cut off at its newest 100 comments with no counting comment among them, which can't be read"""
+    cut off at its newest 100 comments with no counting comment among them, which can't be read.
+    A counting comment edited when or after the pull request opened (its lastEditedAt; absent or
+    null, never edited) holds it with FILES_EDITED, whatever the edit says (S-085-13, D-106)"""
     if not isinstance(node, dict) or node.get("__typename") != "Issue":
         return Allowance(issue)
     rt, mt = retro(), metrics()
@@ -2087,6 +2092,8 @@ def allowance(node: object, issue: int, opened: datetime, bot_login: str | None)
     ]
     if not counting:
         return Allowance(issue) if whole else Allowance(issue, unread=FILES_CUT_OFF.format(issue=issue))
+    if any(edited_since(c, issue, opened) for c in counting):
+        return Allowance(issue, unread=FILES_EDITED.format(issue=issue))
     paths: list[str] = []
     files_lines = 0
     for line in unfenced(counting[-1]["body"]):
@@ -2100,6 +2107,14 @@ def allowance(node: object, issue: int, opened: datetime, bot_login: str | None)
             return Allowance(issue, unread=FILES_UNREAD.format(issue=issue, why=why))
         paths += named
     return Allowance(issue, tuple(paths) if files_lines else None)
+
+
+def edited_since(comment: dict, issue: int, opened: datetime) -> bool:
+    """Whether comment was edited when or after the pull request opened: its lastEditedAt, which
+    THREAD asks and GitHub gives as null for a comment never edited; a value that is no timestamp
+    stops the gate"""
+    raw = comment.get("lastEditedAt")
+    return raw is not None and moment(raw, f"a comment of #{issue}'s lastEditedAt") >= opened
 
 
 def files_problem(named: list[str]) -> str:

@@ -885,3 +885,11 @@ entry that supersedes it, never by editing an old one.
 - Why: The probe on Claude Code 2.1.330 (#1585) showed gh can't start with hosts.yml denied, a bare Edit or Write in user settings merges in and writes outside the scope, a sandboxed command reaches no local port, and Claude Code renames links inside a .git folder after a sandboxed command, which broke a uv cache under the common dir. Decided by `@romamo` on #1524 (option 1, accept all four)
 - Applies to: docs/specs/087-headless-sandbox.md, src/shipmill/sandbox.py, src/shipmill/gate.py, [agents.sandbox] tunnels
 - Enforced by: tests of spec 087 (test_s087_*), with the implementing PRs
+
+## D-106: An allowance edited after the pull request opened holds it
+
+- Decided: 2026-11-25, in shipmill/shipmill#1570
+- Rule: pr_gate.py reads each comment's lastEditedAt with the issue threads it already reads; a counting comment of spec 085 (the newest-wins Triage: **implement** or Proposed plan: comments by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, created before the pull request) whose lastEditedAt is at or after the pull request's createdAt holds an agent's pull request, NEEDS_DECISION, with files: the allowance on #N changed after this pull request opened, whatever the edit says, lifted only by the maintainer's answer as S-085-9 lifts any files: line; a counting comment edited before the pull request opened, or never edited, counts as before, and an edited comment that doesn't count holds nothing. The edit history (userContentEdits) is not read
+- Why: Spec 085 fixed the allowance when the work starts by the comment's createdAt alone, so editing the verdict after the pull request opened widened what the agent may touch without the maintainer's answer (#1570). Holding is cheaper and stricter than reconstructing the text as it stood when the pull request opened. Decided by `@romamo` on #1570 (option 1, relayed 2026-11-25)
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, docs/specs/085-allowed-files.md
+- Enforced by: the pr_gate.py tests (with the implementing PR)

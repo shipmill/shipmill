@@ -59,6 +59,11 @@ the pull request's `createdAt`, which GitHub sets). Its lines outside a fence th
   widen what an agent may touch
 - A comment created after the pull request opened never counts: what the work may touch is
   fixed when the work starts, and the agent that does it can't widen it by commenting
+- A counting comment edited after the pull request opened (its `lastEditedAt`, which GitHub
+  sets, at or after the pull request's `createdAt`) holds it, whatever the edit says:
+  `files: the allowance on #812 changed after this pull request opened`. The maintainer's
+  answer lifts it as it lifts any `files:` line; a comment edited before the pull request
+  opened, or never, counts as above (D-106, #1570)
 - An issue whose counting comment has no `Files:` line **declares no allowance**
 
 ### What the gate holds
@@ -133,6 +138,7 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 - S-085-10: `shipmill gh pr merge <n>`, as the App, on a pull request S-085-4 holds exits 2 without running gh, printing `is refused: pr_gate.py reads #<n> NEEDS_DECISION` and the `files:` line
 - S-085-11: `comments.md`'s Implement template has a `- Files:` line with paths in backticks and says a spec's build issue lists its spec file; `autonomy.md`'s `Proposed plan:` writes its `Files:` paths in backticks
 - S-085-12: `implementer-brief.md` passes the issue's allowed files and calls a file outside them a decision for you; `github-issue-resolve`'s Phase 4 keeps the plan's `Files:` line within them; `landing.md` asks a `files:` hold with the needs-decision question naming each file outside; `pr_gate.py`'s docstring names the `files:` lines and their exit code 5
+- S-085-13: A counting comment whose `lastEditedAt` is at or after the pull request's `createdAt` holds an agent's pull request, NEEDS_DECISION, with `  files: the allowance on #<n> changed after this pull request opened`, whatever the edit says, and the maintainer's answer lifts it as S-085-9 lifts any `files:` line; a counting comment edited before the pull request opened, or never edited (`lastEditedAt` null), counts as S-085-1 says, and an edited comment that doesn't count (S-085-2) holds nothing (D-106, #1570)
 
 ## Out of scope
 
@@ -153,11 +159,13 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 - D-81: an ask held by the gate with no zone of its own, lifted by the maintainer's answer, has precedent in the approved-spec hold
 - D-89: the newest trusted answer is the one read
 - D-93: a relayed answer is read by the relay grammar
+- D-106: a counting comment edited after the pull request opened holds it
 
 ## Issues
 
 - shipmill/shipmill#1523: S-085-1, S-085-2, S-085-3, S-085-4, S-085-5, S-085-6, S-085-7, S-085-8
 - shipmill/shipmill#1525: S-085-9, S-085-10
 - shipmill/shipmill#1527: S-085-11, S-085-12
+- shipmill/shipmill#1570: S-085-13
 
 ## Verification
