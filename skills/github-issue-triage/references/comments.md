@@ -275,6 +275,8 @@ An issue labelled `role:<name>` (or `human`, which counts as `role:maintainer`) 
 
 **ASSIGN_DUE** gets no comment: assigning the users its note names is the whole step, and GitHub's assignment is the notification. The hand-off comes once the item's holds close.
 
+Only holds gate the hand-off: `triage_state.py` reads a `Depends on` line, a blocked-by relation, a sub-issue, and a hold comment's sentence naming an issue, never a precondition the body states in prose. So each precondition of the step is linked as a hold, `chains.py link <item> --blocked-by <precondition>`; one with no issue of its own gets one filed first, as the App. Never leave a precondition as prose alone, in the item or a comment on it: the item reads HANDOFF_DUE as soon as its holds close, whatever the prose says (#1487).
+
 **HANDOFF_DUE**, the hand-off: a mention of every assignee and of every team its roles resolve to (the note's `for @a @example-org/legal`, or the `assignees` and `teams` lists of its `--json` line), which holds closed, the issue's steps quoted (never rewritten), its `## Check` when it has one, and how to report. A team can't be assigned, so the mention is how its members hear of the step; a team-only role's item mentions the team alone. Post it once per unblock; nothing mentions the person or the team again while the item reads WITH_PERSON. A done report counts from an assignee or a trusted author (D-16): a team member who is a member of the repo's organization counts, an outside one doesn't.
 
 ```markdown
