@@ -1,7 +1,10 @@
 """The github-issue-triage skill's classification, without gh or the network"""
 
 import importlib.util
+import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -1248,3 +1251,114 @@ def test_1459_open_issues_past_a_page_of_20_are_all_read(ts: ModuleType) -> None
     data = ts.fetch("o/r", 20, run=gh)
     assert [i["number"] for i in data["open"]["nodes"]] == list(range(45, 0, -1))
     assert gh.calls == [("QUERY", 20), ("OPEN_PAGE", 20), ("OPEN_PAGE", 20)]
+
+
+# -- #1487: an upstream report nobody linked or took waits on the maintainer -----------------
+
+FAKE_GH = '#!{python}\nimport os\nprint(open(os.environ["FAKE_GH_DATA"]).read())\n'
+UNOWNED = "no coordinator: waits for the maintainer to report it where it belongs"
+
+
+def run_script(tmp_path: Path, nodes: list[dict[str, Any]], *args: str) -> subprocess.CompletedProcess[str]:
+    """triage_state.py --json over a fake gh that answers every query with one first page"""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    fake = fakes / "gh"
+    fake.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
+    fake.chmod(0o700)
+    data = tmp_path / "gh.json"
+    data.write_text(json.dumps({"data": {"repository": first_page(nodes)}}), encoding="utf-8")
+    env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "FAKE_GH_DATA": str(data)}
+    cmd = [sys.executable, str(SCRIPT), "o/r", "--json", *args]
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+
+
+def ref_node(ref: str) -> dict[str, Any]:
+    repo, _, number = ref.partition("#")
+    return {"number": int(number), "state": "OPEN", "stateReason": None, "repository": {"nameWithOwner": repo}}
+
+
+def upstream_report(
+    body: str = "", people: tuple[str, ...] = (), blocked_by: tuple[str, ...] = (), children: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """#5, labelled upstream by its owner, with what links it and who has it"""
+    item = open_issue(5, labels=("upstream",))
+    item["author"] = {"__typename": "User", "login": "amy"}
+    item["authorAssociation"] = "OWNER"
+    item["body"] = body
+    item["assignees"] = {"nodes": [{"login": p} for p in people]}
+    item["blockedBy"] = forward([ref_node(r) for r in blocked_by])
+    item["subIssues"] = forward([ref_node(r) for r in children])
+    return item
+
+
+def read_rows(proc: subprocess.CompletedProcess[str]) -> list[tuple[int, str, str]]:
+    return [(r["number"], r["state"], r["note"]) for r in map(json.loads, proc.stdout.splitlines())]
+
+
+# proves: S-038-13, S-038-14
+@pytest.mark.parametrize(
+    "item",
+    [
+        upstream_report(),
+        upstream_report(body="Depends on #3\n"),  # a link in its own repo routes it nowhere
+        upstream_report(blocked_by=("o/r#3",)),
+        upstream_report(children=("O/R#4",)),  # the repo in another spelling is still its own
+    ],
+)
+def test_1487_an_unlinked_unassigned_upstream_report_reads_unowned_and_no_action(
+    ts: ModuleType, tmp_path: Path, item: dict[str, Any]
+) -> None:
+    proc = run_script(tmp_path, [item])
+    assert proc.returncode == 0, proc.stderr  # not an action: it starts no session
+    assert read_rows(proc) == [(5, "UPSTREAM_UNOWNED", UNOWNED)]
+    assert "UPSTREAM_UNOWNED" not in ts.ACTION
+
+
+# proves: S-038-13
+@pytest.mark.parametrize(
+    "item",
+    [
+        upstream_report(body="Depends on other/lib#9\n"),
+        upstream_report(blocked_by=("other/lib#9",)),
+        upstream_report(children=("other/lib#9",)),
+        upstream_report(people=("bob",)),
+    ],
+)
+def test_1487_a_linked_or_assigned_upstream_report_reads_upstream(tmp_path: Path, item: dict[str, Any]) -> None:
+    proc = run_script(tmp_path, [item])
+    assert proc.returncode == 0, proc.stderr
+    assert read_rows(proc) == [(5, "UPSTREAM", "no coordinator: waits for the maintainer")]
+
+
+# proves: S-038-13
+def test_1487_with_a_coordinator_an_unlinked_report_stays_upstream(tmp_path: Path) -> None:
+    proc = run_script(tmp_path, [upstream_report()], "--home", "acme/product")
+    assert proc.returncode == 0, proc.stderr
+    assert read_rows(proc) == [(5, "UPSTREAM", "routed by acme/product")]  # its ROUTE_DUE takes it up
+
+
+# proves: S-038-15
+def test_1487_in_the_home_repo_an_unlinked_report_stays_upstream(tmp_path: Path) -> None:
+    # the watch and the queue pass a home repo itself as --home: its coordinator routes the report
+    proc = run_script(tmp_path, [upstream_report()], "--home", "o/r")
+    assert proc.returncode == 0, proc.stderr
+    assert read_rows(proc) == [(5, "UPSTREAM", "routed by o/r")]
+
+
+# proves: S-038-14
+def test_1487_an_unowned_reports_open_question_still_asks_the_maintainer(tmp_path: Path) -> None:
+    item = upstream_report()
+    item["labels"]["nodes"].append({"name": "needs-decision"})
+    question = "<!-- shipmill:needs-decision -->\n@amy which repo owns it?"
+    item["comments"]["nodes"] = [
+        {**comment(question), "author": {"__typename": "Bot", "login": "app"}, "authorAssociation": "NONE"}
+    ]
+    proc = run_script(tmp_path, [item], "--bot-login", "app[bot]")
+    assert read_rows(proc) == [(5, "UPSTREAM_UNOWNED", f"{UNOWNED}, asks the maintainer")]
+
+
+def test_1487_the_help_and_docstring_name_the_state(ts: ModuleType) -> None:
+    assert "UPSTREAM_UNOWNED" in str(ts.__doc__)
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=True)
+    assert "UPSTREAM_UNOWNED" in proc.stdout

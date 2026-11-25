@@ -204,6 +204,21 @@ def test_s038_15_the_watch_passes_the_product_home_as_home(ws: ModuleType, tmp_p
 
 
 @pytest.mark.parametrize(
+    ("text", "home"),
+    [
+        ('[product]\nhome = "acme/product"\n', HOME),  # a component: its home routes its reports
+        ('[product]\nrepos = ["acme/api"]\n', "o/r"),  # the home repo: its own coordinator does (#1487)
+        ("[product]\nstandalone = true\n", None),  # stands alone: no coordinator
+        ('[agents]\nprompt = "x"\n', None),  # no [product]: none
+    ],
+)
+def test_1487_triage_reads_with_the_coordinators_repo_as_home(
+    ws: ModuleType, tmp_path: Path, text: str, home: str | None
+) -> None:
+    assert ws.triage_home(text, tmp_path / "shipmill.toml", "o/r") == home
+
+
+@pytest.mark.parametrize(
     "text",
     [
         '[product]\nhome = "acme"\n',
@@ -248,6 +263,18 @@ def test_s038_15_an_upstream_report_is_listed_in_issues_open_only(ws: ModuleType
         ("ISSUES", "NEW #12"),
         ("ISSUES_OPEN", "BLOCKED #9; UPSTREAM #5"),
     ]
+
+
+def test_s038_15_an_unowned_report_is_listed_in_issues_open_only_and_starts_no_session(ws: ModuleType) -> None:
+    unowned = line(5, "UPSTREAM_UNOWNED", "no coordinator: waits for the maintainer to report it where it belongs")
+    rows = ws.intake("o/r", 0, "\n".join([unowned, line(9, "BLOCKED")]), [], lambda n: [], BOT, True)
+    assert [(r.state, r.detail) for r in rows] == [("ISSUES_OPEN", "BLOCKED #9; UPSTREAM_UNOWNED #5")]
+    assert not any(r.json()["agent"] for r in rows)
+    printed = "\n".join(
+        json.dumps(r.json(), sort_keys=True) for r in ws.intake("o/r", 0, unowned, [], lambda n: [], BOT, True)
+    )
+    now = dt.datetime(2026, 11, 24, 12, 0, tzinfo=dt.UTC)
+    assert decide(parse_findings(printed), [], None, now, dt.timedelta(hours=1)).action == Action.QUIET
 
 
 def test_s038_15_the_gate_starts_no_session_for_a_lone_upstream_report(ws: ModuleType) -> None:

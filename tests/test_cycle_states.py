@@ -164,7 +164,8 @@ def test_s041_13_a_loop_waits_on_its_malformed_or_needs_decision_issue(tmp_path:
     ("other", "flags", "state"),
     [
         ({"association": "NONE"}, ("--trusted-only",), "UNTRUSTED"),
-        ({"labels": ("upstream",)}, (), "UPSTREAM"),
+        # with a coordinator: without one, a report nobody linked or took reads UPSTREAM_UNOWNED (#1487)
+        ({"labels": ("upstream",)}, ("--home", "acme/product"), "UPSTREAM"),
         ({"labels": ("needs-decision",)}, (), "NEEDS_DECISION"),
         (
             {

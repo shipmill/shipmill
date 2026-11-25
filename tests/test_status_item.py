@@ -236,6 +236,12 @@ def test_s088_6_an_issues_state_gives_its_condition(issue: Issue, reason: str, w
     assert not any("acme/web#6" in r for r, _ in found)  # a closed hold holds nothing
 
 
+def test_1487_an_unowned_upstream_report_waits_on_the_maintainer() -> None:
+    found = explain(facts(issues=[Issue(4, "UPSTREAM_UNOWNED")]), Ref("4", 4, None), lambda _: NONE, None)
+    reason = "an upstream report nobody linked or took: waits for you to report it where it belongs"
+    assert any(c.reason == reason and c.who is Who.MAINTAINER and c.clears.strip() for c in found.conditions)
+
+
 def said(body: str) -> dict[str, object]:
     return {"body": body, "createdAt": "2026-11-01T10:00:00Z"}
 
