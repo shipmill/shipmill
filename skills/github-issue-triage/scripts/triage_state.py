@@ -328,6 +328,11 @@ to it included), carries "specs", those paths in the order the body names them, 
 whatever its state: github-ship-watch's SPEC_UNSPLIT reads it as following the spec (spec
 053) without reading the issue again. A line without such a path has no "specs".
 
+With --json, an open issue that is a sub-issue of an open issue carries "parent", that
+issue as owner/repo#N, in any repo and whatever its state, from the parent field the first
+query reads (spec 094: shipmill queue's record); a line without an open parent, or read on
+a forge without sub-issues, has no "parent".
+
 With --label LABEL (repeatable), only the open issues carrying any of the labels are read
 and classified, the recently closed ones as without it: shipmill gate's tier 4 reads the
 items labelled needs-decision or decided this way (spec 046).
@@ -2302,6 +2307,14 @@ def postponed_state(
     return "POSTPONED", note
 
 
+def open_parent(issue: dict[str, Any]) -> str | None:
+    """Spec 094: the open issue this one is a sub-issue of, as owner/repo#N; None without one"""
+    parent = issue.get("parent")
+    if not parent or parent.get("state") != "OPEN":
+        return None
+    return f"{parent['repository']['nameWithOwner']}#{parent['number']}"
+
+
 def off_milestone(issue: dict[str, Any], repo: tuple[str, str]) -> str | None:
     """The note of OFF_MILESTONE (spec 022): a build issue whose feature issue, its sub-issue
     parent in this repository, is in a milestone the build issue isn't in; None when it is
@@ -3410,6 +3423,9 @@ def main() -> int:
                 row["verdict"] = verdict
         if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
             row["direction"] = True
+        parent = open_parent(issue)
+        if parent is not None:  # spec 094: shipmill queue's parent, with no read of its own
+            row["parent"] = parent
         linked = spec_files(issue["body"] or "")
         if linked:  # spec 053: the specs it follows, for github-ship-watch's SPEC_UNSPLIT
             row["specs"] = linked

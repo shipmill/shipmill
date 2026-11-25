@@ -396,6 +396,7 @@ def test_s088_11_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixtur
         "why": reason,
         "clears": "accept or decline the opportunity",
         "waits_on": [],
+        "parent": None,  # S-094-16
     }
 
 

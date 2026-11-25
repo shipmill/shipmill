@@ -3,23 +3,29 @@ the same code as `status --item --json`, with finer holders, a schema version, a
 form over this host's gate jobs read one at a time"""
 
 import json
+import os
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
+from shipmill.item_links import ItemRef
 from shipmill.item_status import Condition, Holder, Who
 from shipmill.launchd import label
 from shipmill.queue import Item, items, own_holder
-from shipmill.status import Facts, Issue, Pull, Row
+from shipmill.status import Facts, Issue, Pull, Row, parse_issues
 from shipmill.status_summary import Holder as SummaryHolder
 from shipmill.status_summary import split
 from tests.test_status_item import NONE, OPEN, WRITES
 from tests.test_status_picture import REPO, facts, host, repo_with_release
 from tests.test_status_summary import SummaryFake, configured
+from tests.test_triage_off_milestone import FAKE_GH
+from tests.test_triage_off_milestone import SCRIPT as TRIAGE_STATE
+from tests.test_triage_state import first_page, open_issue
 
 OTHER = "other/lib"
 
@@ -63,7 +69,7 @@ def test_s094_1_every_open_item_has_one_record_on_its_split_line(
     assert found["schema"] == 1 and found["repo"] == REPO and found["totals"] == {"issues": 1, "pulls": 1}
     assert list(found["split"]) == ["maintainer", "agent", "attention", "people", "elsewhere", "postponed", "nobody"]
     assert [i["number"] for i in found["items"]] == sorted(OPEN)
-    keys = {"number", "kind", "holder", "via", "accept", "why", "clears", "waits_on", "conditions"}
+    keys = {"number", "kind", "holder", "via", "accept", "why", "clears", "waits_on", "parent", "blocks", "conditions"}
     assert all(set(i) == keys for i in found["items"])
     for record in found["items"]:
         line = found["split"][record["holder"]]
@@ -387,3 +393,136 @@ def test_s094_13_the_summary_keeps_its_four_lines_and_folds_the_finer_holders() 
     found = facts(issues=issues)
     assert {records(found)[n].holder for n in (1, 2, 3)} == {Holder.PEOPLE, Holder.ELSEWHERE, Holder.POSTPONED}
     assert split(found, lambda _: NONE, None).issues == {SummaryHolder.NOBODY: (1, 2, 3)}
+
+
+class ChainFake(SummaryFake):
+    """SummaryFake's picture, whose triage_state.py gives each repo the lines in lines; acme/web's
+    #4 has #5 waiting on it, #6 on #5, and its umbrella #7"""
+
+    def __init__(self, lines: dict[str, list[dict[str, object]]] | None = None) -> None:
+        super().__init__()
+        self.lines = lines if lines is not None else {REPO: WEB}
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[1].endswith("triage_state.py") and cmd[2] in self.lines:
+            self.seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "".join(json.dumps(r) + "\n" for r in self.lines[cmd[2]]), "")
+        return super().__call__(cmd)
+
+
+WEB: list[dict[str, object]] = [
+    {"number": 4, "state": "TRIAGED", "title": "t", "note": "", "verdict": "opportunity", "parent": f"{REPO}#7"},
+    {"number": 5, "state": "BLOCKED", "title": "t", "note": f"waits on {REPO}#4:open"},
+    {"number": 6, "state": "BLOCKED", "title": "t", "note": f"waits on {REPO}#5:open, {OTHER}#2:open"},
+    {"number": 7, "state": "BLOCKED", "title": "t", "note": f"children 0/1 closed waits on {REPO}#4:open(child)"},
+]
+
+
+def test_s094_14_blocks_and_parent_come_from_the_facts() -> None:
+    found = facts(
+        issues=[
+            Issue(4, "NEEDS_PR", parent=f"{OTHER}#7"),
+            Issue(5, "BLOCKED", note=f"waits on {REPO}#4:open"),
+            Issue(6, "BLOCKED", note=f"waits on {REPO}#5:open, {REPO}#4:closed"),
+            Issue(8, "NEEDS_PR"),
+        ]
+    )
+    got = records(found)
+    assert [(str(w.ref), w.waits_on) for w in got[4].blocks] == [
+        (f"{REPO}#5", (ItemRef(REPO, 4),)),  # nearest first, as --item's walk lists them
+        (f"{REPO}#6", (ItemRef(REPO, 5),)),  # a closed hold holds nothing
+    ]
+    assert got[4].parent == f"{OTHER}#7" and got[5].parent is None
+    assert got[8].blocks == () and got[6].blocks == ()
+    assert got[4].record()["blocks"] == [
+        {"ref": f"{REPO}#5", "bucket": "parked", "waits_on": [f"{REPO}#4"]},
+        {"ref": f"{REPO}#6", "bucket": "parked", "waits_on": [f"{REPO}#5"]},
+    ]
+
+
+# proves: S-094-10, S-094-9
+def test_s094_14_queue_prints_blocks_and_parent_with_no_read_per_item(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    fake = ChainFake()
+    main(["--repo", str(root), "queue", "--json"], state=fake, login=host)
+    found = json.loads(capsys.readouterr().out)
+    assert found["schema"] == 1
+    got = {i["number"]: i for i in found["items"]}
+    assert got[4]["parent"] == f"{REPO}#7" and got[5]["parent"] is None and got[9]["parent"] is None
+    assert [b["ref"] for b in got[4]["blocks"]] == [
+        f"{REPO}#5",
+        f"{REPO}#7",
+        f"{REPO}#6",
+    ]  # a parent waits on its child
+    assert got[6]["blocks"] == [] and got[9]["blocks"] == []
+    gh = [c for c in fake.seen if c[0] == "gh"]
+    assert not any(c[1:3] in (["pr", "view"], ["issue", "view"]) for c in gh)
+    assert not any(c[1:3] == ["api", "graphql"] and "issueOrPullRequest" in c[4] for c in gh)  # no item's own read
+    assert not any(c[1].endswith("chains.py") for c in fake.seen)  # no walk per item
+
+
+def test_s094_14_triage_states_parent_is_strict() -> None:
+    line = {"number": 4, "state": "NEW", "title": "t", "note": "", "parent": "acme/web#7"}
+    assert parse_issues(json.dumps(line))[0].parent == "acme/web#7"
+    assert parse_issues(json.dumps({k: v for k, v in line.items() if k != "parent"}))[0].parent is None
+    for bad in ("#7", "acme/web", 7, "acme/web#0"):
+        with pytest.raises(ReleaseError, match="parent"):
+            parse_issues(json.dumps(line | {"parent": bad}))
+
+
+@pytest.mark.parametrize(("state", "shown"), [("OPEN", "Acme/Home#3"), ("CLOSED", None)])
+def test_s094_14_triage_state_prints_an_open_parent(tmp_path: Path, state: str, shown: str | None) -> None:
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    gh = fakes / "gh"
+    gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
+    gh.chmod(0o700)
+    item = open_issue(7, [])
+    item["parent"] = {"number": 3, "state": state, "repository": {"nameWithOwner": "Acme/Home"}, "milestone": None}
+    data = tmp_path / "gh.json"
+    data.write_text(json.dumps({"data": {"repository": first_page([item])}}), encoding="utf-8")
+    env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "FAKE_GH_DATA": str(data)}
+    proc = subprocess.run(
+        [sys.executable, str(TRIAGE_STATE), "o/r", "--json"], capture_output=True, text=True, check=False, env=env
+    )
+    line = json.loads(proc.stdout.splitlines()[0])
+    assert line["number"] == 7, proc.stderr
+    assert line.get("parent") == shown
+
+
+def test_s094_15_the_fleet_lists_another_repos_waiters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = tmp_path / "home"
+    gate_job(home, "acme/api", configured(repo_with_release(tmp_path / "api", "acme/api")))
+    gate_job(home, REPO, configured(repo_with_release(tmp_path / "web")))
+    api = [
+        {"number": 2, "state": "BLOCKED", "title": "t", "note": f"waits on {REPO}#4:open"},
+        {"number": 4, "state": "NEEDS_PR", "title": "t", "note": ""},
+    ]
+    fake = ChainFake({"acme/api": api, REPO: WEB})
+    code, out = run_fleet(home, capsys, "--json", fake=fake)
+    assert code == 0
+    by = {r["repo"]: {i["number"]: i for i in r["items"]} for r in json.loads(out)["repos"]}
+    web = by[REPO][4]["blocks"]
+    assert {"ref": "acme/api#2", "bucket": "parked", "waits_on": [f"{REPO}#4"]} in web
+    assert [b["ref"] for b in web] == ["acme/api#2", f"{REPO}#5", f"{REPO}#7", f"{REPO}#6"]
+    assert by["acme/api"][4]["blocks"] == []  # acme/api#4 is not acme/web#4
+    triage = [c for c in fake.seen if c[1].endswith("triage_state.py")]
+    assert sorted(c[2] for c in triage) == ["acme/api", REPO]  # one read of each repo
+
+
+def test_s094_16_item_json_carries_the_queues_parent_and_blocks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    main(["--repo", str(root), "queue", "--json"], state=ChainFake(), login=host)
+    summary = {i["number"]: i for i in json.loads(capsys.readouterr().out)["items"]}
+    for number in (4, 9):  # the fake's open items
+        main(["--repo", str(root), "status", "--item", str(number), "--json"], state=ChainFake(), login=host)
+        item = json.loads(capsys.readouterr().out)
+        assert item["schema"] == 1
+        assert {k: item[k] for k in summary[number] if k != "number"} == {
+            k: v for k, v in summary[number].items() if k != "number"
+        }
+    assert summary[4]["parent"] == f"{REPO}#7" and len(summary[4]["blocks"]) == 3

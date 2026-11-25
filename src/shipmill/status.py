@@ -274,6 +274,7 @@ class Issue:
     closed: bool = False
     teams: tuple[str, ...] = ()
     verdict: str | None = None  # spec 088: a TRIAGED line's verdict, one of TRIAGE_VERDICTS
+    parent: str | None = None  # spec 094: the open issue it is a sub-issue of, as owner/name#N
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +413,9 @@ def parse_rows(text: str) -> list[Row]:
     return rows
 
 
+PARENT_REF = re.compile(r"[\w.-]+/[\w.-]+#[1-9]\d*")  # spec 094: a line's "parent"
+
+
 def parse_issues(text: str) -> list[Issue]:
     found = (r for r in map(json.loads, text.splitlines()) if r)
     issues = []
@@ -420,8 +424,11 @@ def parse_issues(text: str) -> list[Issue]:
         verdict = r.get("verdict")
         if verdict is not None and (r["state"] != "TRIAGED" or verdict not in TRIAGE_VERDICTS):
             raise ReleaseError(f"triage_state.py printed a verdict it doesn't write: {r!r}")
+        parent = r.get("parent")
+        if parent is not None and (not isinstance(parent, str) or PARENT_REF.fullmatch(parent) is None):
+            raise ReleaseError(f"triage_state.py printed a parent that is no owner/name#N: {r!r}")
         number, state, note, closed = int(r["number"]), str(r["state"]), str(r["note"]), r.get("closed") is True
-        issues.append(Issue(number, state, note, people, closed, teams, verdict))
+        issues.append(Issue(number, state, note, people, closed, teams, verdict, parent))
     return issues
 
 

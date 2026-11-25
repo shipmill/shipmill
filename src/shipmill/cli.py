@@ -4006,16 +4006,13 @@ def _queue_fleet(as_json: bool, home: Path, read: Callable[[Path, str], queue_mo
     """S-094-11, S-094-12: every gate job's repo on this host, in plist order, each read from its
     job's WorkingDirectory, one at a time; a repo whose read fails is its own entry's error and
     the others still print (D-55), and once a read fails on GitHub's rate limit no further repo
-    is read, so a fleet read never spends the budget the gates read with. Exit 2 when one wasn't
-    read"""
-    entries: list[dict[str, object]] = []
-    texts: list[str] = []
+    is read, so a fleet read never spends the budget the gates read with; each record's blocks
+    names the waiters of every repo read (S-094-15). Exit 2 when one wasn't read"""
+    entries: list[dict[str, object] | queue_mod.Queue] = []
     limited = False
     for repo in gate_repos(home):
         if limited:
-            entry = queue_mod.not_read(repo)
-            entries.append(entry)
-            texts.append(f"{repo}: unread: {entry['error']}\n")
+            entries.append(queue_mod.not_read(repo))
             continue
         try:
             job = read_job(repo, home)
@@ -4029,15 +4026,17 @@ def _queue_fleet(as_json: bool, home: Path, read: Callable[[Path, str], queue_mo
             error = status.first_line(exc)
             limited = queue_mod.rate_limited(str(exc))
             entries.append({"schema": queue_mod.SCHEMA, "repo": repo, "error": error})
-            texts.append(f"{repo}: unread: {error}\n")
             continue
-        entries.append(found.record())
-        texts.append(found.text())
+        entries.append(found)
+    linked = iter(queue_mod.fleet_linked([e for e in entries if isinstance(e, queue_mod.Queue)]))
+    shown = [next(linked) if isinstance(e, queue_mod.Queue) else e for e in entries]
     if as_json:
-        sys.stdout.write(json.dumps({"schema": queue_mod.SCHEMA, "repos": entries}) + "\n")
+        records = [e.record() if isinstance(e, queue_mod.Queue) else e for e in shown]
+        sys.stdout.write(json.dumps({"schema": queue_mod.SCHEMA, "repos": records}) + "\n")
     else:
+        texts = [e.text() if isinstance(e, queue_mod.Queue) else f"{e['repo']}: unread: {e['error']}\n" for e in shown]
         sys.stdout.write("\n".join(texts) if texts else "no gate job on this host\n")
-    return 2 if any("error" in e for e in entries) else 0
+    return 2 if any(isinstance(e, dict) for e in shown) else 0
 
 
 def _with_tick(gate: status.Gate, git: Git) -> status.Gate:
