@@ -1,6 +1,6 @@
 """Spec 095: a session that ended ok after an outside failure records that failure, not idle:
 GitHub's rate limit (github_limit) and a full disk (disk) pause the host, a denied permission
-(permission) notifies once per tool, and a network failure ends error (D-111)"""
+(permission) notifies once per tool, and a network failure ends error (D-112)"""
 
 import dataclasses
 import datetime as dt

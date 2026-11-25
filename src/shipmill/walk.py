@@ -332,7 +332,7 @@ class Pull:
 class End(enum.StrEnum):
     """How a handed session ended, read from its stream-json log once it is gone (spec 089,
     D-100): ok, its last `result` has is_error false; limit, a usage limit stopped it; auth, its
-    credential was refused; error, anything else. Spec 095 (D-111) reads an ok one's failed tool
+    credential was refused; error, anything else. Spec 095 (D-112) reads an ok one's failed tool
     calls first: github_limit, GitHub's rate limit stopped them; disk, the disk was full;
     permission, a tool call was denied"""
 

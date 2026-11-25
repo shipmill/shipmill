@@ -4,7 +4,7 @@ disk (`disk`) writes a record for the host, `$XDG_STATE_HOME/shipmill/host/<caus
 gate on the host reads both records before it launches and, while one holds, starts no session.
 A `github_limit` pause lifts once `gh api rate_limit` shows room in `core` and `graphql`, else at
 the reset it recorded, or GitHub's hour after the end without one; a `disk` pause once the file
-system holding the gate's checkout has DISK_FLOOR free (D-111)"""
+system holding the gate's checkout has DISK_FLOOR free (D-112)"""
 
 import datetime as dt
 import json
