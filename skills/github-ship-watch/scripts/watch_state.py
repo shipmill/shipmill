@@ -4941,6 +4941,7 @@ HAND_KEYS = frozenset({"session", "at"})
 PULL_KEYS = frozenset({"head", "rollup"})
 SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")
 ENDS = ("ok", "limit", "auth", "error")  # shipmill's walk.End: how a hand's session ended (spec 089)
+HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})  # walk.HAND_EXTRA; errors and until: the backoff
 
 
 def gate_state(folder: Path) -> Path | None:
@@ -4960,14 +4961,30 @@ def gate_state(folder: Path) -> Path | None:
     return Path(proc.stdout.strip()) / "shipmill"
 
 
+def moment_of(value: object) -> dt.datetime | None:
+    """An ISO 8601 time with its offset, None for anything else"""
+    try:
+        when = dt.datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+    return when if when is not None and when.tzinfo is not None else None
+
+
 def idle_hand(path: Path, key: object, entry: object) -> tuple[str, dt.datetime] | None:
     """A hand of handed.json, checked as shipmill's walk.hand_of reads it: its session and at
     when it is marked idle, None when it isn't; anything else the gate never writes is refused"""
     where = f"error: {path}: {key}"
-    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle", "ended"}:
-        raise Refused(f"{where}: expected session and at, head and rollup or neither, idle or not, and ended or not")
+    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | HAND_EXTRA:
+        raise Refused(
+            f"{where}: expected session and at, head and rollup or neither, and idle, ended, errors, until or not"
+        )
     if "ended" in entry and entry["ended"] not in ENDS:
         raise Refused(f"{where}: ended must be one of {', '.join(ENDS)}, got {entry['ended']!r}")
+    errors = entry.get("errors", 0)
+    if isinstance(errors, bool) or not isinstance(errors, int) or ("errors" in entry and errors < 1):
+        raise Refused(f"{where}: errors must be a positive count, got {errors!r}")
+    if "until" in entry and (entry.get("ended") != "error" or errors < 1 or moment_of(entry["until"]) is None):
+        raise Refused(f"{where}: until is an ISO 8601 time with its offset, on a hand that ended error with errors")
     session, at, idle = entry["session"], entry["at"], entry.get("idle", False)
     if not isinstance(session, str) or not session:
         raise Refused(f"{where}: session must be a non-empty string")

@@ -306,7 +306,8 @@ def test_sessions_dying_one_after_another_read_as_one_run(checkout: Git) -> None
     first_at = NOW - dt.timedelta(minutes=10)
     launched_at(checkout, SECOND, NOW - dt.timedelta(minutes=5), Deaths(1, first_at))
     died(checkout, SECOND, NOW - dt.timedelta(minutes=5), dt.timedelta(seconds=3), "")
-    action, _, lines = tick(checkout, headless(), FakeClaude(), FakeAuth([LOGGED_IN]), FakeNotifier())
+    later = NOW + dt.timedelta(hours=1)  # spec 089: the second error end in a row backs off an hour (S-089-11)
+    action, _, lines = tick(checkout, headless(), FakeClaude(), FakeAuth([LOGGED_IN]), FakeNotifier(), later)
     assert action is Action.SESSION_DEAD
     log = log_of(checkout, SECOND)
     since = first_at.isoformat(timespec="minutes")
@@ -315,11 +316,11 @@ def test_sessions_dying_one_after_another_read_as_one_run(checkout: Git) -> None
         f" its log is empty; starting another for 1 finding(s); fix: tail -n 20 {log}"
     )
     assert load_launch(state_dir(checkout) / RECORD) == Launch(
-        fingerprint([ISSUES]), str(FIRST), NOW, Process(PID, None), Deaths(2, first_at), ISSUES.brief()
+        fingerprint([ISSUES]), str(FIRST), later, Process(PID, None), Deaths(2, first_at), ISSUES.brief()
     )
 
 
-def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_retry_hours(checkout: Git) -> None:
+def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_4_hours(checkout: Git) -> None:
     # without a cap, every tick started a real `claude -p` that died the same way
     first_at, at = NOW - dt.timedelta(minutes=10), NOW - dt.timedelta(minutes=5)
     launched_at(checkout, SECOND, at, Deaths(2, first_at))
@@ -327,12 +328,14 @@ def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_retry_hours(c
     claude, auth = FakeClaude(), FakeAuth([])
     action, launched, lines = tick(checkout, headless(), claude, auth, FakeNotifier())
     assert (action, launched, claude.started, auth.asked) == (Action.SESSION_DEAD, None, [], 0)
-    since, again = first_at.isoformat(timespec="minutes"), (at + dt.timedelta(hours=24)).isoformat(timespec="minutes")
+    # spec 089 (S-089-11): the third error end in a row backs off 4 hours from the death; the fourth holds retry_hours
+    backoff = at + dt.timedelta(seconds=3, hours=4)
+    since, again = first_at.isoformat(timespec="minutes"), backoff.isoformat(timespec="minutes")
     assert lines[0] == (
         f"SESSION_DEAD: session {SECOND} ended 3 s after its launch, 3 in a row since {since}; its log is empty;"
         f" no session starts for the same item until {again}; fix: tail -n 20 {log_of(checkout, SECOND)}"
     )
-    after = NOW + dt.timedelta(hours=24)  # past retry_hours, it tries once more and counts on
+    after = backoff  # past the backoff, it tries once more and counts on
     action, launched, _ = tick(checkout, headless(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
     assert (action, launched) == (Action.SESSION_DEAD, str(FIRST))
     assert load_launch(state_dir(checkout) / RECORD) == Launch(

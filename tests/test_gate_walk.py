@@ -608,9 +608,15 @@ def dead_launch(git: Git, item: Finding, deaths: Deaths | None) -> None:
 
 
 def test_s046_15_a_dead_sessions_item_is_handed_again(checkout: Git) -> None:
+    # spec 089 (S-089-11): after its backoff, 15 minutes after the death; the walk goes past it until then
     dead_launch(checkout, INCIDENT, None)
     claude = FakeClaude()
-    decision = tick(checkout, Source({1: [INCIDENT], 2: [BOT_FAILED]}), LATER, cfg(Mode.HEADLESS), claude)
+    held = tick(checkout, Source({1: [INCIDENT]}), LATER, cfg(Mode.HEADLESS), claude)
+    assert held.action is Action.SESSION_DEAD and not claude.started
+    again = LATER + dt.timedelta(seconds=5)  # the death came 5 s after the launch
+    decision = tick(
+        checkout, Source({1: [INCIDENT], 2: [BOT_FAILED]}, signature="next"), again, cfg(Mode.HEADLESS), claude
+    )
     assert (decision.action, decision.work) == (Action.SESSION_DEAD, (INCIDENT,))
     assert len(claude.started) == 1
 

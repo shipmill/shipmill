@@ -339,27 +339,60 @@ class End(enum.StrEnum):
     ERROR = "error"
 
 
+# spec 089 (S-089-11): an item whose session ended error is handed again after these delays, one
+# per error end in a row on it; the end after the last holds it for retry_hours, as DEAD_STREAK
+BACKOFF = (dt.timedelta(minutes=15), dt.timedelta(hours=1), dt.timedelta(hours=4))
+
+
 @dataclass(frozen=True, slots=True)
 class Hand:
     """One hand in handed.json: the session it went to, and when; for a pull request subject
     the head it had then (spec 061); idle once a walk past retry_hours found nothing changed on
-    its subject since; ended, how its session ended, None while it runs (spec 089)"""
+    its subject since; ended, how its session ended, None while it runs (spec 089); errors, the
+    error ends in a row on its key, carried to the hand that replaces it, and until, when an
+    error end's backoff hands it again, in place of retry_hours (S-089-11)"""
 
     session: str
     at: dt.datetime
     head: Head | None = None
     idle: bool = False
     ended: End | None = None
+    errors: int = 0
+    until: dt.datetime | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.errors, bool) or not isinstance(self.errors, int) or self.errors < 0:
+            raise ValueError(f"errors must be a count, got {self.errors!r}")
+        if self.until is not None and (self.ended is not End.ERROR or self.errors < 1):
+            raise ValueError("only a hand whose session ended error is held until a time")
 
     def record(self) -> dict[str, object]:
         found: dict[str, object] = {"session": self.session, "at": self.at.isoformat()}
         if self.head is not None:
             found |= {"head": self.head.sha, "rollup": self.head.rollup}
         found |= {"idle": True} if self.idle else {}
-        return found | ({} if self.ended is None else {"ended": self.ended.value})
+        found |= {} if self.ended is None else {"ended": self.ended.value}
+        found |= {"errors": self.errors} if self.errors else {}
+        return found | ({} if self.until is None else {"until": self.until.isoformat()})
+
+    def within(self, now: dt.datetime, retry: dt.timedelta) -> bool:
+        """The hand still holds its key: until its backoff's until, else retry_hours after at"""
+        return now < self.retried(retry)
+
+    def retried(self, retry: dt.timedelta) -> dt.datetime:
+        """When its key is handed again: its backoff's until, else retry_hours after at"""
+        return self.until if self.until is not None else self.at + retry
+
+    def backed_off(self, died: dt.datetime, retry: dt.timedelta) -> Hand:
+        """Its session ended error at died (S-089-11): one more in the run, held for the next
+        delay of BACKOFF after the death, or for retry_hours once the run is past it"""
+        errors = self.errors + 1
+        delay = BACKOFF[errors - 1] if errors <= len(BACKOFF) else retry
+        return replace(self, errors=errors, until=died + delay, idle=False)
 
 
 HAND_KEYS = frozenset({"session", "at"})
+HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})
 PULL_KEYS = frozenset({"head", "rollup"})
 ENDS = ", ".join(e.value for e in End)
 
@@ -367,8 +400,10 @@ ENDS = ", ".join(e.value for e in End)
 def hand_of(key: str, entry: object) -> Hand:
     """One hand as handed.json holds it; one without ended, as written before spec 089 or
     while its session runs, loads with ended None (S-089-2)"""
-    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle", "ended"}:
-        raise ValueError(f"{key}: expected session and at, head and rollup or neither, idle or not, and ended or not")
+    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | HAND_EXTRA:
+        raise ValueError(
+            f"{key}: expected session and at, head and rollup or neither, and idle, ended, errors, until or not"
+        )
     if not isinstance(entry["session"], str) or not entry["session"]:
         raise ValueError(f"{key}: session must be a non-empty string")
     head = None
@@ -389,7 +424,13 @@ def hand_of(key: str, entry: object) -> Hand:
         if not isinstance(entry["ended"], str) or entry["ended"] not in End:
             raise ValueError(f"{key}: ended must be one of {ENDS}, got {entry['ended']!r}")
         ended = End(entry["ended"])
-    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle, ended)
+    errors = entry.get("errors", 0)
+    if isinstance(errors, bool) or not isinstance(errors, int) or errors < 1 and "errors" in entry:
+        raise ValueError(f"{key}: errors must be a positive count, got {errors!r}")
+    until = moment(entry["until"], f"{key}.until") if "until" in entry else None
+    if until is not None and (ended is not End.ERROR or errors < 1):
+        raise ValueError(f"{key}: only a hand whose session ended error, with errors, has until")
+    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle, ended, errors, until)
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,22 +469,29 @@ class Handed:
     def taken(self, item: Finding, now: dt.datetime, retry: dt.timedelta) -> Hand | None:
         """The hand of an item handed within retry with the same fingerprint, or None"""
         hand = self.hands.get(item_key(item))
-        return hand if hand is not None and now - hand.at < retry else None
+        return hand if hand is not None and hand.within(now, retry) else None
 
     def expired(self, now: dt.datetime, retry: dt.timedelta) -> bool:
         """An entry whose retry_hours ran out: a change on the gate's side (S-046-2); an idle
         hand is none, as a change to its subject shows in the change check itself (spec 061)"""
-        return any(now - h.at >= retry and not h.idle for h in self.hands.values())
+        return any(not h.within(now, retry) and not h.idle for h in self.hands.values())
 
     def kept(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
-        """The hands within retry, and the idle ones, which stay past it (spec 061)"""
-        return Handed({k: h for k, h in self.hands.items() if now - h.at < retry or h.idle})
+        """After a walk that read every tier and handed nothing: the hands within retry, and the
+        idle ones, which stay past it (spec 061). A hand whose session ended error drops past its
+        hold too: the walk met its key and didn't hand it, so it is no item's now (a pull request
+        under observe), and kept, its expiry would make every tick walk (S-089-11)"""
+        return Handed({k: h for k, h in self.hands.items() if h.within(now, retry) or h.idle})
 
     def stopped(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
         """After a walk that stopped at an item: as kept, and every subject's hand, since the
         walk didn't meet the items after it to find them idle or changed"""
         return Handed(
-            {k: h for k, h in self.hands.items() if now - h.at < retry or SUBJECT_KEY.fullmatch(k) is not None}
+            {
+                k: h
+                for k, h in self.hands.items()
+                if h.within(now, retry) or SUBJECT_KEY.fullmatch(k) is not None or h.ended is End.ERROR
+            }
         )
 
     def found(self, rows: Iterable[Finding]) -> Handed:
@@ -480,16 +528,35 @@ class Handed:
 
     def handing(self, item: Finding, session: str, now: dt.datetime, pulls: Mapping[int, Pull] | None = None) -> Handed:
         """A launch's hands: one per subject of the (cut) item, a pull request's with its head
-        from the change check (S-061-1), else the item's fingerprint"""
+        from the change check (S-061-1), else the item's fingerprint; each carries the run of
+        error ends of the hand it replaces (S-089-11)"""
         numbers = subjects(item)
         if numbers is None:
-            return Handed({**self.hands, item_key(item): Hand(session, now)})
+            key = item_key(item)
+            return Handed({**self.hands, key: Hand(session, now, errors=self.errors(key))})
         found = pulls or {}
         new = {}
         for n in numbers:
             pull = found.get(n)
-            new[subject_key(item, n)] = Hand(session, now, None if pull is None else pull.head)
+            key = subject_key(item, n)
+            new[key] = Hand(session, now, None if pull is None else pull.head, errors=self.errors(key))
         return Handed({**self.hands, **new})
+
+    def carrying(self, session: str, errors: int) -> Handed:
+        """The hands of session whose end isn't recorded yet carry at least errors error ends
+        before it: the run gate.json's launch held, as a launch recorded it before spec 089 kept
+        the run on the hands (S-089-11)"""
+        return Handed(
+            {
+                k: replace(h, errors=max(h.errors, errors)) if h.session == session and h.ended is None else h
+                for k, h in self.hands.items()
+            }
+        )
+
+    def errors(self, key: str) -> int:
+        """The run of error ends a new hand of key carries from the one it replaces (S-089-11)"""
+        hand = self.hands.get(key)
+        return 0 if hand is None else hand.errors
 
     def ending(self, end: Callable[[str], End | None]) -> Handed:
         """Spec 089 (S-089-2): once no session of the gate runs, each hand without an end
@@ -503,23 +570,22 @@ class Handed:
             {k: h if h.ended is not None else replace(h, ended=ends[h.session]) for k, h in self.hands.items()}
         )
 
-    def ended_ok(self, held: str | None = None, recorded: Iterable[str] | None = None) -> Handed:
-        """Spec 089 (S-089-4): the hands whose session runs or ended ok; one whose session
-        ended limit, auth, or error drops on the tick that records its end (recorded, the keys
-        whose end this tick recorded; None, every one), whichever session gate.json names by
-        then, save the hands of held, a capped dead session's, which DEAD_STREAK holds for
-        retry_hours: kept with their end, they stay held once a later session runs, and are
-        handed again past retry_hours, never idle (S-089-3)"""
-        now = None if recorded is None else set(recorded)
-        return Handed(
-            {
-                k: h
-                for k, h in self.hands.items()
-                if h.ended in (None, End.OK)
-                or (held is not None and h.session == held)
-                or (now is not None and k not in now)
-            }
-        )
+    def settled(self, recorded: Iterable[str], died: Callable[[Hand], dt.datetime], retry: dt.timedelta) -> Handed:
+        """Spec 089, on the tick that records the ends of these keys: a hand whose session ended
+        limit or auth drops, whichever session gate.json names by then (S-089-4); one that ended
+        error is held for its backoff, the next delay of its run after its session's end (died,
+        S-089-11); one that ended ok ends its run. A hand whose end an earlier tick recorded
+        stays as that tick left it"""
+        fresh = set(recorded)
+        found: dict[str, Hand] = {}
+        for k, h in self.hands.items():
+            if k not in fresh or h.ended is None:
+                found[k] = h
+            elif h.ended is End.ERROR:
+                found[k] = h.backed_off(died(h), retry)
+            elif h.ended is End.OK:
+                found[k] = replace(h, errors=0)
+        return Handed(found)
 
     def marked(self, keys: Iterable[str]) -> Handed:
         """These hands marked idle"""
@@ -1281,7 +1347,7 @@ def walk(
                 given = handed.hands.get(key)
                 if given is None:
                     left.append(n)
-                elif now - given.at < retry:
+                elif given.within(now, retry):
                     first = first or (key, given)
                 elif (
                     given.ended in (None, End.OK)
@@ -1343,7 +1409,7 @@ def past_subjects(items: Sequence[Finding], handed: Handed, now: dt.datetime, re
             continue
         for n in subjects(item) or ():
             hand = handed.hands.get(subject_key(item, n))
-            if hand is not None and now - hand.at >= retry and hand.ended in (None, End.OK):
+            if hand is not None and not hand.within(now, retry) and hand.ended in (None, End.OK):
                 found.add(n)
     return sorted(found)
 
@@ -1359,6 +1425,6 @@ def past_issues(
             continue
         for n in subjects(item) or ():
             hand = handed.hands.get(subject_key(item, n))
-            if hand is not None and now - hand.at >= retry and n not in changes.pulls:
+            if hand is not None and not hand.within(now, retry) and n not in changes.pulls:
                 found.add(n)
     return sorted(found)
