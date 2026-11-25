@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.169.0] - 2026-11-25
+
+### Added
+
+- Spec 087's sandbox probe, macOS half: `docs/design/probe-087/` starts a real `claude -p` with the spec's `sandbox` and `permissions` settings and a canary in `~/.ssh`, and `docs/design/agent-modes.md` records on Claude Code 2.1.330 what it refused, the refusal text the tick reads, and four departures from the spec that wait on a decision (`gh` and a denied `hosts.yml`, user `permissions.allow` widening Edit and Write, no local port, the uv cache under the git dir) (S-087-1) (#1524)
+
 ## [0.168.0] - 2026-11-25
 
 ### Fixed
@@ -3037,7 +3043,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.168.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.169.0...HEAD
+[0.169.0]: https://github.com/shipmill/shipmill/compare/v0.168.0...v0.169.0
 [0.168.0]: https://github.com/shipmill/shipmill/compare/v0.167.0...v0.168.0
 [0.167.0]: https://github.com/shipmill/shipmill/compare/v0.166.0...v0.167.0
 [0.166.0]: https://github.com/shipmill/shipmill/compare/v0.165.0...v0.166.0
