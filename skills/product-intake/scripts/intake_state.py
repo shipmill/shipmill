@@ -11,6 +11,9 @@ Feedback is an open issue, or an open discussion when the repo enables Discussio
   - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
     them, so a plan issue or a request for one is never feedback), no --skip-label
     (repeatable, added to SKIP_LABELS), and not --label
+  - is not triage's by its labels, whatever its comments say: not labelled postponed (it
+    reads POSTPONED there), human, or role:<name> (a person's item; these two compared
+    case-insensitively), as triage_state.py reads them
   - has no triage verdict of implement, feature, duplicate, won't fix, or postponed: the
     verdict is the first bold word of the newest comment starting with --marker
     ("Triage: **implement**") by an OWNER, MEMBER, or COLLABORATOR or the --bot-login (D-16;
@@ -161,6 +164,12 @@ SKIP_LABELS = (
     "milestone-proposal",
     "goal-plan",  # a goal's plan, or the maintainer's request for one (spec 028): never a request for a feature
 )
+# Triage's own, whatever its comments say (#1628), as triage_state.py reads them: an issue
+# labelled postponed (its --postponed-label default) reads POSTPONED, and one labelled human
+# or role:<name>, compared case-insensitively, is a person's item (spec 017, spec 036)
+POSTPONED_LABEL = "postponed"
+HUMAN_LABEL = "human"
+ROLE_PREFIX = "role:"
 SKIP_CATEGORIES = ("Announcements",)
 # A postponed issue is triage's too (spec 074): an unattended pass must not group it
 CLOSING_VERDICTS = ("implement", "feature", "duplicate", "won't fix", "won’t fix", "wont fix", "postpone")
@@ -585,8 +594,15 @@ def skip_labels(extra: list[str]) -> set[str]:
     return {*SKIP_LABELS, *extra}
 
 
+def triage_owns(names: set[str]) -> bool:
+    """Labelled postponed, or a person's item (human or role:<name>, any case) (#1628)"""
+    folded = {n.lower() for n in names}
+    return POSTPONED_LABEL in names or HUMAN_LABEL in folded or any(n.startswith(ROLE_PREFIX) for n in folded)
+
+
 def is_feedback(issue: dict[str, Any], skip: set[str], marker: str, bot_login: str | None = None) -> bool:
-    if labels(issue) & skip:
+    names = labels(issue)
+    if names & skip or triage_owns(names):
         return False
     found = trusted_verdict(issue, marker, bot_login)
     return found is None or not found.startswith(CLOSING_VERDICTS)

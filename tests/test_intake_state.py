@@ -163,6 +163,29 @@ def test_feedback_is_what_triage_left_to_intake(ist: ModuleType) -> None:
     assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 7}
 
 
+def test_1628_a_postponed_issue_or_a_persons_item_is_never_feedback(ist: ModuleType) -> None:
+    """#1628: triage_state.py reads an issue labelled postponed as POSTPONED, whatever its
+    comments say, and one labelled human or role:<name> as a person's item, so intake must
+    not read either as a request to group"""
+    handed = triage_template("Opportunity")
+    fake = Fake(
+        [
+            issue(1),  # an ordinary request: still feedback
+            issue(2, labels=("postponed",)),  # postponed with no Triage: comment
+            issue(3, labels=("role:maintainer", "postponed")),
+            issue(4, labels=("human",)),
+            issue(5, labels=("role:infra",)),
+            issue(6, labels=("Role:Infra",)),  # triage compares these case-insensitively
+            issue(7, labels=("Human",)),
+            issue(8, handed, labels=("postponed",)),  # the label outweighs a hand-off, as in triage
+            issue(9, labels=("enhancement",)),  # any other label leaves it feedback
+        ],
+        [],
+    )
+    found = states(ist, fake)
+    assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 9}
+
+
 def test_s074_1_a_postponed_issue_is_feedback_again_only_after_a_newer_opportunity(ist: ModuleType) -> None:
     """proves: S-074-1"""
     postponed = triage_template("Postpone")
