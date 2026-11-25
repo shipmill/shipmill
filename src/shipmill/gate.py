@@ -85,7 +85,7 @@ from shipmill.plugin import (
 )
 from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import GATE_MAINTAINER, LoginReader, ResolvedRole, arguments
-from shipmill.sandbox import Sandbox, SandboxConfig, Where
+from shipmill.sandbox import Sandbox, SandboxConfig, Violation, Where, violations
 from shipmill.sandbox import launch as sandbox_launch
 from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
@@ -140,6 +140,7 @@ PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and s
 TICK = "tick.json"  # the last real tick's decision or error, its fix, and its run of failing ticks (spec 048)
 LAST_RESULT = "last-result.json"  # the last session that ended with a result: its id, item, and end (spec 048)
 VERIFY = "verify.json"  # the last check of [agents] verify: its fingerprint, time, and entries (spec 064)
+SANDBOX_READ = "sandbox-read.json"  # the last sandboxed session whose log a tick read for refusals (S-087-14)
 ERROR = "ERROR"  # tick.json's action for a tick a ReleaseError ended (S-048-9)
 DRY_RUN_FIX = "shipmill gate --dry-run"  # an error's fix when it names none: the same tick, printing it again
 # an interactive session `claude agents` lists done this soon after its launch ran no work
@@ -245,7 +246,9 @@ class Launch:
     a row right before it (#500), None when the one before it ran; item, the item's brief()
     line (`NEW #774`), None in a gate.json written before spec 048 (S-048-14); stopped, when a
     STALLED tick first sent its process group SIGTERM (spec 048), None while the gate never did;
-    credential, the credential it ran with as its pause names it (spec 089), never the token"""
+    credential, the credential it ran with as its pause names it (spec 089), never the token;
+    sandboxed, a headless launch that ran in spec 087's sandbox, whose log the first tick after
+    its end reads for the sandbox's refusals (S-087-14)"""
 
     fingerprint: str
     session: str
@@ -255,8 +258,13 @@ class Launch:
     item: str | None = None
     stopped: dt.datetime | None = None
     credential: str | None = None  # spec 089: credential_id of what it ran with; None before spec 089
+    sandboxed: bool = False  # spec 087: absent, false, in one written before it or launched without --sandbox
 
     def __post_init__(self) -> None:
+        if not isinstance(self.sandboxed, bool):
+            raise ValueError(f"sandboxed must be true or false, got {self.sandboxed!r}")
+        if self.sandboxed and self.process is None:
+            raise ValueError("sandboxed needs a headless launch's process; an interactive session is never sandboxed")
         if self.credential is not None and (
             not isinstance(self.credential, str) or CREDENTIAL_NAMED.fullmatch(self.credential) is None
         ):
@@ -459,6 +467,8 @@ class Decision:
     verify: str | None = None  # the check of [agents] verify a launch ran (S-064-6); None: none ran
     verify_notice: str | None = None  # its one notification per failing fingerprint (S-064-8); None: none due
     denied: tuple[str, ...] = ()  # what the tick did about each tool the last session was denied (S-095-7)
+    # what the sandbox refused in the last sandboxed session, on the first tick after it ended (S-087-14)
+    sandbox_refused: SandboxRefused | None = None
 
 
 def refused_suffix(refusals: Iterable[Refusal]) -> str:
@@ -1149,7 +1159,10 @@ def load_launch(path: Path) -> Launch | None:
         item = data.get("item")  # S-048-14: absent in one written before spec 048
         stopped = _moment(data["stopped"], "stopped") if "stopped" in data else None
         credential = data.get("credential")  # spec 089: absent in one written before it
-        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item, stopped, credential)
+        sandboxed = data.get("sandboxed", False)  # spec 087: absent in one written before it, or unsandboxed
+        return Launch(
+            str(data["fingerprint"]), str(data["session"]), at, process, deaths, item, stopped, credential, sandboxed
+        )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise malformed(path, exc) from None
 
@@ -1170,6 +1183,8 @@ def save_launch(path: Path, launch: Launch) -> None:
         record["stopped"] = launch.stopped.isoformat()
     if launch.credential is not None:
         record["credential"] = launch.credential
+    if launch.sandboxed:  # spec 087: an unsandboxed launch's record is the one before it
+        record["sandboxed"] = True
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1695,6 +1710,118 @@ def ended_with_result(
     return LastResult(last.session, last.named, now)
 
 
+FIRST_WORDS = 4  # how many words of a refused command the tick names (S-087-14)
+SANDBOX_REFUSED_KEYS = {"session", "count", "command", "target", "fix"}
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxRefused:
+    """S-087-14: what the sandbox refused in a sandboxed session, read from its log on the
+    first tick after it ended: how many of its Bash calls the sandbox refused, and the first
+    one's first words, the host or path, and the [agents.sandbox] entry that would allow it"""
+
+    session: str
+    count: int
+    command: str
+    target: str
+    fix: str
+
+    def __post_init__(self) -> None:
+        if isinstance(self.count, bool) or not isinstance(self.count, int) or self.count < 1:
+            raise ValueError(f"sandbox_refused.count must be a positive integer, got {self.count!r}")
+
+    def line(self) -> str:
+        """The tick's `; sandbox refused ...` part, without its `; `"""
+        return f"sandbox refused {self.count}: {self.command} ({self.target}); fix: {self.fix}"
+
+    def record(self) -> dict[str, object]:
+        return {
+            "session": self.session,
+            "count": self.count,
+            "command": self.command,
+            "target": self.target,
+            "fix": self.fix,
+        }
+
+
+def first_words(command: str) -> str:
+    """A command's first FIRST_WORDS words, `…` after them when it has more"""
+    words = command.split()
+    shown = " ".join(words[:FIRST_WORDS])
+    return f"{shown} …" if len(words) > FIRST_WORDS else shown
+
+
+def result_text(content: object) -> str:
+    """A tool result's text: its content as a string, or its text blocks joined"""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+
+
+def sandbox_refused(log: Path, session: str) -> SandboxRefused | None:
+    """S-087-14: a sandboxed session's refusals, read from its own stream-json log, the whole
+    of it: each result of a Bash call (the only tool the sandbox confines) whose text holds the
+    refusal text the probe recorded, a <sandbox_violations> block (sandbox.violations). None
+    when it holds none, when the log is gone, and for a line that isn't an event, which never
+    fails the tick: a refusal changes no decision"""
+    if not log.is_file():
+        return None
+    commands: dict[str, str] = {}  # each Bash call's id -> its command
+    refused: list[tuple[str, Violation]] = []
+    with log.open(encoding="utf-8", errors="replace") as lines:
+        for line in lines:
+            event = stream_event(line)
+            message = None if event is None else event.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            if event is None or not isinstance(blocks, list):
+                continue
+            for block in (b for b in blocks if isinstance(b, dict)):
+                called = block.get("id")
+                given = block.get("input")
+                if event["type"] == "assistant" and block.get("type") == "tool_use" and block.get("name") == "Bash":
+                    if isinstance(called, str) and isinstance(given, dict) and isinstance(given.get("command"), str):
+                        commands[called] = given["command"]
+                    continue
+                answered = block.get("tool_use_id")
+                if event["type"] != "user" or block.get("type") != "tool_result" or not isinstance(answered, str):
+                    continue
+                found = violations(result_text(block.get("content"))) if answered in commands else ()
+                if found:
+                    refused.append((commands[answered], found[0]))
+    if not refused:
+        return None
+    command, first = refused[0]
+    return SandboxRefused(session, len(refused), first_words(command), first.named, first.fix())
+
+
+def load_sandbox_read(path: Path) -> str | None:
+    """sandbox-read.json's session; None before a tick read a sandboxed session's log. A
+    malformed file fails, as the gate's other state files do"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != {"session"} or not isinstance(data["session"], str):
+            raise ValueError("expected exactly session, a string")
+        return data["session"]
+    except ValueError as exc:  # json.JSONDecodeError is one
+        raise malformed(path, exc) from None
+
+
+def unread_sandboxed(state: Path, started: StartTime) -> Launch | None:
+    """S-087-14: the last launch when it was a sandboxed headless one, its process is gone (its
+    pid with another start time, or none recorded, as still_working reads it), and no tick read
+    its log yet (sandbox-read.json); None otherwise"""
+    last = load_launch(state / RECORD)
+    if last is None or not last.sandboxed or last.process is None:
+        return None
+    if last.process.started is not None and started(last.process.pid) == last.process.started:
+        return None
+    return None if load_sandbox_read(state / SANDBOX_READ) == last.session else last
+
+
 LAST_RESULT_KEYS = {"session", "item", "at"}
 
 
@@ -2187,6 +2314,7 @@ STATE_FILES = (
     TICK,
     LAST_RESULT,
     VERIFY,
+    SANDBOX_READ,
     CURSOR,
     HANDED,
     SWEEP,
@@ -2567,6 +2695,8 @@ TICK_KEYS = {"at", "action", "reason", "fix", "failing", "running", "in_flight"}
 # S-052-10: written only when the config sets a refused key, so a tick.json without a refusal
 # reads as before in a shipmill that predates the key
 REFUSED = "refused"
+# S-087-14: written only on the first tick after a sandboxed session the sandbox refused something in
+SANDBOX_REFUSALS = "sandbox_refused"
 TICK_ACTIONS = frozenset({a.value for a in Action} | {ERROR})
 
 
@@ -2576,7 +2706,7 @@ class TickRecord:
     error's first line, the fix, the run of failing ticks it belongs to (None on a tick that
     doesn't fail), the session a RUNNING or STALLED tick waits on, what a QUIET tick says is
     in flight, and the refused keys the tick ran without (S-052-10), as `shipmill gate --json`
-    prints them"""
+    prints them; and what the sandbox refused in the session that ended before it (S-087-14)"""
 
     at: dt.datetime
     action: str
@@ -2586,6 +2716,7 @@ class TickRecord:
     running: Running | None = None
     in_flight: InFlight | None = None
     refused: tuple[Refusal, ...] = ()
+    sandbox_refused: SandboxRefused | None = None
 
     def __post_init__(self) -> None:
         if self.action not in TICK_ACTIONS:
@@ -2603,6 +2734,8 @@ class TickRecord:
         }
         if self.refused:
             found[REFUSED] = [r.record() for r in self.refused]
+        if self.sandbox_refused is not None:
+            found[SANDBOX_REFUSALS] = self.sandbox_refused.record()
         return found
 
 
@@ -2729,6 +2862,16 @@ def _with_person(value: object) -> tuple[tuple[int, tuple[str, ...]], ...]:
     return tuple(found)
 
 
+def _sandbox_refused(value: object) -> SandboxRefused:
+    """tick.json's sandbox_refused, as SandboxRefused.record writes it (S-087-14)"""
+    if not isinstance(value, dict) or set(value) != SANDBOX_REFUSED_KEYS:
+        raise ValueError(f"{SANDBOX_REFUSALS}: expected exactly {', '.join(sorted(SANDBOX_REFUSED_KEYS))}")
+    session, command, target, fix = (
+        _text(value[k], f"{SANDBOX_REFUSALS}.{k}") for k in ("session", "command", "target", "fix")
+    )
+    return SandboxRefused(session, value["count"], command, target, fix)
+
+
 def load_tick(path: Path) -> TickRecord | None:
     """tick.json; None before a real tick wrote one. A malformed file fails, as the gate's other
     state files do, and stays for a person to read"""
@@ -2736,8 +2879,11 @@ def load_tick(path: Path) -> TickRecord | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) - {REFUSED} != TICK_KEYS:
-            raise ValueError(f"expected exactly {', '.join(sorted(TICK_KEYS))}, and {REFUSED} with a refusal")
+        if not isinstance(data, dict) or set(data) - {REFUSED, SANDBOX_REFUSALS} != TICK_KEYS:
+            raise ValueError(
+                f"expected exactly {', '.join(sorted(TICK_KEYS))}, and {REFUSED} with a refusal,"
+                f" {SANDBOX_REFUSALS} with a sandbox refusal"
+            )
         run = data["failing"]
         if run is not None and (not isinstance(run, dict) or set(run) != {"since", "count"}):
             raise ValueError("failing: expected exactly since and count, or null")
@@ -2752,6 +2898,7 @@ def load_tick(path: Path) -> TickRecord | None:
             _running(data["running"]),
             _in_flight(data["in_flight"]),
             _refused(data.get(REFUSED, [])),
+            _sandbox_refused(data[SANDBOX_REFUSALS]) if SANDBOX_REFUSALS in data else None,
         )
     except ValueError as exc:  # json.JSONDecodeError is one
         raise malformed(path, exc) from None
@@ -2776,16 +2923,17 @@ def record_tick(
     running: Running | None,
     in_flight: InFlight | None = None,
     refused: tuple[Refusal, ...] = (),
+    sandbox_refused: SandboxRefused | None = None,
 ) -> TickRecord:
     """Spec 048: write this tick's tick.json after previous, the one load_tick read when the
     tick started. A failing tick after a failing one keeps its since and counts one more; one
     after any other tick starts a run at now; a tick that doesn't fail ends the run. A refusal
-    is recorded and never makes a tick fail (S-052-10)"""
+    is recorded and never makes a tick fail (S-052-10), nor does a sandbox's (S-087-14)"""
     run = None
     if fails:
         before = None if previous is None else previous.failing
         run = Failing(now, 1) if before is None else Failing(before.since, before.count + 1)
-    record = TickRecord(now, action, reason, fix, run, running, in_flight, refused)
+    record = TickRecord(now, action, reason, fix, run, running, in_flight, refused, sandbox_refused)
     save_tick(path, record)
     return record
 
@@ -3372,7 +3520,13 @@ def gate(
     session's env; None, the default, launches as before the spec. With it, every config read
     in headless mode also refuses the --claude-arg flags in SANDBOX_REFUSED, and a real headless
     LAUNCH builds the sandbox once, after the verify check and before any session is stopped,
-    so a failure stops none and starts none; an interactive launch never reads it
+    so a failure stops none and starts none; an interactive launch never reads it. Its launch
+    is recorded sandboxed in gate.json, and the first tick that finds such a session's process
+    gone, whatever its flags, reads the session's own log for the sandbox's refusals
+    (unread_sandboxed, sandbox_refused, S-087-14): its decision line and tick.json gain
+    `sandbox refused <n>: <first words> (<host or path>)` and the [agents.sandbox] fix, the
+    decision itself unchanged, and a real tick records the session in sandbox-read.json so the
+    next reads it no more
 
     host_seams, the host's pause (spec 095, HostSeams), is read after the credential's: a github_limit
     or disk end writes it, and while it holds the tick reads PAUSED; None, as in tests that don't
@@ -3388,6 +3542,9 @@ def gate(
         return agents
 
     try:
+        # S-087-14: read before the tick acts, beside its decision, never in it
+        ended = unread_sandboxed(tick.parent, started)
+        refusal = None if ended is None else sandbox_refused(session_log(tick.parent, ended.session), ended.session)
         decision, launched, waiting = decided(
             git,
             repo,
@@ -3432,13 +3589,15 @@ def gate(
             record_tick(tick, previous, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None, None, found)
         raise
     found = read[0] if read else ()
-    decision = replace(decision, refused=found)
+    decision = replace(decision, refused=found, sandbox_refused=refusal)
     if not dry_run:
+        if ended is not None:  # the next tick reads it no more
+            write(tick.parent / SANDBOX_READ, {"session": ended.session})
         fix = decision_fix(decision)
         action = decision.action.value
         fails = failing(decision)
         flight = decision.in_flight
-        record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, flight, found)
+        record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, flight, found, refusal)
     hours = (lambda: 0) if prune_hours is None else prune_hours
     run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
     caught = catch_up_step(git, catch_up, dry_run)
@@ -3692,7 +3851,9 @@ def decided(
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token, maintainer=host, sandbox=confined)
     process = Process(pid, started(pid))
-    save_launch(record, Launch(item_key(item), str(session_id), now, process, deaths, item.brief(), credential=current))
+    sandboxed = confined is not None
+    started_one = Launch(item_key(item), str(session_id), now, process, deaths, item.brief(), None, current, sandboxed)
+    save_launch(record, started_one)
     settled(ticked.handed.handing(item, str(session_id), now, pulls))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting
 
@@ -3772,7 +3933,8 @@ def tick_lines(
     decision: Decision, launched: str | None, waiting: Sequence[Waiting], pruned: Sequence[Judged], dry_run: bool
 ) -> list[str]:
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
-    each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10, and its
+    each refused key, S-052-10, then what the sandbox refused in the session that ended before
+    the tick, S-087-14, then a swept tick's config-upgrade proposal, S-047-10, and its
     permission notice, S-060-8, then the
     check of [agents] verify a launch ran, S-064-6), the
     branch the refresh detached the checkout from, one line
@@ -3785,7 +3947,8 @@ def tick_lines(
     swept = "" if decision.upgrades is None else f"; {decision.upgrades}"  # S-047-10: a swept tick's proposal
     swept += "" if decision.permissions is None else f"; {decision.permissions}"  # S-060-8: then its notice
     tail = "" if decision.verify is None else f"; verify: {decision.verify}"  # S-064-6: last on the line
-    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{swept}{tail}"]
+    boxed = "" if decision.sandbox_refused is None else f"; {decision.sandbox_refused.line()}"  # S-087-14
+    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{boxed}{swept}{tail}"]
     if decision.auth_notice is not None:
         lines.append(f"  {decision.auth_notice}")
     if decision.verify_notice is not None:

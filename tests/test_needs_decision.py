@@ -611,6 +611,27 @@ def test_s064_10_a_denial_a_hook_refusal_and_a_not_found_each_get_their_own_fix(
     assert "--allowedTools" not in hook + missing
 
 
+def test_s087_15_a_sandbox_refusal_is_told_from_the_other_three_and_its_option_is_an_agents_sandbox_entry() -> None:
+    # spec 087: a refused host or path asked as a denial would get --claude-arg widened, which
+    # can't widen the sandbox
+    section = folded(SKILLS / "github-issue-triage" / "references" / "needs-decision.md").split(
+        "## A denied tool call is a decision", 1
+    )[1]
+    section = section.split("## ", 1)[0]
+    assert "one of four ways" in section
+    sandbox = section.split("- **Refused by the sandbox**: ", 1)[1].split("- **", 1)[0]
+    assert "`<sandbox_violations>`" in sandbox and "`deny network-outbound <host>:<port>`" in sandbox
+    assert "`Operation not permitted`" in sandbox and "`Read-only file system`" in sandbox
+    assert "none of the three above" in sandbox
+    assert "Claude Code allowed the call, the hook let it through, and the program was found" in sandbox
+    assert "names the command and the path or host" in sandbox
+    assert "its option is an `[agents.sandbox]` entry (`domains`, `read` or `write`)" in sandbox
+    assert "a pull request the maintainer approves" in sandbox
+    assert "it never proposes `--claude-arg`" in sandbox
+    assert "never retries the step through another program" in sandbox
+    assert "--allowedTools" not in sandbox
+
+
 @pytest.mark.parametrize(
     "path",
     [
