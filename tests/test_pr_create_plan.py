@@ -15,6 +15,7 @@ from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
 
+from .conftest import guarded_home
 from .test_app import REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, default_branch
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -30,7 +31,7 @@ def host(tmp_path: Path) -> Host:
     for folder in (fakes, record, home):
         folder.mkdir()
     executable(fakes / "gh", FAKE_GH)
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(home))
 
 
 def connected(tmp_path: Path, files: dict[str, str] = PRODUCT) -> Path:

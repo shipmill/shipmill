@@ -99,7 +99,16 @@ def host(tmp_path: Path) -> Host:
     record.mkdir()
     home = tmp_path / "home"
     home.mkdir()
+    blank(home)  # D-102: an [agents] checkout refuses a public write without it
     return Host(fakes, record, home)
+
+
+def blank(home: Path) -> Path:
+    """An empty private file under home, as `touch` leaves it"""
+    path = home / PRIVATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return path
 
 
 def private(host: Host, text: str) -> Path:
@@ -361,9 +370,11 @@ def test_s081_3_a_write_to_no_repo_is_public(tmp_path: Path, host: Host) -> None
 
 
 def test_s081_4_without_the_private_file_no_term_is_checked_and_no_visibility_read(tmp_path: Path, host: Host) -> None:
-    root = checkout(tmp_path, HOST_IDENTITY)
+    """In a checkout without [agents] (S-081-19 refuses in one with it)"""
+    root = checkout(tmp_path, None)
+    (host.home / PRIVATE_FILE).unlink()
     capture = Reads()
-    gh(root, ["issue", "comment", "250", "--body", LEAKED], host, capture)
+    gh(root, ["--as-host", "issue", "comment", "250", "--body", LEAKED], host, capture)
     assert capture.reads == []
 
 
@@ -1199,3 +1210,128 @@ def test_s081_8_a_string_in_a_lock_file_prints_none(path: str) -> None:
 def test_s081_8_a_warning_never_refuses() -> None:
     assert scan([Text("the body", random_looking())], (), ()) == []
     assert warning_lines([]) == []
+
+
+# -- S-081-18: a private repo named in a public write (D-102) -------------------------------------
+
+HIDDEN = "acme/secret"  # an invented private repo
+
+
+@dataclass
+class Named(Reads):
+    """Reads by repo: the checkout's answers destination, HIDDEN private, PUBLIC public, and any
+    other repo's read fails, as one the token can't see"""
+
+    destination: str = "public"
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+        code, out = super().__call__(argv, env)
+        if "--jq" not in argv:
+            return code, out
+        repo = argv[2].removeprefix("repos/").lower()
+        answers = {REPO: self.destination, HIDDEN: "private", PUBLIC: "public"}
+        return (0, f"{answers[repo]}\n") if repo in answers else (1, "")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"see {HIDDEN} for the fix",
+        f"see https://github.com/{HIDDEN}/issues/2",
+        f"cloned from git@github.com:{HIDDEN}.git",
+        f"fixed in {HIDDEN}#12.",
+        "as in (ACME/Secret)",
+        f"line one\nthe fix is in {HIDDEN}.",
+    ],
+)
+def test_s081_18_a_private_repo_named_in_a_public_write_is_refused(tmp_path: Path, host: Host, text: str) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    said = refused(root, ["issue", "comment", "250", "--body", text], host, Named())
+    assert said.startswith(f"shipmill gh: refused, nothing was sent ({REPO} is public)\n")
+    assert "private-repo: the body" in said
+    assert f"names the private repo {HIDDEN}" in said.lower()
+    assert said.endswith(FIX)
+
+
+def test_s081_18_as_the_app_too(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    key = str(key_file(tmp_path))
+    said = refused(root, ["--app-key", key, "issue", "comment", "250", "--body", f"see {HIDDEN}"], host, Named())
+    assert f"private-repo: the body, line 1, names the private repo {HIDDEN}" in said
+
+
+def test_s081_18_needs_no_private_file(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, None)
+    (host.home / PRIVATE_FILE).unlink()
+    said = refused(root, ["--as-host", "issue", "comment", "250", "--body", f"see {HIDDEN}"], host, Named())
+    assert f"private-repo: the body, line 1, names the private repo {HIDDEN}" in said
+
+
+def test_s081_18_paths_versions_scopes_other_hosts_and_public_repos_pass(tmp_path: Path, host: Host) -> None:
+    """Only a pair that stands alone, or a github.com URL's, is read; a public repo and one the
+    token can't read pass"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    text = (
+        "Edit src/shipmill/leaks.py and docs/specs/081-outgoing-leak-check.md, bump v1.2/3.4 on 11/24,\n"
+        f"add @{HIDDEN} from npm, see https://git.example.com/{HIDDEN} and ~/.config/shipmill/private.toml,\n"
+        "branch fix/1480-acme-secret from origin/main, "
+        f"the public {PUBLIC}, https://github.com/{PUBLIC}/pull/3, and acme/gone, which can't be read"
+    )
+    capture = Named()
+    gh(root, ["issue", "comment", "250", "--body", text], host, capture)
+    assert capture.reads == [REPO, PUBLIC, "acme/gone"]
+
+
+def test_s081_18_each_repo_is_read_once_and_each_mention_named(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    text = f"{HIDDEN}, ACME/secret, https://github.com/{HIDDEN}, and {HIDDEN} again; {REPO} too"
+    capture = Named()
+    said = refused(root, ["issue", "create", "--title", HIDDEN, "--body", text], host, capture)
+    assert capture.reads == [REPO, HIDDEN]
+    assert said.count("private-repo: ") == 5
+    assert f"private-repo: the title names the private repo {HIDDEN}" in said
+
+
+def test_s081_18_a_write_to_a_private_repo_reads_no_reference(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    capture = Named(destination="private")
+    gh(root, ["issue", "comment", "250", "--body", f"see {HIDDEN} and {PUBLIC}"], host, capture)
+    assert capture.reads == [REPO]
+
+
+# -- S-081-19: an [agents] checkout without the private file (D-102) ------------------------------
+
+
+def test_s081_19_a_public_write_without_the_private_file_is_refused(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    path = host.home / PRIVATE_FILE
+    path.unlink()
+    said = refused(root, ["issue", "comment", "250", "--body", CLEAN], host)
+    assert said.startswith(f"shipmill gh: refused, nothing was sent ({REPO} is public)\n")
+    assert f"  private-file: {path} is missing" in said
+    assert "an empty one is enough" in said
+    assert f"touch {path}" in said
+    blank(host.home)
+    gh(root, ["issue", "comment", "250", "--body", CLEAN], host)
+
+
+def test_s081_19_as_the_app_too(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    (host.home / PRIVATE_FILE).unlink()
+    key = str(key_file(tmp_path))
+    said = refused(root, ["--app-key", key, "issue", "comment", "250", "--body", CLEAN], host)
+    assert "private-file:" in said
+
+
+def test_s081_19_a_write_to_a_private_repo_passes(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    (host.home / PRIVATE_FILE).unlink()
+    capture = Reads("private")
+    gh(root, ["issue", "comment", "250", "--body", CLEAN], host, capture)
+    assert capture.reads == [REPO]
+
+
+def test_s081_19_a_checkout_without_agents_reads_no_file_as_no_terms(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, None)
+    (host.home / PRIVATE_FILE).unlink()
+    gh(root, ["--as-host", "issue", "comment", "250", "--body", CLEAN], host)

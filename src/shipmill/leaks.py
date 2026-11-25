@@ -10,6 +10,11 @@ another file or turns a detector off. Three detectors refuse:
   private file's `secret_files`, in any repo
 - `secret-format`: a known token format, in any repo, and each finding of `gitleaks` 8.19 or
   newer when it is on PATH, run with its default rules only (S-081-7)
+- `private-repo`: an `owner/name` reference the token at hand reads as private, in a
+  `shipmill gh` write to a public repo, with or without the private file (S-081-18, D-102)
+
+In a checkout whose config has `[agents]`, a `shipmill gh` write to a public repo is refused
+while the private file is missing (S-081-19, D-102), `missing_private`'s refusal.
 
 A fourth, `high-entropy`, only warns: a long random-looking string outside lock files prints a
 `shipmill leaks: warning:` line and changes no exit code (S-081-8).
@@ -30,7 +35,7 @@ import subprocess
 import tempfile
 import tomllib
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -76,6 +81,7 @@ class Detector(StrEnum):
     TERM = "term"
     SECRET_VALUE = "secret-value"
     SECRET_FORMAT = "secret-format"
+    PRIVATE_REPO = "private-repo"
     HIGH_ENTROPY = "high-entropy"
 
 
@@ -362,7 +368,7 @@ class Finding:
     def said(self) -> str:
         """As a refusal lists it: `term: the body, line 4, names the private term "Acme Rocket"`"""
         at = self.where if self.line is None else f"{self.where}, line {self.line},"
-        verb = "names" if self.detector is Detector.TERM else "holds"
+        verb = "names" if self.detector in (Detector.TERM, Detector.PRIVATE_REPO) else "holds"
         return f"{self.detector.value}: {at} {verb} {self.what}"
 
 
@@ -645,3 +651,84 @@ def refusal(command: str, destination: Destination, findings: Sequence[Finding],
         lines.append(f"  and {len(findings) - LISTED} more")
     lines.append(fix)
     return LeakRefused("\n".join(lines))
+
+
+def missing_private(command: str, destination: Destination, path: Path) -> LeakRefused:
+    """S-081-19, D-102: the exit 2 of a write to a public repo from a checkout with [agents]
+    while the private file is missing, in a refusal's shape: an empty file is enough"""
+    lines = [
+        f"{command}: refused, nothing was sent ({destination.said()})",
+        f"  private-file: {path} is missing, and this checkout's .github/shipmill.toml has [agents]",
+        f"Create it, an empty one is enough: `mkdir -p {path.parent} && touch {path}`; then list your\n"
+        "private names under terms, as docs/leaks.md describes",
+    ]
+    return LeakRefused("\n".join(lines))
+
+
+# An owner/name reference (S-081-18): a GitHub login (letters, digits, single inner hyphens, 39
+# at most) and a repo name. In a github.com URL, https or ssh, the two parts after the host; else
+# a bare pair standing alone: no letter, digit, `.`, `_`, `-`, `/`, `@`, `:`, or `~` before it
+# (so no path's inner pair, other host's URL, npm scope, or `~/` path) and no `/` after it (so no
+# path's leading pair). A pair whose either part holds no letter (a date, a fraction) is none,
+# and so is a bare pair whose owner is a branch's prefix or a remote
+_OWNER = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+_NAME = r"[A-Za-z0-9._-]{1,100}"
+_URL_REFERENCE = re.compile(rf"(?<![\w.-])(?:www\.)?github\.com[/:]({_OWNER})/({_NAME})", re.IGNORECASE)
+_BARE_REFERENCE = re.compile(rf"(?<![\w.@:/~-])({_OWNER})/({_NAME})(?![\w.-])(?!/)")
+_SITE_PATHS = frozenset(  # github.com's own pages, whose first part is no owner
+    {"orgs", "settings", "apps", "marketplace", "sponsors", "topics", "users", "features", "notifications"}
+)
+# a branch's conventional prefix or a remote, whose bare pair (`fix/1480-x`, `origin/main`) is
+# a ref, not a repo; a github.com URL with one is still read
+_REF_PREFIXES = frozenset(
+    {"bugfix", "chore", "docs", "feat", "feature", "fix", "hotfix", "origin", "refactor", "refs", "release", "spec"}
+    | {"test", "upstream", "wip"}
+)
+
+
+def _references(text: str) -> list[tuple[int, str]]:
+    """The owner/name references in text, each where it starts, a trailing `.` (a sentence's
+    end) and `.git` dropped from its name"""
+    found: list[tuple[int, str]] = []
+    for pattern in (_URL_REFERENCE, _BARE_REFERENCE):
+        for m in pattern.finditer(text):
+            owner, name = m.group(1), m.group(2).rstrip(".").removesuffix(".git")
+            if owner.lower() in (_SITE_PATHS if pattern is _URL_REFERENCE else _REF_PREFIXES):
+                continue
+            if name in ("", ".", "..") or not (_lettered(owner) and _lettered(name)):
+                continue
+            found.append((m.start(1), f"{owner}/{name}"))
+    return sorted(found)
+
+
+def _lettered(part: str) -> bool:
+    return any(char.isalpha() for char in part)
+
+
+def references(texts: Sequence[Text], own: str | None) -> list[str]:
+    """S-081-18: the distinct owner/name references in texts, as first written, in order;
+    case-insensitively distinct, and never own, the repo the write goes to"""
+    seen = set() if own is None else {own.lower()}
+    found: list[str] = []
+    for item in texts:
+        for _, repo in _references(item.text):
+            if repo.lower() not in seen:
+                seen.add(repo.lower())
+                found.append(repo)
+    return found
+
+
+def private_repos(
+    texts: Sequence[Text], named: Sequence[str], visibility: Callable[[str], Visibility | None]
+) -> list[Finding]:
+    """S-081-18, D-102: a `private-repo` finding at each reference in texts to a repo of named
+    whose visibility reads private or internal, each read once; a read that fails or says
+    something else counts as no private repo"""
+    hidden = {repo.lower() for repo in named if visibility(repo) in (Visibility.PRIVATE, Visibility.INTERNAL)}
+    findings: list[Finding] = []
+    for item in texts:
+        for at, repo in _references(item.text):
+            if repo.lower() in hidden:
+                what = f"the private repo {repo}"
+                findings.append(Finding(Detector.PRIVATE_REPO, item.where, _line(item.text, at), what))
+    return findings

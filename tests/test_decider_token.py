@@ -36,8 +36,9 @@ from shipmill.app_login import (
 from shipmill.cli import main
 from shipmill.credit import MARKER, Comment, Filed, Person, closed_by, issue_of
 from shipmill.errors import ReleaseError
+from shipmill.leaks import PRIVATE_FILE
 
-from .conftest import POLICY, Repo
+from .conftest import POLICY, Repo, guarded_home
 from .test_app import APP_ID, REPO, FakeSigner
 from .test_app_gh_merge import CODE, FakeGate, FakeReads, Reader, connected, pinned_to
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -192,15 +193,13 @@ def gh(
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     executable(fakes / "gh", FAKE_GH)
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
     return main(
         ["--repo", str(repo.root), "gh", "--app-key", str(key), *args],
         api=api if api is not None else UserApi(),
         signer=FakeSigner(),
         stdin=io.StringIO(""),
         environ={"PATH": f"{fakes}:/usr/bin:/bin", **(environ or {})},
-        home=home,
+        home=guarded_home(tmp_path / "home"),
         gh_runner=runner,
         merge_reader=Reader(FakeReads((CODE,), labels=labels)),
         merge_gate=FakeGate(),
@@ -473,7 +472,7 @@ def test_s051_8_an_expired_token_is_refreshed_before_the_write_and_stored_again_
     assert (stored["access_token"], stored["refresh_token"]) == (NEW_ACCESS, NEW_REFRESH)
     assert dt.datetime.fromisoformat(stored["expires_at"]) > now() + dt.timedelta(hours=7)
     # written atomically: no temporary left; the secret's file is untouched
-    assert sorted(p.name for p in path.parent.iterdir()) == sorted([path.name, secret.name])
+    assert sorted(p.name for p in path.parent.iterdir()) == sorted([path.name, secret.name, PRIVATE_FILE.name])
     assert secret.read_text(encoding="utf-8") == CLIENT + "\n"
 
 

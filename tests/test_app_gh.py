@@ -24,6 +24,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import state_dir
 from shipmill.gitrepo import Git
 
+from .conftest import guarded_home
 from .test_app import APP_ID, BOT, GRANTED, REPO, FakeSigner, key_file
 from .test_app_token import FAKE_GH, MintApi, executable
 from .test_gate import write_config
@@ -64,9 +65,7 @@ def host(tmp_path: Path) -> Host:
     executable(fakes / "gh", FAKE_GH)
     record = tmp_path / "record"
     record.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(tmp_path / "home"))
 
 
 def checkout(tmp_path: Path, config: str | None, origin: str = f"https://github.com/{REPO}.git") -> Path:
@@ -223,7 +222,7 @@ def test_s012_2_the_token_is_limited_to_the_repo_gh_names(tmp_path: Path, host: 
 def test_s012_2_the_default_key_and_an_empty_gh_token_replaced(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, WITH_APP)
     key = host.home / ".config" / "shipmill" / f"app-{APP_ID}.pem"
-    key.parent.mkdir(parents=True)
+    key.parent.mkdir(parents=True, exist_ok=True)
     key.write_text("not a real key\n", encoding="utf-8")
     key.chmod(0o600)
     runner = Runner(code=0)

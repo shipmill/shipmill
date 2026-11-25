@@ -1290,7 +1290,16 @@ def _terms_check(private: Private, probe: LeakProbe) -> Check:
         return Check("PASS", LEAKS_ROW, f"terms on: {count} term{'' if count == 1 else 's'} from {_SHOWN_PRIVATE}")
     off = f"terms off: {_SHOWN_PRIVATE} lists no terms" if private.present else f"terms off: no {_SHOWN_PRIVATE}"
     visibility = probe.visibility()
-    if visibility in (Visibility.PRIVATE, Visibility.INTERNAL):
+    private_repo = visibility in (Visibility.PRIVATE, Visibility.INTERNAL)
+    if not private.present:  # S-081-19, D-102: shipmill gh refuses a public write from here until it exists
+        seen = f"the repo is {visibility}" if visibility is not None else "the repo's visibility can't be read"
+        detail = (
+            f"{off} ({seen}), so shipmill gh refuses every write to a public repo from this checkout:"
+            f" `mkdir -p ~/.config/shipmill && touch {_SHOWN_PRIVATE}` (an empty one is enough), then list"
+            " your private names under terms, as docs/leaks.md describes"
+        )
+        return Check("PASS" if private_repo else "WARN", LEAKS_ROW, detail)
+    if private_repo:
         return Check("PASS", LEAKS_ROW, f"{off} (the repo is {visibility})")
     seen = "the repo is public" if visibility is Visibility.PUBLIC else "the repo's visibility can't be read"
     detail = (

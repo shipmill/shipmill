@@ -18,6 +18,7 @@ from shipmill.decision_label import QUESTION_MARKER, WITHDRAWN_MARKER
 from shipmill.decision_label import _triage as triage
 from shipmill.errors import ReleaseError
 
+from .conftest import guarded_home
 from .test_agent_marker import HOST_IDENTITY
 from .test_app import BOT, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
@@ -31,9 +32,7 @@ def host(tmp_path: Path) -> Host:
     executable(fakes / "gh", FAKE_GH)
     record = tmp_path / "record"
     record.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(tmp_path / "home"))
 
 
 AGENT = "\n\n<!-- shipmill:agent -->"

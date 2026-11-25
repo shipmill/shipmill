@@ -15,6 +15,7 @@ from shipmill.app_gh import is_read
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 
+from .conftest import guarded_home
 from .test_agent_marker import sent
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, outside
@@ -29,9 +30,7 @@ def host(tmp_path: Path) -> Host:
     executable(fakes / "gh", FAKE_GH)
     record = tmp_path / "record"
     record.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    return Host(fakes, record, home)
+    return Host(fakes, record, guarded_home(tmp_path / "home"))
 
 
 AGENTS_NO_APP = '[agents]\nprompt = "/t"\n'

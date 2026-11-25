@@ -31,6 +31,7 @@ from shipmill.github import (
     WorkflowRun,
 )
 from shipmill.gitrepo import Git
+from shipmill.leaks import PRIVATE_FILE
 from shipmill.policy import Policy
 
 POLICY = """\
@@ -107,6 +108,15 @@ T0 = dt.datetime(2026, 10, 5, tzinfo=dt.UTC)
 def at_day(days: float, hour: int = 8) -> dt.datetime:
     """days after T0 at hour:00 UTC"""
     return T0 + dt.timedelta(days=days, hours=hour)
+
+
+def guarded_home(home: Path) -> Path:
+    """home, made when missing, holding the private file, empty as `touch` leaves a new one:
+    `shipmill gh` refuses a public write from an [agents] checkout without it (S-081-19, D-102)"""
+    path = home / PRIVATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return home
 
 
 @dataclass

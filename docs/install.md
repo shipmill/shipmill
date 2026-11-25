@@ -789,7 +789,7 @@ When the agents work in your public repos and your private ones from the same ma
 your private names, and the files that hold your secrets, in
 `~/.config/shipmill/private.toml`, outside every repo. shipmill then refuses an agent's
 write or push that would send one of them, before it leaves the machine (spec 081, D-94).
-[leaks.md](leaks.md) describes the file, the four detectors, and both refusals, and
+[leaks.md](leaks.md) describes the file, the detectors, and the refusals, and
 `shipmill doctor`'s `leaks` block shows what is checked.
 
 ## Contributors

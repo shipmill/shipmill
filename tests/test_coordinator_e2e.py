@@ -27,6 +27,7 @@ from shipmill.agent_marker import MARKER, carries
 from shipmill.app_gh import named_repo, product_refusal
 from shipmill.cli import main
 
+from .conftest import guarded_home
 from .test_app import APP_ID, GRANTED, REPO, FakeSigner
 from .test_app_gh import WITH_APP, checkout
 from .test_app_token import FAKE_GH as RECORDING_GH
@@ -184,6 +185,8 @@ class Forge:
         def read(argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
             args = list(argv[1:])
             self.calls.append(Call(env["GH_TOKEN"], env.get("GH_REPO"), tuple(args)))
+            if args[2:] == ["--jq", ".visibility"]:  # the leak check's read of a repo a body names (S-081-18)
+                return 0, "public\n"
             assert len(args) == 2 and args[0] == "api", args
             owner, name, kind, number = args[1].removeprefix("repos/").split("/")
             assert kind == "issues", args
@@ -483,8 +486,7 @@ def product(tmp_path: Path, scripts: tuple[ModuleType, ModuleType, ModuleType]) 
     fakes, home = tmp_path / "fakes", tmp_path / "home"
     fakes.mkdir()
     executable(fakes / "gh", RECORDING_GH)  # on PATH for `shipmill gh` to find; the forge runs instead
-    key = home / ".config" / "shipmill" / f"app-{APP_ID}.pem"
-    key.parent.mkdir(parents=True)
+    key = guarded_home(home) / ".config" / "shipmill" / f"app-{APP_ID}.pem"
     key.write_text("not a real key\n", encoding="utf-8")
     key.chmod(0o600)
     checkouts = {}
@@ -629,6 +631,8 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
             assert query == ch.ADD_SUB_ISSUE or not query.lstrip().startswith("mutation"), c
         elif c.args[:3] == ("api", "-X", "PATCH"):  # the body edit, through REST (spec 050)
             assert c.args[3].startswith(f"repos/{A}/issues/"), c
+        elif c.args[2:] == ("--jq", ".visibility"):  # the leak check's read of a repo a body names (S-081-18)
+            assert c.args[1] in {f"repos/{repo}" for repo in (A, B)}, c
         elif c.args[0] == "api":  # a GET: no -X, -f, or --input; a file, or the body an edit reads first
             assert len(c.args) == 2 and ("/contents/" in c.args[1] or c.args[1].startswith(f"repos/{A}/issues/")), c
         else:
@@ -642,9 +646,10 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
     assert mutations(a_calls) == [ch.ADD_BLOCKED_BY, "PATCH"]  # A's link, in A
     assert mutations(product_calls) == [ch.ADD_SUB_ISSUE, "PATCH"]  # the coordinator's link, on A's report
     # S-050-3: each body edit read its record's current body first, with the token it wrote with
-    for at, c in enumerate(forge.calls):
+    unchecked = [c for c in forge.calls if c.args[2:] != ("--jq", ".visibility")]  # the leak check's reads aside
+    for at, c in enumerate(unchecked):
         if c.args[:3] == ("api", "-X", "PATCH"):
-            assert forge.calls[at - 1] == Call(c.token, c.target, ("api", c.args[3])), c
+            assert unchecked[at - 1] == Call(c.token, c.target, ("api", c.args[3])), c
     # and kept its origin: maria's issue stays hers, the report A's session filed stays an agent's
     assert not carries(forge.tickets[waiting].body)
     assert forge.tickets[waiting].body == f"Depends on {report}"
