@@ -135,9 +135,10 @@ can't be read: <why>` for a counting `Files:` line naming no backticked path or 
 so a person looks` when #N's newest 100 comments hold no counting one and older ones went unread. A
 counting comment edited after the PR opened (its lastEditedAt) holds it, NEEDS_DECISION, with `  files:
 the allowance on #N changed after this pull request opened` (S-085-13, D-106). The maintainer's
-answer above lifts the `files:` lines with the other asks, for the heads it covers; a verdict written
-after the PR opened widens nothing. A person's PR, and an agent's whose issues declare none or that
-names no issue, is judged as before.
+answer above lifts the `files:` lines with the other asks, for the heads it covers; an answer on an
+issue given before the PR opened lifts them only at the head its question names, or one whose own
+change is the same (S-085-14, D-109); a verdict written after the PR opened widens nothing. A
+person's PR, and an agent's whose issues declare none or that names no issue, is judged as before.
 
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
@@ -2446,9 +2447,12 @@ def acceptance(
     maintainers: Maintainers,
     thread: dict | None = None,
     issues: Issues | None = None,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, bool]:
     """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
-    the needs-decision line that says why (None for no line): the newest question on the pull
+    the needs-decision line that says why (None for no line), and whether it covers the head by
+    the head its question names or by its same change, which alone lifts a files: line of spec
+    085 (S-085-14, D-109): an answer on an issue before the pull request opened covers every head
+    for the other asks, and no files: line. The newest question on the pull
     request, else, for a pull request the --bot-login or an OWNER, MEMBER, or COLLABORATOR
     opened, on an issue it closes or names as Part of #N; its newest trusted answer, by
     retro.py's newest_answer_at (a relay by the --bot-login counts when it names one of
@@ -2467,38 +2471,45 @@ def acceptance(
     on_issue = False
     if asked is None:
         if not whole:
-            return False, None  # its own question may be older than the comments read
+            return False, None, False  # its own question may be older than the comments read
         if not rt.trusted(thread, bots):
-            return False, None  # anyone may write `Fixes #N` in a body: an outsider's PR asks its own
+            return False, None, False  # anyone may write `Fixes #N` in a body: an outsider's PR asks its own
         found = issue_question(data, number, repo, bots, issues)
         if found is None:
-            return False, None
+            return False, None, False
         (comments, asked), on_issue = found, True
     later = comments[asked + 1 :]
     answer = rt.newest_answer_at(later, bots, maintainers)
     if answer is None:
-        return False, None
+        return False, None, False
     index = answer[0]
     if by_bots(later[index], bots):
         refused = rt.relay_refusal(comments[asked]["body"], rt.parse_relay(str(later[index]["body"])))
         if refused is not None:
-            return False, RELAY_NOT_COUNTED.format(reason=refused)
+            return False, RELAY_NOT_COUNTED.format(reason=refused), False
     said = whole_reply(later[index], bots)
     if said is None or not rt.takes_recommended(comments[asked]["body"], said):
-        return False, NOT_RECOMMENDED
-    at = moment(later[index]["createdAt"], f"the answer on #{number}'s createdAt")
-    if on_issue and at < moment(thread.get("createdAt"), f"#{number}'s createdAt"):
-        return True, None  # given before the pull request opened: it covers every head
+        return False, NOT_RECOMMENDED, False
     head = str(data["headRefOid"])
     answered = asked_at(comments[asked]["body"])
+
+    def covers_head() -> bool:
+        if answered is None:
+            return False
+        if answered == head:
+            return True
+        return same_change(checkout, base_of(data, checkout), answered, head, added_specs(data, number, repo))
+
+    at = moment(later[index]["createdAt"], f"the answer on #{number}'s createdAt")
+    if on_issue and at < moment(thread.get("createdAt"), f"#{number}'s createdAt"):
+        # given before the pull request opened: it covers every head for the other asks, and a
+        # files: line only at the head its question names (S-085-14, D-109)
+        return True, None, covers_head()
     if answered is None:
-        return False, NO_HEAD
-    if answered == head:
-        return True, None
-    specs = added_specs(data, number, repo)
-    if same_change(checkout, base_of(data, checkout), answered, head, specs):
-        return True, None
-    return False, DIFFERS.format(sha7=answered[:7])
+        return False, NO_HEAD, False
+    if covers_head():
+        return True, None, True
+    return False, DIFFERS.format(sha7=answered[:7]), False
 
 
 # The spec of accepted work at notify (spec 067): the --bot-login's decided comment covers its head
@@ -2905,11 +2916,11 @@ def main() -> int:
                     if why is not None:
                         judged = replace(judged, asks=(*judged.asks, f"{ACCEPTED_SPEC}: {why}"))
                 if judged.verdict == NEEDS_DECISION:  # the answer on GitHub lifts the asks (spec 055)
-                    covered, why = acceptance(
+                    covered, why, at_head = acceptance(
                         data, number, args.repo, args.bot_login, bases.checkout, who, thread, issues
                     )
-                    if covered:
-                        judged = replace(judged, asks=(), spec_asks=(), files=())
+                    if covered:  # an issue answer older than the PR lifts no files: line (S-085-14, D-109)
+                        judged = replace(judged, asks=(), spec_asks=(), files=() if at_head else judged.files)
                     else:
                         judged = replace(judged, asks=(*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":

@@ -11,7 +11,10 @@ from .test_app_gh_merge import FakeGate
 from .test_merge_gate import run as merge
 from .test_pr_gate import (
     BOT,
+    DIRECTION,
+    ISSUE_BODIES,
     MAIN_READY,
+    REVIEW,
     asked,
     at,
     branched,
@@ -25,6 +28,7 @@ from .test_pr_gate import (
     pr,
     push,
     ready_line,
+    relay,
     review,
     run_gate,
     thread,
@@ -398,6 +402,69 @@ def test_s085_9_a_new_verdict_by_the_app_after_the_pr_opened_doesnt_lift_the_fil
     later = verdict("src/a.py", CI, when=at(11))
     proc = gated(tmp_path, ("src/a.py", CI), {12: thread(verdict("src/a.py"), later)})
     assert held(proc) == [outside(CI)]
+
+
+# S-085-14 (D-109, #1604)
+
+
+def test_s085_14_an_issue_answer_before_the_pr_opened_lifts_no_files_line(tmp_path: Path) -> None:
+    """#1604's repro: the issue allows src/a.py, its question is answered `1` before the agent's PR
+    opens, and the PR changes src/b.py: the answer names no head, so the files: line holds it"""
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(8, 30), head=None), comment("1", at(9)))
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [outside("src/b.py")]
+
+
+def test_s085_14_an_issue_answer_before_the_pr_opened_still_lifts_the_other_asks(tmp_path: Path) -> None:
+    """spec 055 (S-055-7): the protected area's ask is lifted by that answer as before; only the
+    files: line stays"""
+    work = checkout(tmp_path, {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW})
+    issue = thread(verdict("src/land.py", when=at(8)), asked(at(8, 30), head=None), comment("1", at(9)))
+    data = headed(body=ISSUE_BODIES[1], files=("src/land.py", "src/b.py"))
+    assert held(answered(tmp_path, data, thread(), issue, work)) == [outside("src/b.py")]
+    # without a file outside, that answer alone lands it, as spec 055 says
+    data = headed(body=ISSUE_BODIES[1], files=("src/land.py",))
+    proc = answered(tmp_path, data, thread(), issue, work)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s085_14_an_issue_answer_to_a_question_naming_the_judged_head_lifts_the_files_line(tmp_path: Path) -> None:
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(11)), comment("1", at(12)))
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    proc = answered(tmp_path, data, thread(), issue)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s085_14_an_issue_answer_before_the_pr_opened_to_a_question_naming_the_judged_head_lifts_it(
+    tmp_path: Path,
+) -> None:
+    """D-109: the head the question names, not when the answer came, decides the files: line"""
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(8, 30)), comment("1", at(9)))
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    proc = answered(tmp_path, data, thread(), issue)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s085_14_a_relayed_issue_answer_before_the_pr_opened_lifts_no_files_line(tmp_path: Path) -> None:
+    relayed = relay("Decision by @romamo", "1", at(9))
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(8, 30), head=None), relayed)
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [outside("src/b.py")]
+
+
+def test_s085_14_an_outsiders_answer_naming_the_judged_head_lifts_no_files_line(tmp_path: Path) -> None:
+    outsider = comment("1", at(12), login="mallory", association="NONE")
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(11)), outsider)
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [outside("src/b.py")]
+
+
+def test_s085_14_an_issue_answer_after_the_pr_opened_to_a_question_naming_no_head_lifts_nothing(
+    tmp_path: Path,
+) -> None:
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(11), head=None), comment("1", at(12)))
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [f"  needs-decision: {gate.NO_HEAD}", outside("src/b.py")]
 
 
 # S-085-10
