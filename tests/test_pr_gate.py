@@ -122,7 +122,11 @@ elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] 
     for path in pr["all_files"][: pr["listed"]]:  # every page, one object a line, as gh --jq prints them
         old = pr["renamed"].get(path)
         status = "renamed" if old else "added" if path in pr["added"] else "modified"
-        print(json.dumps({{"filename": path, "status": status, **({{"previous_filename": old}} if old else {{}})}}))
+        # its patch (#1486): GitHub omits one past its size limit (None), and for a pure rename ("")
+        patch = pr.get("patches", {{}}).get(path, "@@ -1 +1 @@\\n-old\\n+new")
+        shown = {{"changes": 0}} if patch == "" else {{"changes": 1}} if patch is None else {{"patch": patch}}
+        moved = {{"previous_filename": old}} if old else {{}}
+        print(json.dumps({{"filename": path, "status": status, **moved, **shown}}))
 elif args[0] == "api" and "graphql" in args:  # a PR's thread and the issues named, as GitHub answers them
     query = [a for a in args if a.startswith("query=")][0]
     found, errors = {{"nameWithOwner": fake["repo"]}}, []
@@ -187,10 +191,12 @@ def pr(
     commits: tuple[str, ...] = ("Change the app",),
     title: str = "Change the app",
     labels: tuple[str, ...] = (),
+    patches: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
     file's new path to its old one; the files API reads added's files `added`, the others
-    `modified` (or `renamed`); commits are the PR's commit messages, each on its own commit"""
+    `modified` (or `renamed`); commits are the PR's commit messages, each on its own commit;
+    patches, a file's patch as the files API lists it (None: omitted, "": a pure rename's none)"""
     return {
         "title": title,
         "labels": [{"name": label} for label in labels],
@@ -212,6 +218,7 @@ def pr(
         "listed": len(files) if listed is None else listed,
         "renamed": renamed or {},
         "added": list(added),
+        "patches": patches or {},
     }
 
 
@@ -3448,6 +3455,84 @@ def test_s055_15_a_docs_file_past_the_first_hundred_is_read_before_the_records(t
 @pytest.mark.parametrize("files", [("src/app.py",), ("skills/x/SKILL.md",)])
 def test_s055_15_a_persons_pr_needs_no_record(tmp_path: Path, files: tuple[str, ...]) -> None:
     proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy", files=files)}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert "reviews" not in calls_of(tmp_path)
+
+
+# #1486: a docs-only diff that sets a spec's status to built claims a feature finished: it needs a record
+
+FINISHED = "docs/specs/030-decision-policy.md"  # its own name: SPEC above is spec 054's, which other tests read
+TO_BUILT = "@@ -1,4 +1,4 @@\n # S-030: Decisions\n \n-status: approved\n+status: built\n serves: G-2"
+TO_APPROVED = "@@ -1,4 +1,4 @@\n # S-030: Decisions\n \n-status: draft\n+status: approved\n serves: G-2"
+BUILT_BODY = "@@ -2,6 +2,6 @@\n \n status: built\n serves: G-2\n \n ## Problem\n-Teh gate\n+The gate"
+
+
+# proves: S-055-15 (as amended by #1486: an agent's spec set to built needs a record)
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(pr(files=(FINISHED,), patches={FINISHED: TO_BUILT}), id="status set to built"),
+        pytest.param(pr(files=(FINISHED, "docs/guide.md"), patches={FINISHED: TO_BUILT}), id="beside other docs"),
+        pytest.param(
+            pr(files=(FINISHED,), renamed={FINISHED: "docs/specs/030-old.md"}, patches={FINISHED: TO_BUILT}),
+            id="renamed",
+        ),
+        pytest.param(
+            spec_pr(files=(FINISHED,), patches={FINISHED: "@@ -0,0 +1,3 @@\n+# S-030\n+\n+status: built"}),
+            id="added already built",
+        ),
+        pytest.param(pr(files=(FINISHED,), patches={FINISHED: None}), id="patch unread: fail closed"),
+    ],
+)
+def test_1486_a_spec_set_to_built_needs_a_record(tmp_path: Path, data: dict[str, Any]) -> None:
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, reviews={7: []}, issues={12: OPEN_ISSUE})
+    assert (proc.returncode, proc.stdout) == (9, MAIN_UNREVIEWED + NO_RECORD + "\n"), proc.stderr
+    assert calls_of(tmp_path).count("files") == 1  # the patch comes from the files read the gate made already
+
+
+# proves: S-055-15 (as amended by #1486: a record of its head lets it land)
+@pytest.mark.parametrize("records", [[recorded("merge")], [APPROVED]])
+def test_1486_a_spec_set_to_built_with_a_record_of_its_head_is_ready(
+    tmp_path: Path, records: list[dict[str, Any]]
+) -> None:
+    data = pr(files=(FINISHED,), patches={FINISHED: TO_BUILT})
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, reviews={7: records})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+# proves: S-055-15 (as amended by #1486: every other docs-only spec change keeps its verdict)
+@pytest.mark.parametrize(
+    "patches",
+    [
+        pytest.param({FINISHED: BUILT_BODY}, id="a typo in a built spec's body"),
+        pytest.param({FINISHED: TO_APPROVED}, id="a spec set to approved"),
+        pytest.param({FINISHED: ""}, id="a built spec renamed unchanged"),
+        pytest.param({FINISHED: "@@ -3 +3 @@\n-status: built\n+status: approved"}, id="a built spec set back"),
+        pytest.param({FINISHED: "@@ -9 +9 @@\n-old\n+A spec reads status: built once done"}, id="prose naming it"),
+        pytest.param({FINISHED: "@@ -9 +9,2 @@\n old\n+ status: built"}, id="an indented line"),
+    ],
+)
+def test_1486_any_other_docs_only_spec_change_needs_no_record(tmp_path: Path, patches: dict[str, str | None]) -> None:
+    renamed = {FINISHED: "docs/specs/030-old.md"} if patches[FINISHED] == "" else None
+    data = pr(files=(FINISHED,), patches=patches, renamed=renamed)
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert "reviews" not in calls_of(tmp_path)
+
+
+# proves: S-055-15 (as amended by #1486: only a numbered spec's status counts)
+@pytest.mark.parametrize("path", ["docs/specs/TEMPLATE.md", "docs/guide.md", "docs/specs/notes.md"])
+def test_1486_a_built_line_outside_a_numbered_spec_needs_no_record(tmp_path: Path, path: str) -> None:
+    data = pr(files=(path,), patches={path: TO_BUILT})
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert "reviews" not in calls_of(tmp_path)
+
+
+# proves: S-055-15 (as amended by #1486: a person's PR still needs no record)
+def test_1486_a_persons_pr_setting_a_spec_built_needs_no_record(tmp_path: Path) -> None:
+    data = pr(body="Fixes #7", login="amy", files=(FINISHED,), patches={FINISHED: TO_BUILT})
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
     assert "reviews" not in calls_of(tmp_path)
 
