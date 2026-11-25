@@ -293,6 +293,8 @@ def doctor(
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
         checks.append(Check("PASS" if ok else ("WARN" if warn else "FAIL"), name, detail))
 
+    # #1632: after the policy row and its refusals (S-052-8), before every other row read from the working tree
+    stale = checkout_check(Git(root))
     try:
         found = config_path(root)
         policy, refused = _load(found)
@@ -300,11 +302,13 @@ def doctor(
         raise
     except ReleaseError as exc:
         add(False, "policy", str(exc))
+        checks.extend([] if stale is None else [stale])
         return checks
     read = found.relative_to(root)
     add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes) or 'none'}")
     for refusal in policy.refused:  # S-052-8: a FAIL each, after which every other check still runs
         add(False, REFUSED, refusal.message)
+    checks.extend([] if stale is None else [stale])
     checks.extend(deprecation_checks(policy, "roadmap"))
     checks.extend(deprecation_checks(policy, "notices"))  # D-69
     raw = read_config(found)
@@ -1816,6 +1820,38 @@ def _default_branch(git: Git, branch: str | None, repo: str | None) -> Check | N
         f" against {default} by default; make {branch} the default: {fix}"
     )
     return Check("WARN", "default branch", detail)
+
+
+def checkout_check(git: Git) -> Check | None:
+    """#1632: whether HEAD contains the tip of origin's default branch, as the local origin/HEAD
+    names it, since the workflows, the config, and pyproject.toml are read from the working
+    tree; git alone, no fetch and no GitHub read. None without an origin remote, which
+    _work_branch reports; an unset origin/HEAD or a count git can't make is a WARN"""
+    if not git.ok("remote", "get-url", REMOTE):
+        return None
+    try:
+        tip = git.run("symbolic-ref", "-q", "--short", f"refs/remotes/{REMOTE}/HEAD").strip()
+    except ReleaseError:
+        detail = (
+            f"{REMOTE}/HEAD is unset, so doctor can't tell whether this checkout is behind {REMOTE}'s"
+            f" default branch: git remote set-head {REMOTE} --auto"
+        )
+        return Check("WARN", "checkout", detail)
+    try:
+        behind = int(git.run("rev-list", "--count", f"HEAD..{tip}").strip())
+    except ReleaseError as exc:
+        return Check("WARN", "checkout", f"can't count the commits HEAD is behind {tip}: {exc}")
+    if behind == 0:
+        return Check("PASS", "checkout", f"HEAD contains {tip}, the default branch as last fetched")
+    default = tip.removeprefix(f"{REMOTE}/")
+    branch = git.run("branch", "--show-current").strip()
+    where = f"branch {branch}" if branch else "a detached HEAD"
+    detail = (
+        f"{where} is {behind} commit{'' if behind == 1 else 's'} behind {tip}, so the rows read from the"
+        f" working tree (workflows, {CONFIG_FILE}, pyproject.toml) describe {git.sha()[:7]}, not {tip}:"
+        f" git switch {default} && git pull, or run doctor from a worktree of {tip}"
+    )
+    return Check("WARN", "checkout", detail)
 
 
 def _local_sources(pyproject: Path) -> list[str]:
