@@ -516,6 +516,15 @@ expedite row of those, whose --json line has "expedite": true, and the row of th
 it was; the gate's walk takes an expedite row before the tier's standard rows. A row naming
 none stays whole, and no other row or read ever has the key.
 
+Impact (spec 086; a --tier 4 or --tier 6 read with an ISSUES row naming issues): the read runs
+one github-issue-triage chains.py show --json --trusted-only over the repo's open issues (tier
+6's from its triage read, tier 4's from one gh issue list of their numbers), and each ISSUES
+row's --json line gains "impact": [[number, held], ...] for each of its issues that holds 1 or
+more open issues, most held first, then the number; [] for none. The gate's walk takes the
+rows of tiers 4 and 6 whose issues hold the most first. A walk that fails adds its
+CHAIN_UNREADABLE row and leaves every impact [], so the tier's rows still print in their
+order. No other read prints the key.
+
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
@@ -884,7 +893,9 @@ class Row:
     issues or the pull requests closing one (S-070-3): in --json only, as "expedite": true, so
     the gate's walk takes it before the tier's standard rows; a row without it prints no key.
     needs_agent, on a BASE_RED row only, is its own verdict that it needs an agent (S-079-6):
-    the state alone doesn't say, so BASE_RED is in no AGENT set"""
+    the state alone doesn't say, so BASE_RED is in no AGENT set. impact, on an ISSUES row of a
+    read that ran the chain walk only (spec 086), is (number, held) for each of its issues
+    that holds 1 or more, most held first: in --json only, as "impact"; None prints no key"""
 
     state: str
     subject: str
@@ -894,8 +905,11 @@ class Row:
     report_only: bool = False
     expedite: bool = False
     needs_agent: bool = False
+    impact: tuple[tuple[int, int], ...] | None = None
 
     def __post_init__(self) -> None:
+        if self.impact is not None and self.state != "ISSUES":
+            raise ValueError(f"only an ISSUES row has impact, not {self.state}")
         if self.state in FIXED and not self.fix:
             raise ValueError(f"a {self.state} row needs a fix: {self.subject} {self.detail}")
         if self.needs_agent and self.state != BASE_RED:
@@ -930,6 +944,8 @@ class Row:
             found["heads"] = {str(number): sha for number, sha in self.heads}
         if self.expedite:
             found["expedite"] = True
+        if self.impact is not None:
+            found["impact"] = [[number, held] for number, held in self.impact]
         return found
 
 
@@ -6184,7 +6200,9 @@ def asked_rows(
         closed,
         directions,
     )
-    return [r for r in asked_issues(split_issues(rows, decided=True), triage) if r.state in TIERS[4]]
+    found = [r for r in asked_issues(split_issues(rows, decided=True), triage) if r.state in TIERS[4]]
+    # spec 086: each ISSUES row's impact, from one chain walk over the repo's open issues
+    return tier_impact(args, found, lambda: open_starts(args.repo))
 
 
 def asked_issues(rows: list[Row], triage: str) -> list[Row]:
@@ -6237,7 +6255,9 @@ def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None, known
     branch = landing_branch(text, POLICY, default_branch(args.repo, known))
     fetch_landing(repo_dir, branch)
     found = [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"] + relayed_rows(rows, triage)
-    return tier_expedite(args, text, found) + spec_rows(args.repo, repo_dir, branch, triage)
+    found = tier_expedite(args, text, found) + spec_rows(args.repo, repo_dir, branch, triage)
+    # spec 086: each row's impact, from one chain walk over the open issues triage read
+    return tier_impact(args, found, lambda: chain_starts(args.repo, triage))
 
 
 def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
@@ -6253,6 +6273,130 @@ def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
             if kept:
                 found.append(Row("ISSUES", row.subject, " ".join([state, *kept]), row.fix))
     return found
+
+
+# -- impact (spec 086) ------------------------------------------------------------------
+
+
+def held_counts(repo: str, shown: object) -> dict[int, int]:
+    """spec 086: the held of each of the repo's own issues `chains.py show --json` gives one of
+    1 or more, by number; a held that isn't a whole number of 0 or more is refused"""
+    if not isinstance(shown, dict) or not isinstance(shown.get("rows"), list):
+        raise Refused('error: chains.py show --json printed no {"rows": [...]} object')
+    found: dict[int, int] = {}
+    for item in shown["rows"]:
+        ref = str(item.get("ref")) if isinstance(item, dict) else repr(item)
+        matched = CHAIN_REF.match(ref)
+        if matched is None or not isinstance(item, dict):
+            raise Refused(f"error: chains.py show --json printed a malformed reference {ref!r}")
+        held = item.get("held")
+        if not isinstance(held, int) or isinstance(held, bool) or held < 0:
+            raise Refused(f"error: chains.py show --json printed a malformed held {held!r} for {ref}")
+        if held and matched.group("repo").lower() == repo.lower():
+            found[int(ref.rpartition("#")[2])] = held
+    return found
+
+
+@dataclass(frozen=True)
+class ChainRead:
+    """One chains.py show run over the repo's open issues, as chain_rows runs it: its
+    CHAIN_NO_GATE and CHAIN_CYCLE rows, or the one CHAIN_UNREADABLE row of a walk that failed,
+    and the held of each of the repo's own issues that holds 1 or more (spec 086), empty when
+    the walk failed"""
+
+    rows: list[Row]
+    held: dict[int, int]
+
+
+def chain_read(
+    repo: str,
+    starts: list[str],
+    bot_login: str | None = None,
+    execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = capture,
+) -> ChainRead:
+    """One chains.py show over the starts, which reads each item once and each repo's config
+    once, and never reads or follows an untrusted author's issue (--trusted-only, D-16). A walk
+    that fails, or prints a malformed row, is one CHAIN_UNREADABLE row and no held, never the
+    watch's exit 2; no start runs no walk"""
+    if not starts:
+        return ChainRead([], {})
+    cmd = [sys.executable, str(CHAINS), "show", "--json", "--trusted-only"]
+    cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    proc = execute([*cmd, *starts])
+    if proc.returncode not in (0, 1):
+        error = proc.stderr or f"error: chains.py show exited {proc.returncode}"
+        return ChainRead([chain_unreadable_row(repo, starts, error)], {})
+    try:
+        shown = json.loads(proc.stdout)
+        rows = chain_no_gate_rows(shown) + chain_cycle_rows(repo, shown)
+        return ChainRead(rows, held_counts(repo, shown))
+    except json.JSONDecodeError as exc:
+        error = f"error: chains.py show --json printed no JSON: {exc}"
+        return ChainRead([chain_unreadable_row(repo, starts, error)], {})
+    except Refused as refused:
+        return ChainRead([chain_unreadable_row(repo, starts, str(refused))], {})
+
+
+def issue_numbers(row: Row) -> list[int] | None:
+    """An ISSUES row's issues, each `STATE #N ...` part's numbers (the full report joins the
+    parts with "; "); None for a part with any other word, as SPEC_UNSPLIT's"""
+    found: list[int] = []
+    for part in row.detail.split("; "):
+        words = part.split(" ")[1:]
+        if not words or not all(re.fullmatch(r"#\d+", w) for w in words):
+            return None
+        found += [int(w[1:]) for w in words]
+    return found
+
+
+def with_impact(rows: list[Row], held: Mapping[int, int]) -> list[Row]:
+    """spec 086: each ISSUES row with its impact, (number, held) for each of its issues that
+    holds 1 or more, most held first, then the number; () for none, and for a row naming no
+    issue. Every other row as it is"""
+    marked = []
+    for row in rows:
+        if row.state != "ISSUES":
+            marked.append(row)
+            continue
+        numbers = dict.fromkeys(issue_numbers(row) or ())
+        impact = sorted(((n, held[n]) for n in numbers if held.get(n, 0) >= 1), key=lambda p: (-p[1], p[0]))
+        marked.append(replace(row, impact=tuple(impact)))
+    return marked
+
+
+def tier_impact(
+    args: argparse.Namespace,
+    rows: list[Row],
+    starts: Callable[[], list[str]],
+    execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = capture,
+) -> list[Row]:
+    """A tier 4 or 6 read's rows with each ISSUES row's impact (spec 086), from one chains.py
+    show over the repo's open issues (starts); a walk that fails adds its CHAIN_UNREADABLE row
+    and leaves every impact empty, so the tier keeps its order. With no ISSUES row naming an
+    issue nothing more is read, and the ISSUES rows read an empty impact. Starts it can't read
+    (tier 4's 1000+ open issues) are a failed walk too, its fix naming the rows' own issues"""
+    if not any(r.state == "ISSUES" and issue_numbers(r) for r in rows):
+        return with_impact(rows, {})
+    try:
+        listed = starts()
+    except Refused as refused:
+        named = sorted({n for r in rows if r.state == "ISSUES" for n in issue_numbers(r) or ()})
+        unread = chain_unreadable_row(args.repo, [f"{args.repo}#{n}" for n in named], str(refused))
+        return [*with_impact(rows, {}), unread]
+    read = chain_read(args.repo, listed, args.bot_login, execute)
+    unreadable = [r for r in read.rows if r.state == "CHAIN_UNREADABLE"]
+    return [*with_impact(rows, read.held), *unreadable]
+
+
+def open_starts(repo: str, read: Callable[[list[str]], str] = run) -> list[str]:
+    """Tier 4's chain starts (spec 086): the repo's open issues, as owner/repo#N, from one gh
+    issue list of their numbers; tier 4's triage read holds only the items asked or decided"""
+    found = json.loads(
+        read(["gh", "issue", "list", "-R", repo, "--state", "open", "-L", str(ISSUE_LIMIT), "--json", "number"])
+    )
+    if len(found) >= ISSUE_LIMIT:
+        raise Refused(f"error: {repo} has {ISSUE_LIMIT}+ open issues")
+    return [f"{repo}#{n}" for n in sorted({int(i["number"]) for i in found})]
 
 
 # -- trends (spec 078) -----------------------------------------------------------------------

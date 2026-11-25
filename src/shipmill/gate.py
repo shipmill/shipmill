@@ -530,7 +530,9 @@ def walked_decision(found: Walked, sessions: Sequence[Session], retry: dt.timede
     read = f"read tiers {tier_span(found.tiers)}"
     if found.item is not None:
         finished = tuple(s.id for s in sessions if s.finished)
-        reason = f"{found.item.brief()} needs an agent (tier {found.tier}); {read}"
+        heaviest = found.item.first_by_impact  # spec 086: why it came first, from the digits parsed (D-16)
+        by_impact = "" if heaviest is None else f", first by impact: #{heaviest[0]} holds {heaviest[1]} open issue(s)"
+        reason = f"{found.item.brief()} needs an agent (tier {found.tier}){by_impact}; {read}"
         return Decision(Action.LAUNCH, reason, (found.item,), finished, tier=found.tier, subjects=found.cut)
     if found.taken is not None and found.hand is not None and found.subject is not None and found.hand.idle:
         reason = (
@@ -611,12 +613,15 @@ def prompt(
     the App's <slug>[bot] when [agents] app_id is set, adds bot_line; roles, the resolved
     roles the state read passed (spec 036), add role_line; levels, the agent stages' levels
     (spec 040), add their Autonomy: line after it, in every prompt. subjects, a cut item's
-    numbers (spec 061), digits the gate parsed, follow its brief, with CUT_LINE under the list"""
+    numbers (spec 061), digits the gate parsed, follow its brief, with CUT_LINE under the list;
+    a finding with impact (spec 086) adds impact_line under it"""
     named = f": {' '.join(f'#{int(n)}' for n in subjects)}" if subjects else ""
     found = "\n".join(
         f"- {f.brief()}{named} (tier {tier_of(f)})" + ("" if f.fix is None else f"\n  fix: {f.fix}") for f in work
     )
-    cut_line = f"\n{CUT_LINE}" if subjects else ""
+    notes = [CUT_LINE] if subjects else []
+    notes += [line for f in work if (line := impact_line(f)) is not None]
+    cut_line = "".join(f"\n{line}" for line in notes)
     stamp = now.isoformat(timespec="minutes")
     head = template.replace("{repo}", repo)
     app = "" if bot is None else f"\n\n{bot_line(bot)}"
@@ -628,6 +633,15 @@ def prompt(
 
 
 CUT_LINE = "Work on the numbers named; the others were handed to an earlier session and nothing changed on them since."
+
+
+def impact_line(item: Finding) -> str | None:
+    """spec 086: the line a prompt gains for an item with impact, its issue that holds the most
+    and its count, from the digits the gate parsed (D-16); None without impact"""
+    first = item.first_by_impact
+    if first is None:
+        return None
+    return f"#{int(first[0])} holds {int(first[1])} open issue(s) that wait on it: start with it."
 
 
 def headless_paragraph(login: str) -> str:
