@@ -118,6 +118,9 @@ def test_s055_20_an_approved_spec_that_fails_same_approval_asks_again(tmp_path: 
     misplaced = OUR_SPEC.replace("in them.\n", "in them.\n" + CRITERION)
     work, answered, head = rebased(tmp_path, {SPEC: OUR_SPEC}, {SPEC: MAIN_SPEC}, {SPEC: misplaced})
     assert judged(tmp_path, work, answered, head, (SPEC,)) == (5, [CHANGES_BEHAVIOUR, differs(answered)])
+    # the lines alone are main's: same-approval is what asks again
+    assert gate.main_change_only(str(work), "origin/main", answered, head, ()) is True
+    assert gate.main_change_only(str(work), "origin/main", answered, head, (SPEC,)) is False
 
 
 def test_s055_20_a_head_git_cant_read_carries_nothing_over(tmp_path: Path) -> None:
