@@ -6,21 +6,27 @@ import datetime as dt
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 
 from shipmill.agent_marker import MARKER
+from shipmill.classify import Pulls
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.review_record import Findings, Head, Request, Verdict, record
+from shipmill.github import PullChange
+from shipmill.gitrepo import Git
+from shipmill.review_record import Findings, Head, Request, Verdict, landing_section, record
 
-from .conftest import guarded_home
+from .conftest import POLICY, guarded_home
 from .test_app import REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, checkout
 from .test_app_token import FAKE_GH, MintApi, executable
+from .test_area_record import FakeReads
+from .test_earned_landing import BOUNDS, FILES, LEVELS, Pull, Rules, one
 from .test_gh_refuses_without_app import AGENTS_NO_APP, HOST_IDENTITY
+from .test_pr_gate import gate
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
@@ -124,6 +130,34 @@ class FakeGh:
         return 0, json.dumps({"number": PULL, "head": {"sha": self.head}})
 
 
+@dataclass
+class AtHead(Pull):
+    """Pull request #41 as `decide classify --pr` reads it, at head; failure raised instead"""
+
+    head: str = HEAD
+    failure: ReleaseError | None = None
+
+    def pull_change(self, number: int) -> PullChange:
+        if self.failure is not None:
+            raise self.failure
+        return replace(super().pull_change(number), head=self.head)
+
+
+def based(root: Path, **files: str) -> Path:
+    """Commit the checkout's config, under a release policy, and files, and point origin/HEAD at
+    them: the base whose levels `decide classify` reads"""
+    config = root / ".github" / "shipmill.toml"
+    config.write_text(POLICY + "\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text, encoding="utf-8")
+    git = Git(root, "bot", "bot@example.com")
+    git.run("add", "-A")
+    git.run("commit", "-q", "-m", "base")
+    git.run("update-ref", "refs/remotes/origin/HEAD", "HEAD")
+    return root
+
+
 @pytest.fixture
 def host(tmp_path: Path) -> Host:
     fakes = tmp_path / "fakes"
@@ -134,7 +168,7 @@ def host(tmp_path: Path) -> Host:
     return Host(fakes, record_dir, guarded_home(tmp_path / "home"))
 
 
-def cli(root: Path, host: Host, gh: FakeGh, api: MintApi, *extra: str, **env: str) -> int:
+def cli(root: Path, host: Host, gh: FakeGh, api: MintApi, *extra: str, pulls: Pulls | None = None, **env: str) -> int:
     args = ["--repo", str(root), "review", "record", str(PULL), "--head", HEAD, "--verdict", "merge"]
     return main(
         [*args, "--body-file", str(report(root)), *extra],
@@ -143,6 +177,9 @@ def cli(root: Path, host: Host, gh: FakeGh, api: MintApi, *extra: str, **env: st
         environ=host.env(**env),
         home=host.home,
         gh_capture=gh,
+        pulls=pulls or AtHead(),
+        record_reads=FakeReads(),
+        rules_reader=Rules(),
     )
 
 
@@ -155,7 +192,7 @@ def field_of(args: list[str], name: str) -> str:
 def test_s055_16_the_cli_posts_a_comment_review_at_the_head_as_the_app(
     tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    root = checkout(tmp_path, WITH_APP)
+    root = based(checkout(tmp_path, WITH_APP))
     gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
     assert cli(root, host, gh, api, SHIPMILL_APP_KEY=str(key_file(tmp_path))) == 0
     assert capsys.readouterr().out == f"recorded merge for #{PULL} at {HEAD}\n"
@@ -239,7 +276,7 @@ def test_s075_4_without_a_report_the_body_ends_at_the_findings_line(tmp_path: Pa
 
 
 def test_s075_4_the_cli_posts_the_findings_line_after_the_refuse_marker(tmp_path: Path, host: Host) -> None:
-    root = checkout(tmp_path, WITH_APP)
+    root = based(checkout(tmp_path, WITH_APP))
     gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
     args = ["--repo", str(root), "review", "record", str(PULL), "--head", HEAD, "--verdict", "refuse"]
     findings = ["--findings", "rejected=1,confirmed=2,minor=0", "--body-file", str(report(root))]
@@ -250,6 +287,9 @@ def test_s075_4_the_cli_posts_the_findings_line_after_the_refuse_marker(tmp_path
         environ=host.env(SHIPMILL_APP_KEY=str(key_file(tmp_path))),
         home=host.home,
         gh_capture=gh,
+        pulls=AtHead(),
+        record_reads=FakeReads(),
+        rules_reader=Rules(),
     )
     assert code == 0
     (_, _), (post, _) = gh.calls
@@ -358,6 +398,101 @@ def test_s075_6_a_parsed_findings_value_is_taken_as_it_is(tmp_path: Path) -> Non
     assert hub.posts[0][2].splitlines()[1] == "<!-- shipmill:findings confirmed=0 rejected=2 minor=1 -->"
 
 
+# --- S-083-11: the review holds the landing level and evidence of decide classify at the head -------
+
+LANDING = [
+    "landing: act",
+    "checks: holds: check",
+    "size: holds: 40 of at most 200 lines",
+    "record: holds: no raised area",
+    "kind: holds: no ceiling path",
+]
+SECTION = "## Landing\n\n" + "\n".join(f"- {line}" for line in LANDING)
+
+
+def test_s083_11_the_landing_section_ends_the_body_and_the_marker_stays_first(tmp_path: Path) -> None:
+    hub = FakeHub()
+    asked: list[str] = []
+
+    def landing(head: Head) -> list[str]:
+        asked.append(str(head))
+        return LANDING
+
+    request = Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), "confirmed=2,rejected=1,minor=0")
+    record(request, hub, available, clean, landing)
+    (_, _, body), *rest = hub.posts
+    assert rest == [] and asked == [HEAD]
+    assert body == f"<!-- shipmill:review refuse -->\n{REFUSE_LINE}\n\nVerdict: MERGE\n\nNo findings.\n\n{SECTION}"
+    # pr_gate.py reads the verdict off the first line and the counts off the second, as before
+    review = {"state": "COMMENTED", "body": body, "user": {"login": "shipmill[bot]"}}
+    assert gate.record_of(review, "shipmill[bot]", gate) == "refuse"
+    assert gate.confirmed_of(review) == 2
+    empty = FakeHub()
+    record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path, "")), empty, available, clean, landing)
+    assert empty.posts == [(PULL, HEAD, f"<!-- shipmill:review merge -->\n\n{SECTION}")]
+
+
+def test_s083_11_a_classify_that_fails_writes_nothing_and_runs_after_the_head_check(tmp_path: Path) -> None:
+    def failing(head: Head) -> list[str]:
+        raise ReleaseError("gh api repos/o/demo/pulls/41 failed: HTTP 502")
+
+    hub = FakeHub()
+    with pytest.raises(ReleaseError, match="HTTP 502"):
+        record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path)), hub, available, clean, failing)
+    assert (hub.reads, hub.posts) == ([PULL], [])
+    moved = FakeHub(current=OTHER)
+    with pytest.raises(ReleaseError, match="is not #41's current head"):
+        record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path)), moved, available, clean, failing)
+    with pytest.raises(ReleaseError, match="gave no landing level"):
+        landing_section([])
+
+
+EARNED_APP = WITH_APP + LEVELS + BOUNDS
+
+
+def test_s083_11_the_cli_posts_the_landing_of_decide_classify_at_the_recorded_head(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = based(checkout(tmp_path, EARNED_APP), **FILES)
+    gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
+    assert cli(root, host, gh, api, pulls=AtHead((one(),)), SHIPMILL_APP_KEY=str(key_file(tmp_path))) == 0
+    assert capsys.readouterr().out == f"recorded merge for #{PULL} at {HEAD}\n"
+    (_, _), (post, _) = gh.calls
+    body = field_of(post, "body")
+    assert body.splitlines()[0] == "<!-- shipmill:review merge -->"
+    assert body.endswith(f"\n\n{SECTION}\n\n{MARKER}")
+    # the same lines `decide classify --pr 41` prints after its zones, read the same way
+    capsys.readouterr()
+    argv = ["--repo", str(root), "decide", "classify", "--pr", str(PULL)]
+    assert main(argv, pulls=AtHead((one(),)), record_reads=FakeReads(), rules_reader=Rules()) == 0
+    assert capsys.readouterr().out.splitlines()[-len(LANDING) :] == LANDING
+
+
+@pytest.mark.parametrize(
+    ("pulls", "says"),
+    [
+        (AtHead(head=OTHER), f"decide classify read #41 at {OTHER}, not the recorded head {HEAD}"),
+        (AtHead(failure=ReleaseError("gh api repos/o/demo/pulls/41 failed: HTTP 502")), "HTTP 502"),
+    ],
+)
+def test_s083_11_when_classify_exits_2_review_record_exits_2_and_posts_nothing(
+    tmp_path: Path, host: Host, pulls: AtHead, says: str
+) -> None:
+    root = based(checkout(tmp_path, EARNED_APP), **FILES)
+    gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
+    with pytest.raises(ReleaseError, match=says):
+        cli(root, host, gh, api, pulls=pulls, SHIPMILL_APP_KEY=str(key_file(tmp_path)))
+    assert [args[:2] for args, _ in gh.calls] == [["api", f"repos/{REPO}/pulls/{PULL}"]]  # the head read, no POST
+
+
+def test_s083_11_a_base_classify_cant_read_exits_2_and_posts_nothing(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, EARNED_APP)  # no origin/HEAD: the levels can't be read
+    gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
+    with pytest.raises(ReleaseError, match="origin/HEAD is not in"):
+        cli(root, host, gh, api, SHIPMILL_APP_KEY=str(key_file(tmp_path)))
+    assert [args[:2] for args, _ in gh.calls] == [["api", f"repos/{REPO}/pulls/{PULL}"]]
+
+
 # --- S-055-18: the skills read the answer and record the reviewed head ------------------------------
 
 
@@ -404,6 +539,23 @@ def section(path: Path, heading: str) -> str:
 
 
 BRIEF = SKILLS / "github-pr-triage" / "references" / "reviewer-brief.md"
+
+
+# proves: S-083-13
+def test_the_who_decides_docs_name_the_earned_level_and_landing_names_the_section() -> None:
+    for path in (ROOT / "docs" / "flow.md", SKILLS / "github-issue-triage" / "references" / "needs-decision.md"):
+        who = section(path, "## Who decides")
+        assert "`area-record`" in who, path
+        assert "`[decisions.earned]`" in who and "`protected` and `security`" in who, path
+        for name in ("checks", "size", "record", "kind"):
+            assert f"`{name}` (" in who, (path, name)
+        assert "three ceiling kinds" in who, path
+        for kind in ("controls", "infrastructure", "dependencies"):
+            assert f"`{kind}` (" in who, (path, kind)
+    landing = section(SKILLS / "github-pr-triage" / "references" / "landing.md", "## Recording the review")
+    assert "a `## Landing` section: the landing level and one line per piece of evidence" in landing
+    assert "`decide classify --pr <n>` gives at the recorded head" in landing
+    assert "that classify fails" in landing
 
 
 def test_s075_1_the_open_pr_report_lists_each_unfixed_finding_with_an_id() -> None:

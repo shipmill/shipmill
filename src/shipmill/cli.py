@@ -1383,7 +1383,13 @@ def main(
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         through = _GhPath(reach, env, user_home, readers)
         if args.command == "review":
-            return _review_record(root, args, through)
+
+            def classify(top: Path) -> tuple[Pulls, area_record.Reads, RulesReader | None]:
+                # S-083-11: read as `decide classify --pr` reads them, below
+                found = rules_reader or (GhRules(top) if shutil.which("gh") is not None else None)
+                return pulls or GhCli(top), record_reads or GhCli(top), found
+
+            return _review_record(root, args, through, classify)
         if args.command == "revert":
             return _revert_open(root, args, through)
         return _spec_open(root, args, through, spec_checkout)
@@ -3409,9 +3415,16 @@ def _through_gh(top: Path, path: _GhPath, gh_args: list[str]) -> tuple[int, str]
     return code, "".join(said)
 
 
-def _review_record(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
+# What `decide classify --pr` reads in a checkout: the pull request, the production record, and
+# the branch rules (spec 083); review record builds them only once its own checks pass
+type _PullReads = Callable[[Path], tuple[Pulls, area_record.Reads, RulesReader | None]]
+
+
+def _review_record(root: Path, args: argparse.Namespace, path: _GhPath, classify: _PullReads) -> int:
     """S-055-16: `review record`, in the checkout's own repo, its GitHub read and write through
-    `shipmill gh`'s path, as the App only; prints what it recorded"""
+    `shipmill gh`'s path, as the App only; prints what it recorded. S-083-11: the review holds
+    `decide classify --pr N`'s landing level and evidence, by the levels at origin/HEAD and read
+    as that command reads them, at the recorded head only"""
     if not root.is_dir():
         raise ReleaseError(f"--repo {root} is not a folder")
     git = Git(root)
@@ -3431,7 +3444,18 @@ def _review_record(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
     def leaks(report: str) -> None:  # S-081-12: the report, as the review's body
         vet.check("shipmill review record", [Text("the body", report)], repo)
 
-    print(review_record.record(request, _ReviewHub(top, repo, path), lambda: _review_writes(top, path), leaks))
+    def landing(head: review_record.Head) -> list[str]:  # S-083-11
+        pulls, reads, rules = classify(top)
+        _, change, _, landed = _classify_pull(top, DEFAULT_REF, args.number, pulls, reads, rules)
+        if change.head != head.sha:
+            raise ReleaseError(
+                f"decide classify read #{args.number} at {change.head}, not the recorded head {head}: the pull "
+                "request moved since the review, so review its current head and record that; nothing was written"
+            )
+        return landed.lines()
+
+    hub = _ReviewHub(top, repo, path)
+    print(review_record.record(request, hub, lambda: _review_writes(top, path), leaks, landing))
     return 0
 
 
@@ -4218,13 +4242,11 @@ def _decide(
         return 0
     if args.pr is not None and args.pr < 1:
         raise ReleaseError(f"--pr is a pull request's number, got {args.pr}")
-    base = Base.read(git, args.ref).with_record(git, reads)
     landed: earned.Landing | None = None  # a change given as --files has no evidence, and earns nothing
     if args.pr is not None:
-        change = pulls.pull_change(args.pr)
-        found = classify_change(base, pulls, change)
-        landed = _landing(root, base, change, found, rules)
+        base, _, found, landed = _classify_pull(root, args.ref, args.pr, pulls, reads, rules)
     else:
+        base = Base.read(git, args.ref).with_record(git, reads)
         found = classify_paths(base, [RepoPath.given(p) for p in args.files])
     if args.json:  # S-052-11: the refused keys of the config at --ref, whose levels it read
         record = found.record() if landed is None else landed.classified(found)
@@ -4232,6 +4254,18 @@ def _decide(
     else:
         sys.stdout.write(found.text() if landed is None else landed.text(found))
     return 0
+
+
+def _classify_pull(
+    root: Path, ref: str, number: int, pulls: Pulls, reads: area_record.Reads, rules: RulesReader | None
+) -> tuple[Base, PullChange, Classification, earned.Landing]:
+    """`decide classify --pr N` by the levels at ref (D-48): the base, the pull request's
+    change as GitHub gives it now, its zones, and its landing level and evidence (spec 083)"""
+    git = Git(root)
+    base = Base.read(git, ref).with_record(git, reads)
+    change = pulls.pull_change(number)
+    found = classify_change(base, pulls, change)
+    return base, change, found, _landing(root, base, change, found, rules)
 
 
 def _landing(
