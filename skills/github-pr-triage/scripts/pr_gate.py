@@ -33,7 +33,11 @@ before the PR opened covers every head; any other covers the head its question n
 on its line `<!-- shipmill:head <sha> -->` (under its visible `CI on <sha7>` line), that exact
 commit, and every head whose own change, `git diff $(git merge-base origin/<base> <head>)
 <head>`, is the same as that commit's, or, for a PR adding a spec, whose spec files `specs.py
-same-approval` reads the same (exit 0) and whose other files' patch is the same. Otherwise the
+same-approval` reads the same (exit 0) and whose other files' patch is the same. It also covers a
+head the PR was rebased to when every approved or built spec it edits passes `specs.py
+same-approval` between the two heads and the change between them is exactly main's change between
+their merge-bases, file by file on the lines git diff removes and adds; then `  accepted: answer
+carried over from <sha7>: only main's changes since` (S-055-20, D-108). Otherwise the
 asks stay, with `  needs-decision: answered at <sha7>, and the change differs since`,
 `  needs-decision: the answer doesn't take the recommended option`, or `  needs-decision: the
 question names no head: ask again with its `<!-- shipmill:head <sha> -->` line`. It reads the PR's
@@ -137,7 +141,8 @@ counting comment edited after the PR opened (its lastEditedAt) holds it, NEEDS_D
 the allowance on #N changed after this pull request opened` (S-085-13, D-106). The maintainer's
 answer above lifts the `files:` lines with the other asks, for the heads it covers; an answer on an
 issue given before the PR opened lifts them only at the head its question names, or one whose own
-change is the same (S-085-14, D-109); a verdict written after the PR opened widens nothing. A
+change is the same (S-085-14, D-109), and so does an answer carried over a rebase (S-055-20); a
+verdict written after the PR opened widens nothing. A
 person's PR, and an agent's whose issues declare none or that names no issue, is judged as before.
 
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
@@ -406,6 +411,7 @@ class Gate:
     revert: str = ""  # why the App's revert PR waits for a person below [autonomy] revert = "act" (spec 079)
     incidents: tuple[str, ...] = ()  # the open incidents on the latest deploy that hold it (#1481)
     files: tuple[str, ...] = ()  # an agent's changed files its issues don't allow, or why that can't be read (spec 085)
+    carried: str = ""  # the answer carried over a rebase that only brought main's changes (S-055-20, D-108)
 
     @property
     def verdict(self) -> int:
@@ -2316,18 +2322,11 @@ def approved_edits(data: dict, number: int, repo: str | None, checkout: str) -> 
     Verification, which the split's docs PR and the build PR fill in; any other section asks. An
     approved spec the PR renames (the files API's previous_filename) asks by its old path, unread:
     same-approval reads one path at both commits. A spec PR's added spec is spec_problems'"""
-    candidates = modified_specs(data, number, repo)
-    moved = tuple(p for p in data.get("previous") or () if SPEC_FILE.fullmatch(p))
-    if not candidates and not moved:
-        return []
-    base_ref = base_of(data, checkout)
-    read = file_in(checkout)
-    approved = [s for s in candidates if spec_status(read(base_ref, s) or "") in APPROVED_STATUSES]
-    found = [
-        CHANGES_APPROVED.format(spec=s) for s in moved if spec_status(read(base_ref, s) or "") in APPROVED_STATUSES
-    ]
+    approved, moved = approved_on_base(data, number, repo, checkout)
+    found = [CHANGES_APPROVED.format(spec=s) for s in moved]
     if not approved:
         return found
+    base_ref = base_of(data, checkout)
     head = str(data["headRefOid"])
     if not has_commit(checkout, head):
         raise GateError(f"#{number}'s head {head[:7]} is not in {checkout}: run `git -C {checkout} fetch origin`")
@@ -2341,6 +2340,22 @@ def approved_edits(data: dict, number: int, repo: str | None, checkout: str) -> 
         if proc.returncode == 1 and not sections <= FILLED_AFTER_APPROVAL:
             found.append(CHANGES_APPROVED.format(spec=spec))
     return found
+
+
+def approved_on_base(data: dict, number: int, repo: str | None, checkout: str) -> tuple[list[str], list[str]]:
+    """The approved or built specs the PR edits, by their text on origin/<base>: the ones it
+    modifies, and the old paths of the ones it renames, from the files API read"""
+    candidates = modified_specs(data, number, repo)
+    moved = tuple(p for p in data.get("previous") or () if SPEC_FILE.fullmatch(p))
+    if not candidates and not moved:
+        return [], []
+    base_ref = base_of(data, checkout)
+    read = file_in(checkout)
+
+    def approved(spec: str) -> bool:
+        return spec_status(read(base_ref, spec) or "") in APPROVED_STATUSES
+
+    return [s for s in candidates if approved(s)], [s for s in moved if approved(s)]
 
 
 def file_in(checkout: str) -> Callable[[str, str], str | None]:
@@ -2438,6 +2453,68 @@ def same_change(checkout: str, base_ref: str, answered: str, head: str, specs: t
     )
 
 
+CARRIED = "answer carried over from {sha7}: only main's changes since"  # S-055-20, D-108
+# the change between two commits as lines, the hunks' positions and context left out
+LINE_DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0")
+MODE_LINES = (b"new file mode ", b"deleted file mode ", b"old mode ", b"new mode ")
+LineChange = tuple[list[bytes], list[bytes], list[bytes]]  # a file's mode lines, lines removed, lines added
+
+
+def line_changes(checkout: str, old: str, new: str) -> dict[bytes, LineChange] | None:
+    """The lines git diff removes and adds from old to new, file by file (each file by its
+    `diff --git` line), with its mode lines, each list sorted, so where a hunk falls doesn't count;
+    a `\\ No newline at end of file` marker stays with its line. None when git fails, or for a
+    binary file, whose change no line shows (fail closed, D-108)"""
+    proc = subprocess.run(["git", "-C", checkout, *LINE_DIFF, old, new, "--"], capture_output=True)
+    if proc.returncode != 0:
+        return None
+    files: dict[bytes, LineChange] = {}
+    current: LineChange | None = None
+    last: list[bytes] | None = None  # the list the previous hunk line went to
+    hunk = False
+    for line in proc.stdout.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            current, last, hunk = ([], [], []), None, False
+            files[line] = current
+        elif current is None:
+            if line:
+                return None  # output git didn't start with a file: not read
+        elif line.startswith(b"@@"):
+            hunk = True
+        elif not hunk:
+            if line.startswith((b"Binary files ", b"GIT binary patch")):
+                return None
+            if line.startswith(MODE_LINES):
+                current[0].append(line)
+        elif line.startswith((b"-", b"+")):
+            last = current[1] if line.startswith(b"-") else current[2]
+            last.append(line[1:])
+        elif line.startswith(b"\\") and last:
+            last[-1] += b"\n\\"
+    for change in files.values():
+        for lines in change:
+            lines.sort()
+    return files
+
+
+def main_change_only(checkout: str, base_ref: str, answered: str, head: str, specs: tuple[str, ...]) -> bool:
+    """Whether the change from the answered head to the judged head is exactly main's change
+    between their merge-bases with the base, file by file on the lines git diff removes and adds
+    (line_changes), and every spec named passes specs.py same-approval between the two heads
+    (S-055-20, D-108): a rebase that only resolved conflicts with main. same-approval alone
+    carries nothing, and a git read that fails, or a binary file, reads as a difference"""
+    if not has_commit(checkout, answered) or not has_commit(checkout, head):
+        return False
+    answered_base = quiet(checkout, "merge-base", base_ref, answered)
+    head_base = quiet(checkout, "merge-base", base_ref, head)
+    if not answered_base or not head_base:
+        return False
+    if not all(same_approval(checkout, base_ref, spec, answered, head) for spec in specs):
+        return False
+    ours = line_changes(checkout, answered, head)
+    return ours is not None and ours == line_changes(checkout, answered_base, head_base)
+
+
 def acceptance(
     data: dict,
     number: int,
@@ -2452,7 +2529,8 @@ def acceptance(
     the needs-decision line that says why (None for no line), and whether it covers the head by
     the head its question names or by its same change, which alone lifts a files: line of spec
     085 (S-085-14, D-109): an answer on an issue before the pull request opened covers every head
-    for the other asks, and no files: line. The newest question on the pull
+    for the other asks, and no files: line, nor does one carried over a rebase (S-055-20, D-108).
+    The newest question on the pull
     request, else, for a pull request the --bot-login or an OWNER, MEMBER, or COLLABORATOR
     opened, on an issue it closes or names as Part of #N; its newest trusted answer, by
     retro.py's newest_answer_at (a relay by the --bot-login counts when it names one of
@@ -2461,7 +2539,9 @@ def acceptance(
     (retro.py's relay_refusal, D-93); its whole reply taking the (recommended) option, by
     retro.py's takes_recommended; given on an issue before the pull request opened, or at the
     head the question names in full (its `<!-- shipmill:head <sha> -->` line) or one whose own
-    change is the judged head's. Anything else leaves the question open. thread is the pull
+    change is the judged head's, or carried over from that head when the change since it is only
+    main's (main_change_only, S-055-20, D-108), the covered answer's line then CARRIED. Anything
+    else leaves the question open. thread is the pull
     request's, and issues the threads of the issues it names, when this pass already read them"""
     rt = retro()
     bots = frozenset({bot_login}) if bot_login else frozenset()
@@ -2509,6 +2589,12 @@ def acceptance(
         return False, NO_HEAD, False
     if covers_head():
         return True, None, True
+    specs = added_specs(data, number, repo)
+    base_ref = base_of(data, checkout)
+    edited, moved = approved_on_base(data, number, repo, checkout)
+    if not moved and main_change_only(checkout, base_ref, answered, head, (*specs, *edited)):
+        # S-055-20, D-108: it lifts the other asks, and no files: line (S-085-14, D-109)
+        return True, CARRIED.format(sha7=answered[:7]), False
     return False, DIFFERS.format(sha7=answered[:7]), False
 
 
@@ -2783,6 +2869,7 @@ def render(gate: Gate) -> str:
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  files: {line}" for line in gate.files]
+    lines += [f"  accepted: {gate.carried}"] if gate.carried else []
     lines += [f"  notify: {reason}" for reason in gate.notices]
     lines += [f"  decided: {veto}" for veto in gate.vetoes]
     lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
@@ -2919,8 +3006,11 @@ def main() -> int:
                     covered, why, at_head = acceptance(
                         data, number, args.repo, args.bot_login, bases.checkout, who, thread, issues
                     )
-                    if covered:  # an issue answer older than the PR lifts no files: line (S-085-14, D-109)
-                        judged = replace(judged, asks=(), spec_asks=(), files=() if at_head else judged.files)
+                    # an issue answer older than the PR, or one carried over a rebase, lifts no files:
+                    # line (S-085-14, D-109); why, on a covered answer, says it was carried (S-055-20)
+                    if covered:
+                        files = () if at_head else judged.files
+                        judged = replace(judged, asks=(), spec_asks=(), files=files, carried=why or "")
                     else:
                         judged = replace(judged, asks=(*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":

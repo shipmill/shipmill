@@ -1,0 +1,3 @@
+### Changed
+
+- `pr_gate.py` carries the maintainer's answer over a rebase that only brought main's changes: when every approved spec the pull request edits passes `specs.py same-approval` between the answered and the judged head, and the change between those heads is exactly main's change between their merge-bases, file by file on the lines `git diff` removes and adds, the answer covers the judged head and the gate prints `accepted: answer carried over from <sha7>: only main's changes since`, lifting every ask but an agent's `files:` lines (D-109); any other difference asks again (S-055-20, D-108) (#1587)

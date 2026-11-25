@@ -119,7 +119,16 @@ edit without `[agents]`):
    the base that changes nothing of the pull request's own still lands. A spec pull request
    compares its spec file with `specs.py same-approval` instead, so a format-only change lands
    on the answer (D-81). An answer on an issue given before the pull request opened covers
-   every head; one given after binds to the head its question names, as on the pull request
+   every head; one given after binds to the head its question names, as on the pull request.
+   An answer also covers a later head when the rebase only brought main's changes (D-108,
+   #1587): every approved or built spec the pull request edits passes `specs.py
+   same-approval` between the answered head and the judged head, and the change between those
+   two heads is exactly main's change between their two merge-bases, compared file by file on
+   the lines `git diff` removes and adds (where a hunk falls aside). The gate then prints
+   `  accepted: answer carried over from <sha7>: only main's changes since`. Such an answer
+   lifts the other asks but no `files:` line of spec 085 (D-109). Any other
+   difference asks again, `same-approval` alone carries nothing, and a git read that fails or
+   a binary file reads as a difference
 
 With an accepting answer that covers the judged head, the `ask` zones and Protected areas
 asks are lifted and CI decides, as `--maintainer-accepted` did. Without one, the
@@ -205,6 +214,7 @@ it opens the pull request with.
 - S-055-17: `shipmill gh pr create`, with `[agents] app_id` set and `docs/product.md` on the default branch, exits 2 without running gh when the body it would send has no plan `plan_problems` accepts, printing each problem, and runs gh for a valid plan, for a body with a `Spec for #N` line, and in a repo without `docs/product.md` on its default branch
 - S-055-18: `github-pr-triage`'s `SKILL.md` and `landing.md` and `needs-decision.md` name no `--maintainer-accepted`; the reviewer brief and landing say the reviewed head is recorded with `shipmill review record`, and the implementer brief says the plan goes in the body the pull request is opened with
 - S-055-19: An answer that names the `(recommended)` option as listed, its number and its own text together (`1. <text>`, `1) <text>`, `1: <text>`, `Option 1: <text>`, `Option 1. <text>`, the text the part before ` (recommended)`, with or without that mark, emphasis and code marks aside), takes it, for `pr_gate.py`'s acceptance and the retro's `recommended` count alike, through retro.py's `takes_recommended`; a number and a text naming different options, a text that narrows the option or has words past it, and a prefix of its text do not
+- S-055-20: An accepting answer at a head whose own change differs from the judged head's covers the judged head when every approved or built spec the pull request edits passes `specs.py same-approval` between the two heads and the change between them is exactly main's change between their merge-bases, file by file on the lines `git diff` removes and adds; the verdict then reads as if answered at the judged head, with the line `  accepted: answer carried over from <sha7>: only main's changes since`, save that it lifts no `files:` line of spec 085, which keeps an agent's pull request NEEDS_DECISION (S-085-14, D-109). A rebase whose conflict resolution also changes the code, or drops main's line, and an approved spec that fails `same-approval` keep NEEDS_DECISION with `needs-decision: answered at <sha7>, and the change differs since`; a git read that fails carries nothing over (D-108, #1587)
 
 ## Out of scope
 
@@ -235,6 +245,7 @@ it opens the pull request with.
 - shipmill/shipmill#1093: S-055-1, S-055-2, S-055-3
 - shipmill/shipmill#1095: S-055-4
 - shipmill/shipmill#1150: S-055-19
+- shipmill/shipmill#1587: S-055-20
 
 ## Verification
 
@@ -259,3 +270,4 @@ Ran the S-055 tests on `main` at 4c0fda22 (`pytest -k s055` over tests/test_merg
 - S-055-17: ran tests/test_pr_create_plan.py's S-055-17 tests: `shipmill gh pr create` without a valid plan exits 2 printing each problem, and a valid plan, a `Spec for #N` body, and a repo without a direction run gh, holds
 - S-055-18: ran tests/test_review_record.py's S-055-18 tests: the landing skills name no `--maintainer-accepted`, landing records the reviewed head, and the implementer brief opens the PR with its plan, holds
 - S-055-19: ran tests/test_pr_gate.py's and tests/test_retro.py's S-055-19 tests: the option named by number and text takes it, for the gate and the retro alike, holds
+- S-055-20: ran tests/test_answer_carried_over.py's S-055-20 tests: a conflict-only rebase carries the answer over with its `accepted:` line, an approved spec the PR edits carries over when `same-approval` passes, and a resolution that also changes the code, drops main's line, or adds its own, a misplaced line of main's in an approved spec (`same-approval` fails), and a head git can't read ask again, and a carried-over answer lifts a protected area's ask but keeps the `files:` line of a file outside the issue's allowance, holds
