@@ -3862,6 +3862,9 @@ def _status_summary(
     return 0
 
 
+NO_DETAIL = item_status.PullDetail((), "", ())
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Open:
     """One read of the repo's facts: what queue and status --summary build from (S-094-10)"""
@@ -3903,8 +3906,9 @@ def _read_open(
         read = StateRead(bot_login=bot, roles=resolved)
         proc = run(watch_command(slug, top, read, json=True, host=False))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
-        if state_failed(proc):
-            raise ReleaseError(f"watch_state.py failed (exit {proc.returncode})")
+        if state_failed(proc):  # S-094-12: its own error, so a fleet read sees a rate limit in it
+            said = [line for line in proc.stderr.splitlines() if line.strip()]
+            raise ReleaseError(f"watch_state.py failed (exit {proc.returncode})" + (f": {said[-1]}" if said else ""))
         git = Git(top)
         main = status.read_main(git, branch.result())  # after watch_state.py's fetch
         facts = status.Facts(
@@ -3923,10 +3927,10 @@ def _read_open(
             autonomy=autonomy,
             environments=environments,
         )
-        found = details.result()
-        missing = [p.number for p in facts.pulls if p.number not in found]
-        if missing:  # the two lists are read beside each other; one opened between them
-            found = {**found, **{n: item_status.read_pull_detail(slug, n, run) for n in missing}}
+        listed = details.result()
+        # S-094-10: no read per item; a pull request opened between the two lists has no checks,
+        # review, or labels read yet, and the next run reads them
+        found = {p.number: listed.get(p.number, NO_DETAIL) for p in facts.pulls}
         window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

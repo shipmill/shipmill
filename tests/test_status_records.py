@@ -326,6 +326,53 @@ def test_s094_12_a_rate_limit_stops_the_fleet_read(tmp_path: Path, capsys: pytes
     assert not any(repo in c for c in fake.seen for repo in ("acme/cli", REPO))  # nothing of theirs was read
 
 
+class StateLimitedFake(SummaryFake):
+    """SummaryFake's picture, whose watch_state.py run for one repo fails on GitHub's rate limit"""
+
+    def __init__(self, limited: str) -> None:
+        super().__init__()
+        self.limited = limited
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[1].endswith("watch_state.py") and self.limited in cmd:
+            self.seen.append(cmd)
+            said = f"error: gh repo view {self.limited}: GraphQL: API rate limit already exceeded for user ID 1.\n"
+            return subprocess.CompletedProcess(cmd, 2, "", said)
+        return super().__call__(cmd)
+
+
+def test_s094_12_a_rate_limit_in_watch_state_stops_the_fleet_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = tmp_path / "home"
+    gate_job(home, "acme/api", configured(repo_with_release(tmp_path / "api", "acme/api")))
+    gate_job(home, REPO, configured(repo_with_release(tmp_path / "web")))
+    fake = StateLimitedFake("acme/api")
+    code, out = run_fleet(home, capsys, "--json", fake=fake)
+    api, web = json.loads(out)["repos"]
+    assert code == 2 and "watch_state.py failed (exit 2)" in str(api["error"]) and "rate limit" in str(api["error"])
+    assert web["error"] == "not read: GitHub's rate limit was reached on an earlier repo"
+    assert not any(REPO in c for c in fake.seen)
+
+
+def test_s094_10_a_pull_request_missing_from_the_detail_list_reads_no_view(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class NewPull(SummaryFake):
+        def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["gh", "pr", "list"] and "statusCheckRollup" in cmd[cmd.index("--json") + 1]:
+                self.seen.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")  # #9 opened between the two lists
+            return super().__call__(cmd)
+
+    root = configured(repo_with_release(tmp_path / "repo"))
+    fake = NewPull()
+    assert main(["--repo", str(root), "queue", "--json"], state=fake, login=host) == 0
+    record = {i["number"]: i for i in json.loads(capsys.readouterr().out)["items"]}[9]
+    assert not any(c[1:3] == ["pr", "view"] for c in fake.seen)
+    assert "check" not in record["why"]  # no checks read for it yet
+
+
 def test_s094_12_fleet_with_a_repo_exits_2(tmp_path: Path) -> None:
     fake = SummaryFake()
     with pytest.raises(ReleaseError, match="--fleet reads every gate job on this host"):
