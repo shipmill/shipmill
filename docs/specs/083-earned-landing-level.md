@@ -1,6 +1,6 @@
 # S-083: A pull request lands at the level its evidence and its area's production record earn
 
-status: approved
+status: built
 serves: G-1, G-2
 
 ## Problem
@@ -235,5 +235,35 @@ record`), `src/shipmill/github.py`, `src/shipmill/merge_checks.py` (read),
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-083-1: ran `shipmill decide levels` on a scratch checkout whose config sets `[decisions.earned]
+  protected = "act"`, `security = "notify"`, `max_lines = 200`: each zone's row shows its bound
+  under it (`earned act  config [decisions.earned]`); with `security = "act"` it exits 2 naming
+  the floor notify; the other refusals by `tests/test_decide.py`, passed
+- S-083-2: read `decisions.py`'s `policy()` beside `decide.py`'s parse, and ran
+  `tests/test_decisions.py`, its 3.10 reader's case included, passed
+- S-083-3: the same `decide levels` lists `area-record` right after `protected`, at the
+  config's `ask`; without the key it reads `act` with no floor (`tests/test_decide_cli.py`),
+  passed
+- S-083-4: read `area_record.py`'s incident reading (the `Incident.read` line, D-16's authors,
+  `to=-` by version order) and ran `tests/test_area_record.py`, passed
+- S-083-5: read the clean-release count (a later tag, `success` in the same environment, no
+  incident of its own, touching the area) and ran `tests/test_area_record.py`, passed
+- S-083-6: read `classify.py`'s `with_record`, which reads only when the base sets `area-record`
+  above `act` or has `[decisions.earned]`, and ran `tests/test_area_record_zone.py`, passed
+- S-083-7: ran `tests/test_area_record_zone.py`'s `--files` cases for a raised, a cleared, and an
+  unrecorded area, passed
+- S-083-8: read `cli.py`'s `_classify_pull` and `earned.landing`, and ran
+  `tests/test_earned_landing.py`, passed
+- S-083-9: ran `tests/test_earned_landing.py`'s cases of one piece of evidence failing alone,
+  passed
+- S-083-10: read `earned.py`'s `CEILING` table against the criterion's paths and ran
+  `tests/test_earned_landing.py`'s S-083-10 cases, passed
+- S-083-11: read `review_record.record`: the `## Landing` section comes from `decide classify
+  --pr N` (the same `_classify_pull`) at origin/HEAD's levels, only after the head check, and a
+  classify whose pull request is at another head, or that fails, raises before the post; ran
+  `tests/test_review_record.py`, which also reads the posted body with `pr_gate.py`'s own
+  parser, passed
+- S-083-12: ran `tests/test_landing_seeded.py` over `tests/landing/seeded.toml`, passed
+- S-083-13: read the "Who decides" sections of `docs/flow.md` and `needs-decision.md` and
+  landing.md's "Recording the review", and ran the S-083-13 test in
+  `tests/test_review_record.py`, passed

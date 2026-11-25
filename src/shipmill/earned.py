@@ -179,12 +179,15 @@ class Landing:
                 zone["earned"] = {"from": low.before.value, "to": low.after.value}
         return record | {"landing": self.record()}
 
+    def lines(self) -> list[str]:
+        """The landing level, then one line per piece of evidence, in the table's order"""
+        level = "none, no zone detected" if self.level is None else self.level.value
+        return [f"landing: {level}", *(e.text() for e in self.evidence)]
+
     def text(self, found: Classification) -> str:
         """`decide classify --pr`'s text: classify's at the landing's zones, then the landing
         level and one line per piece of evidence"""
-        level = "none, no zone detected" if self.level is None else self.level.value
-        lines = [f"landing: {level}", *(e.text() for e in self.evidence)]
-        return Classification(self.zones, found.candidates).text() + "\n".join(lines) + "\n"
+        return Classification(self.zones, found.candidates).text() + "\n".join(self.lines()) + "\n"
 
 
 def changed_of(change: PullChange) -> tuple[tuple[Changed, ...], str | None]:

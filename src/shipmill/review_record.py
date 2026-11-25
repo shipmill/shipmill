@@ -4,14 +4,15 @@ github-pr-triage's landing session records its reviewer's verdict on the head it
 `pr_gate.py` reads an agent's code pull request UNREVIEWED until such a record covers the head it
 judges. The record is a pull request review posted as the App: event COMMENT, `commit_id` the
 head, and a body whose first line is the verdict's marker, then, after a second look at a refusal
-(spec 075), the findings line with its counts, followed by the reviewer's report.
-Every check runs before the write: the head's form, the report's file, the App, the leak check of
-the report (spec 081), and that the head is still the pull request's current one; a failure writes
-nothing.
+(spec 075), the findings line with its counts, followed by the reviewer's report, and last the
+`## Landing` section: the landing level and evidence `decide classify --pr` gives at the head (spec
+083). Every check runs before the write: the head's form, the report's file, the App, the leak
+check of the report (spec 081), that the head is still the pull request's current one, and the
+classify at it; a failure writes nothing.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -132,11 +133,20 @@ class Request:
     findings: Findings | str | None = None
 
 
-def record(request: Request, hub: Hub, app: Callable[[], None], leaks: Callable[[str], None]) -> str:
+def record(
+    request: Request,
+    hub: Hub,
+    app: Callable[[], None],
+    leaks: Callable[[str], None],
+    landing: Callable[[Head], Sequence[str]] | None = None,
+) -> str:
     """S-055-16: the checks, then the review; the line saying what was recorded. app raises, as
     `shipmill gh` would before a write, when the App isn't available. Any failure raises with
     nothing written. S-075-4: given findings, their line follows the verdict's marker.
-    S-081-12: leaks raises when the report holds what the leak check refuses"""
+    S-081-12: leaks raises when the report holds what the leak check refuses. S-083-11: landing,
+    which the CLI always gives, is `decide classify --pr`'s landing level and evidence lines at
+    the head, read once the head is the current one, and the body ends with them under `##
+    Landing`; it raises when classify fails, and then nothing is written"""
     if request.number < 1:
         raise ReleaseError(f"the pull request's number is 1 or more; got {request.number}")
     head = Head.parse(request.head)
@@ -152,9 +162,19 @@ def record(request: Request, hub: Hub, app: Callable[[], None], leaks: Callable[
             f"--head {head} is not #{request.number}'s current head, {current}: the pull request moved since the "
             "review, so review its current head and record that; nothing was written"
         )
+    section = None if landing is None else landing_section(landing(head))
     marker = request.verdict.marker if findings is None else f"{request.verdict.marker}\n{findings.line}"
-    hub.post(request.number, head, f"{marker}\n\n{report}" if report else marker)
+    body = "\n\n".join(part for part in (marker, report, section) if part)
+    hub.post(request.number, head, body)
     return f"recorded {request.verdict} for #{request.number} at {head}"
+
+
+def landing_section(lines: Sequence[str]) -> str:
+    """S-083-11: the review's `## Landing` section, the landing level then one item per piece of
+    evidence; classify always gives the level, so no lines is a classify that broke"""
+    if not lines:
+        raise ReleaseError("decide classify gave no landing level, so no review was recorded")
+    return "## Landing\n\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def _report(path: Path) -> str:

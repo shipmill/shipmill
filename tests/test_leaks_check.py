@@ -17,10 +17,12 @@ from .test_app import REPO as ORIGIN
 from .test_app import FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, checkout
 from .test_app_token import MintApi
+from .test_area_record import FakeReads
+from .test_earned_landing import Rules
 from .test_gh_refuses_without_app import HOST_IDENTITY
 from .test_leak_push import RANDOM
 from .test_leaks import CLEAN, GITHUB_TOKEN, LEAKED, PUBLIC, TERM, Reads, host, private, with_term
-from .test_review_record import HEAD, PULL
+from .test_review_record import HEAD, PULL, AtHead, based
 from .test_review_record import FakeGh as ReviewGh
 from .test_spec_open import BRANCH, SPEC, FakeCheckout, FakeHub, available, git, repo_files, request, spec_text
 from .test_spec_open import REPO as SPEC_REPO
@@ -283,6 +285,9 @@ def review_cli(root: Path, host: Host, gh: ReviewGh, body: Path, key: Path) -> i
         environ=host.env(SHIPMILL_APP_KEY=str(key)),
         home=host.home,
         gh_capture=gh,
+        pulls=AtHead(),
+        record_reads=FakeReads(),
+        rules_reader=Rules(),
     )
 
 
@@ -308,7 +313,7 @@ def test_s081_12_review_record_refuses_a_token_in_any_repo(tmp_path: Path, host:
 
 def test_s081_12_review_record_with_a_clean_body_file_posts(tmp_path: Path, host: Host) -> None:
     with_term(host)
-    root = checkout(tmp_path, WITH_APP)
+    root = based(checkout(tmp_path, WITH_APP))
     gh = ReviewGh()
     assert review_cli(root, host, gh, text_file(tmp_path, f"Verdict: MERGE\n\n{CLEAN}\n"), key_file(tmp_path)) == 0
     assert ["api", "-X", "POST"] in [args[:3] for args, _ in gh.calls]
