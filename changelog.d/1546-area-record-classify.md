@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill decide classify` reports the `area-record` zone for a changed path whose area a failed release raised, with the reason `<area> is raised: <tag> failed in <env> (#N), K of M clean releases since`, at the base's `[decisions] area-record` level; it reads the production record only when the base sets `area-record` above `act` or has `[decisions.earned]`, so a repo that sets neither makes no new GitHub read, and a record read that fails exits 2 naming what couldn't be read, so `pr_gate.py` fails closed; `decide record` names the issues or deployments read that failed (spec 083) (#1546)
