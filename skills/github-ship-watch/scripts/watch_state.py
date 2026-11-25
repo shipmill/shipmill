@@ -5089,7 +5089,7 @@ HAND_KEYS = frozenset({"session", "at"})
 PULL_KEYS = frozenset({"head", "rollup"})
 SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")
 # shipmill's walk.End: how a hand's session ended (spec 089, spec 095)
-ENDS = ("ok", "limit", "auth", "error", "github_limit", "disk", "permission")
+ENDS = ("ok", "limit", "auth", "error", "github_limit", "disk")
 HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})  # walk.HAND_EXTRA; errors and until: the backoff
 
 

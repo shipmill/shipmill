@@ -1,6 +1,6 @@
 """Spec 095: a session that ended ok after an outside failure records that failure, not idle:
-GitHub's rate limit (github_limit) and a full disk (disk) pause the host, a denied permission
-(permission) notifies once per tool, and a network failure ends error (D-112)"""
+GitHub's rate limit (github_limit) and a full disk (disk) pause the host, a network failure
+ends error (D-112), and a denied permission ends nothing and notifies once per tool (D-113)"""
 
 import dataclasses
 import datetime as dt
@@ -14,7 +14,17 @@ import pytest
 from shipmill.agents import Mode
 from shipmill.autonomy import Autonomy, AutonomyPolicy
 from shipmill.errors import ReleaseError
-from shipmill.gate import DEAD_STREAK, DENIED_RECORD, RECORD, Action, Decision, load_launch, session_end, state_dir
+from shipmill.gate import (
+    DEAD_STREAK,
+    DENIED_RECORD,
+    RECORD,
+    Action,
+    Decision,
+    input_command,
+    load_launch,
+    session_end,
+    state_dir,
+)
 from shipmill.gitrepo import Git
 from shipmill.host_pause import (
     DISK_FLOOR,
@@ -79,15 +89,12 @@ DENIALS = {
         ((INIT, used("Bash", "gh pr list"), GH_LIMIT, SAID, OK), End.GITHUB_LIMIT),
         ((INIT, failed("You have exceeded a secondary rate limit"), OK), End.GITHUB_LIMIT),
         ((INIT, DISK_FULL, OK), End.DISK),
-        ((INIT, used("Bash", "rm -rf tmp"), DENIED, OK), End.PERMISSION),
-        ((INIT, failed("Permission to use Bash has been denied."), OK), End.PERMISSION),
-        ((INIT, DENIALS), End.PERMISSION),
         ((INIT, NETWORK, OK), End.ERROR),
         ((INIT, failed("dial tcp: connection timed out"), OK), End.ERROR),
-        # the order: github_limit, disk, permission, then the network
+        # the order: github_limit, disk, then the network; a denial beside them changes none
         ((INIT, NETWORK, DENIED, DISK_FULL, GH_LIMIT, OK), End.GITHUB_LIMIT),
         ((INIT, NETWORK, DENIED, DISK_FULL, OK), End.DISK),
-        ((INIT, NETWORK, DENIED, OK), End.PERMISSION),
+        ((INIT, NETWORK, DENIED, OK), End.ERROR),
     ],
 )
 def test_s095_1_an_ok_session_whose_tool_calls_failed_on_an_outside_cause_records_it(
@@ -113,6 +120,10 @@ def test_s095_1_an_ok_session_whose_tool_calls_failed_on_an_outside_cause_record
             OK,
         ),
         (INIT, {**OK, "permission_denials": []}, OK),
+        # a denied permission is no end (D-113), listed or read in a failed tool result
+        (INIT, used("Bash", "rm -rf tmp"), DENIED, OK),
+        (INIT, failed("Permission to use Bash has been denied."), OK),
+        (INIT, DENIALS),
     ],
 )
 def test_s095_1_a_session_whose_failed_tool_calls_read_no_outside_cause_ends_ok(
@@ -157,7 +168,7 @@ def test_s095_2_handed_json_and_the_watch_read_the_new_ends(ws: ModuleType, tmp_
     assert ws.idle_rows(path, NOW + dt.timedelta(days=2)) == []
 
 
-@pytest.mark.parametrize("end", [End.GITHUB_LIMIT, End.DISK, End.PERMISSION])
+@pytest.mark.parametrize("end", [End.GITHUB_LIMIT, End.DISK])
 def test_s095_2_a_hand_that_ended_on_an_outside_cause_drops_never_idle_and_keeps_no_backoff(end: End) -> None:
     hands = {
         "ISSUES VERIFY_DUE #1": Hand("a", NOW, ended=end, errors=2),
@@ -197,21 +208,16 @@ def folder(tmp_path: Path) -> Path:
     return tmp_path / "state" / "shipmill" / "host"
 
 
-def test_s095_2_a_permission_end_drops_its_hand_and_its_item_is_handed_again_with_no_death(
+def test_s095_2_a_session_that_was_denied_a_tool_keeps_its_ok_hand_and_is_not_handed_again(
     checkout: Git, folder: Path
 ) -> None:
     gate = HostGate(checkout, folder)
     gate.tick(NOW)
-    for round in range(DEAD_STREAK + 1):  # never held for retry_hours, however many in a row
-        gate.ended(INIT, DENIALS)
-        at = NOW + dt.timedelta(hours=round + 1)
-        decision = gate.tick(at)
-        assert decision.action is Action.SESSION_DEAD and decision.work == (INCIDENT,)
-        assert decision.dead is not None and decision.dead.end is End.PERMISSION
-        assert "its tool calls were denied" in decision.reason
-        found = load_launch(state_dir(checkout) / RECORD)
-        assert found is not None and found.deaths is None
-        assert "ended" not in handed(checkout)[next(iter(handed(checkout)))]
+    gate.ended(INIT, DENIALS)
+    for round in range(DEAD_STREAK + 1):  # the unchanged subject waits, as any ok end's does (D-113)
+        decision = gate.tick(NOW + dt.timedelta(minutes=10 * (round + 1)))
+        assert decision.dead is None and len(gate.claude.started) == 1
+    assert len(handed(checkout)) == 1  # its hand kept, not dropped as a caused end's is
 
 
 # -- S-095-3: the host's record
@@ -371,14 +377,12 @@ def test_s095_6_shipmill_status_names_the_disk_pause_with_its_fix() -> None:
 # -- S-095-7: one notification per denied tool
 
 
-def test_s095_7_a_permission_end_notifies_once_per_tool_and_the_gate_keeps_launching(
-    checkout: Git, folder: Path
-) -> None:
+def test_s095_7_a_denied_tool_notifies_once_and_the_session_keeps_its_end(checkout: Git, folder: Path) -> None:
     gate = HostGate(checkout, folder, notify=True)
     gate.tick(NOW)
     gate.ended(INIT, DENIALS)
     decision = gate.tick(NOW + dt.timedelta(minutes=10))
-    assert decision.action is Action.SESSION_DEAD and len(gate.claude.started) == 2  # launched again
+    assert decision.dead is None and len(gate.claude.started) == 1  # ended ok: the tick is as without it
     assert gate.notifier.sent == [
         (
             f"shipmill {GATE_REPO}",
@@ -419,6 +423,32 @@ def test_s095_7_a_denial_read_from_a_tool_result_names_its_tool_use(checkout: Gi
         f"session {LAUNCHED} was denied Bash (uvx shipmill gh pr merge 3): allow it in the gate's allowlist or "
         "[agents.sandbox], or leave it denied"
     ]
+
+
+def test_s095_7_a_dead_session_that_was_denied_a_tool_notifies_too(checkout: Git, folder: Path) -> None:
+    gate = HostGate(checkout, folder, notify=True)
+    gate.tick(NOW)
+    gate.ended(INIT, {**DENIALS, "subtype": "error_during_execution", "is_error": True})
+    decision = gate.tick(NOW + dt.timedelta(minutes=10))
+    assert decision.dead is not None and decision.dead.end is End.ERROR
+    assert [body.split(":")[0] for _, body in gate.notifier.sent] == [
+        f"session {LAUNCHED} was denied Bash (rm -rf tmp)",
+        f"session {LAUNCHED} was denied WebFetch (https",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("given", "shown"),
+    [
+        ({"command": "rm -rf tmp"}, "rm -rf tmp"),
+        ({"command": "cat > a <<'EOF'\nTOKEN=secret\nEOF"}, "cat > a <<'EOF'"),
+        ({"command": "x" * 200}, "x" * 119 + "…"),
+        ({"url": "https://example.com"}, "https://example.com"),
+        ("not an input", ""),
+    ],
+)
+def test_s095_7_a_denied_command_shows_its_first_line_cut_at_120_characters(given: object, shown: str) -> None:
+    assert input_command(given) == shown
 
 
 def test_s095_7_a_failed_send_is_tried_again_next_tick_and_notify_off_sends_none(checkout: Git, folder: Path) -> None:

@@ -1244,7 +1244,6 @@ OUTSIDE_WHY = {
     End.LIMIT: ", its log shows a usage limit",
     End.GITHUB_LIMIT: ", its tool calls hit GitHub's rate limit",
     End.DISK: ", its tool calls found no space left on device",
-    End.PERMISSION: ", its tool calls were denied",
 }
 
 
@@ -1539,16 +1538,13 @@ def failed_results(events: Sequence[Mapping[str, object]]) -> list[Mapping[str, 
 def outside_end(events: Sequence[Mapping[str, object]]) -> End | None:
     """Spec 095 (S-095-1): an outside cause read from the failed tool results of a
     session whose result is ok, in this order: github_limit, a result reads GitHub's rate limit;
-    disk, `No space left on device`; permission, the last result lists permission_denials or a
-    result reads a denied permission; error, a network failure. None for any other failure, so
-    the session ends ok as spec 089 reads it"""
+    disk, `No space left on device`; error, a network failure. None for any other failure, a
+    denied permission too, so the session ends ok as spec 089 reads it"""
     texts = [result_text(b) for b in failed_results(events)]
     if any(GITHUB_LIMITED.search(t) for t in texts):
         return End.GITHUB_LIMIT
     if any(DISK_FULL.search(t) for t in texts):
         return End.DISK
-    if denials_of(events):
-        return End.PERMISSION
     if any(NETWORK.search(t) for t in texts):
         return End.ERROR
     return None
@@ -1562,15 +1558,19 @@ class Denial:
     command: str
 
 
+COMMAND_SHOWN = 120  # characters of a denied command's first line a notification shows (spec 095)
+
+
 def input_command(given: object) -> str:
     """A tool call's command as a person reads it: its input's `command`, else the input's first
-    string value, else nothing"""
+    string value, else nothing; its first line only, cut at COMMAND_SHOWN characters, so a heredoc
+    or a token further on reaches no notification, output, or record"""
     if not isinstance(given, dict):
         return ""
     command = given.get("command")
-    if isinstance(command, str):
-        return command
-    return next((v for v in given.values() if isinstance(v, str)), "")
+    found = command if isinstance(command, str) else next((v for v in given.values() if isinstance(v, str)), "")
+    first = found.strip().split("\n", 1)[0].rstrip()
+    return first if len(first) <= COMMAND_SHOWN else first[: COMMAND_SHOWN - 1] + "…"
 
 
 def denials_of(events: Sequence[Mapping[str, object]]) -> list[Denial]:
@@ -3132,33 +3132,44 @@ def denied_body(tool: str, denied: Denied) -> str:
     )
 
 
+def ended_session(git: Git, decision: Decision) -> str | None:
+    """The last session that ended, for denied_step: the dead one this tick read, else the last
+    that ended with a result as last-result.json records it (spec 048), else None"""
+    if decision.dead is not None:
+        return decision.dead.session
+    found = load_last_result(state_dir(git) / LAST_RESULT)
+    return None if found is None else found.session
+
+
 def denied_step(
     state: Path,
-    dead: Dead | None,
+    session: str | None,
     config: Callable[[], AgentsConfig],
     notifier: Notifier,
     repo: str,
     now: dt.datetime,
     dry_run: bool,
 ) -> tuple[str, ...]:
-    """Spec 095 (S-095-7): the last headless session ended permission, so each tool it was
-    denied is recorded once in denied.json, with its command, the session, and when; with
-    [agents] notify, a tool whose notification hasn't gone out gets one, naming the session, the
-    tool, and the command, with or without app_id, since no GitHub mention carries it. A
+    """Spec 095 (S-095-7): session, the last headless session that ended with a result,
+    whatever its end, None without one; each tool it was denied is recorded once in
+    denied.json, with its command, the session, and when; with [agents] notify, a tool whose
+    notification hasn't gone out gets one, naming the session, the tool, and the command, with
+    or without app_id, since no GitHub mention carries it. A
     recorded tool sends nothing again; a failed send is tried on the next tick, which reads the
-    same end while gate.json names the session. A dry run writes and sends nothing. What it did,
-    one line per tool it sent for or failed to; () when nothing was due"""
-    if dead is None or dead.end is not End.PERMISSION:
+    same session's log. The denial changes nothing else: the session's end, its hand, and the
+    tick's launch are as without it. A dry run writes and sends nothing. What it did, one line
+    per tool it sent for or failed to; () when nothing was due"""
+    if session is None:
         return ()
     path = state / DENIED_RECORD
     known = load_denied(path)
-    due = [d for d in session_denials(state, dead.session) if d.tool not in known or known[d.tool].notified is None]
+    due = [d for d in session_denials(state, session) if d.tool not in known or known[d.tool].notified is None]
     if not due:
         return ()
     notify = config().notify
     lines = []
     for denial in due:
-        entry = known.get(denial.tool) or Denied(denial.command, dead.session, now)
+        entry = known.get(denial.tool) or Denied(denial.command, session, now)
         if notify:
             if dry_run:
                 lines.append(f"would notify: {denied_body(denial.tool, entry)}")
@@ -3365,8 +3376,8 @@ def gate(
 
     host_seams, the host's pause (spec 095, HostSeams), is read after the credential's: a github_limit
     or disk end writes it, and while it holds the tick reads PAUSED; None, as in tests that don't
-    exercise it, reads none. After the decision, a last session that ended permission sends one
-    notification per denied tool (denied_step)"""
+    exercise it, reads none. After the decision, the last session that ended with a result sends
+    one notification per tool it was denied, whatever its end (denied_step)"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -3412,7 +3423,8 @@ def gate(
             host_seams=host_seams,
         )
         decision = replace(
-            decision, denied=denied_step(state_dir(git), decision.dead, config, notifier, repo, now, dry_run)
+            decision,
+            denied=denied_step(state_dir(git), ended_session(git, decision), config, notifier, repo, now, dry_run),
         )
     except ReleaseError as exc:
         if not dry_run:
