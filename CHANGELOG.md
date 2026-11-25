@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.172.0] - 2026-11-25
+
+### Added
+
+- `shipmill decide classify --pr N` lowers `protected` or `security` to the bound the base's `[decisions.earned]` sets when every piece of evidence holds: the default branch requires a check that proves (a rules read that fails holds nothing), the pull request's added plus deleted lines are at most `max_lines`, it touches no raised area, and it changes no path of a ceiling kind (shipmill's controls, workflows and actions, infrastructure, dependency manifests and lockfiles); a lowered zone gains `"earned": {"from", "to"}` and its reason ends `(earned <to> from <from> by [decisions.earned])`, and the output gains a `landing` object with the level, `earned`, and the four evidence entries (`landing:` and one line each in text); a `never` path, a level below the zone's floor, and `--files` never earn, and the required checks are read only when the base has the table (spec 083) (#1548)
+- Spec 087's sandbox probe records how a sandboxed command reaches one local port: `"127.0.0.1:<port>"` in `sandbox.network.allowedDomains` opens that port alone, only through the sandbox's proxy, and `allowLocalBinding` opens every local port (Claude Code 2.1.330, macOS) (#1588)
+
 ## [0.171.0] - 2026-11-25
 
 ### Added
@@ -3080,7 +3087,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.171.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.172.0...HEAD
+[0.172.0]: https://github.com/shipmill/shipmill/compare/v0.171.0...v0.172.0
 [0.171.0]: https://github.com/shipmill/shipmill/compare/v0.170.0...v0.171.0
 [0.170.0]: https://github.com/shipmill/shipmill/compare/v0.169.0...v0.170.0
 [0.169.0]: https://github.com/shipmill/shipmill/compare/v0.168.0...v0.169.0
