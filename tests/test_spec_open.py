@@ -122,9 +122,11 @@ class FakeHub:
 
 @dataclass
 class FakeCheckout:
-    """origin: its default branch and branches; every publish recorded, none pushed"""
+    """origin: its default branch and branches, and the files changed on it since the working
+    tree's base; every publish recorded, none pushed"""
 
     branches: dict[str, str] = field(default_factory=dict)
+    changed: tuple[str, ...] = ()
     published: list[tuple[str, str, tuple[PurePosixPath, ...], str]] = field(default_factory=list)
 
     def default_branch(self) -> str:
@@ -132,6 +134,9 @@ class FakeCheckout:
 
     def remote_branch(self, branch: str) -> str | None:
         return self.branches.get(branch)
+
+    def stale(self, base: str, paths: Sequence[PurePosixPath]) -> tuple[PurePosixPath, ...]:
+        return tuple(path for path in paths if path.as_posix() in self.changed)
 
     def publish(
         self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
@@ -272,6 +277,50 @@ def test_s053_2_body_file_follows_the_spec_for_line_and_with_paths_share_the_com
     changed = git(clone, "diff-tree", "--no-commit-id", "--name-only", "-r", base, head).split()
     assert sorted(changed) == ["docs/decisions.md", SPEC]
     assert git(clone, "rev-list", "--count", f"{base}..{head}").strip() == "1"
+
+
+def gain_on_origin(clone: Path, line: str) -> str:
+    """origin's main gains a line in docs/decisions.md after the working tree was made: the
+    commit is pushed, and the checkout goes back to where it started; the new head"""
+    decisions = clone / "docs" / "decisions.md"
+    decisions.write_text(decisions.read_text(encoding="utf-8") + line, encoding="utf-8")
+    git(clone, "commit", "-q", "-am", "Gain a decision")
+    git(clone, "push", "-q", "origin", "main")
+    head = git(clone, "rev-parse", "HEAD").strip()
+    git(clone, "reset", "-q", "--hard", "HEAD~1")
+    return head
+
+
+def test_1623_a_with_file_main_changed_since_the_working_tree_was_made_is_refused(clone: Path) -> None:
+    gain_on_origin(clone, "\n## D-9: Landed since\n")
+    (clone / "docs" / "decisions.md").write_text(DECISIONS + "\n## D-3: Dry runs\n", encoding="utf-8")
+    before = git(clone, "ls-remote", "origin").splitlines()
+    hub = FakeHub()
+    with pytest.raises(ReleaseError) as raised:
+        open_spec(clone, REPO, request(with_paths=("docs/decisions.md",)), GitCheckout(clone), hub, available, NO_LEAKS)
+    message = str(raised.value)
+    assert "docs/decisions.md" in message and "rebase" in message
+    assert hub.writes == []
+    assert git(clone, "ls-remote", "origin").splitlines() == before  # nothing pushed
+
+
+def test_1623_a_working_tree_on_mains_head_opens_with_the_file_as_before(clone: Path) -> None:
+    head = gain_on_origin(clone, "\n## D-9: Landed since\n")
+    git(clone, "merge", "-q", "--ff-only", "origin/main")
+    decisions = clone / "docs" / "decisions.md"
+    decisions.write_text(decisions.read_text(encoding="utf-8") + "\n## D-3: Dry runs\n", encoding="utf-8")
+    hub = FakeHub()
+    open_spec(clone, REPO, request(with_paths=("docs/decisions.md",)), GitCheckout(clone), hub, available, NO_LEAKS)
+    pushed = git(clone, "ls-remote", "--heads", "origin", BRANCH).split()[0]
+    assert git(clone, "rev-parse", f"{pushed}^").strip() == head
+    assert git(clone, "show", f"{pushed}:docs/decisions.md") == decisions.read_text(encoding="utf-8")
+    assert [write[0] for write in hub.writes] == ["pull", "comment"]
+
+
+def test_1623_a_spec_file_main_changed_since_the_working_tree_was_made_is_refused(tmp_path: Path) -> None:
+    fake = FakeCheckout(changed=(SPEC,))
+    message = refused(only_file(tmp_path), request(), FakeHub(), fake)
+    assert message.startswith(f"{SPEC} changed on trunk since the working tree's base") and "rebase" in message
 
 
 @pytest.mark.parametrize("given", ["/etc/hosts", "../outside.md", ".git/config", "docs/missing.md", SPEC, "docs"])
