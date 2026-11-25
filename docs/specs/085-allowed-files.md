@@ -88,7 +88,11 @@ one line per such path:
 After 20 such lines, one more says `  files: and <k> more outside the allowed files`. The
 lines join the gate's other asks: the maintainer's answer that lifts the `ask` zones and the
 Protected areas asks (spec 055, D-89, D-93) lifts them too, under the same rules for the
-head it covers. No other record widens a pull request's allowance once it is open.
+head it covers. An answer on a named issue given before the pull request opened, which
+spec 055 reads as covering every head for the other asks, lifts a `files:` line only when
+its question's `<!-- shipmill:head <sha> -->` line names the judged head or one whose own
+change is the same (D-109, #1604): it was given before anyone saw the files. No other
+record widens a pull request's allowance once it is open.
 
 The gate also reads NEEDS_DECISION, fail closed, when:
 
@@ -139,6 +143,7 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 - S-085-11: `comments.md`'s Implement template has a `- Files:` line with paths in backticks and says a spec's build issue lists its spec file; `autonomy.md`'s `Proposed plan:` writes its `Files:` paths in backticks
 - S-085-12: `implementer-brief.md` passes the issue's allowed files and calls a file outside them a decision for you; `github-issue-resolve`'s Phase 4 keeps the plan's `Files:` line within them; `landing.md` asks a `files:` hold with the needs-decision question naming each file outside; `pr_gate.py`'s docstring names the `files:` lines and their exit code 5
 - S-085-13: A counting comment whose `lastEditedAt` is at or after the pull request's `createdAt` holds an agent's pull request, NEEDS_DECISION, with `  files: the allowance on #<n> changed after this pull request opened`, whatever the edit says, and the maintainer's answer lifts it as S-085-9 lifts any `files:` line; a counting comment edited before the pull request opened, or never edited (`lastEditedAt` null), counts as S-085-1 says, and an edited comment that doesn't count (S-085-2) holds nothing (D-106, #1570)
+- S-085-14: The maintainer's accepting answer on a named issue, given before the pull request opened, to a question naming no head (or a head whose own change differs from the judged head's) keeps the `files:` lines: an agent's pull request whose issue allows `src/a.py` and that changes `src/b.py` reads NEEDS_DECISION with `  files: src/b.py is outside what #<n> allows`, while that answer still lifts the pull request's other asks as spec 055 says; an accepting answer to a question naming the judged head lifts the `files:` lines (D-109, #1604)
 
 ## Out of scope
 
@@ -167,6 +172,7 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 - shipmill/shipmill#1525: S-085-9, S-085-10
 - shipmill/shipmill#1527: S-085-11, S-085-12
 - shipmill/shipmill#1570: S-085-13
+- shipmill/shipmill#1604: S-085-14
 
 ## Verification
 
@@ -185,3 +191,4 @@ Checked against main plus #1600 (which reads a `Proposed plan:` under its `<!-- 
 - S-085-11: `comments.md`'s Implement template has `- Files:` with backticked paths and names a build issue's spec file, and `autonomy.md`'s `Proposed plan:` writes backticked paths, read and in `tests/test_allowed_files_skills.py`; holds
 - S-085-12: `implementer-brief.md`, `github-issue-resolve`'s Phase 4, `landing.md`, and `pr_gate.py`'s docstring (the `files:` lines and exit 5) read and in `tests/test_allowed_files_skills.py`; holds
 - S-085-13: a counting comment edited at or after the PR opened holds it with `  files: the allowance on #<n> changed after this pull request opened`, a `Proposed plan:` under its markers included, the answer lifts it, one edited before or never counts, an edited comment that doesn't count holds nothing, and a malformed `lastEditedAt` stops the gate, in `tests/test_allowed_files_edited.py` and `tests/test_allowed_files.py`; holds
+- S-085-14: `acceptance` and its caller in `pr_gate.py` read; #1604's repro (an issue answer before the PR opened to a question naming no head, the PR changing `src/b.py`) holds with its `files:` line, the same answer still lifts a protected area's ask, and an issue answer to a question naming the judged head lifts the `files:` line, in `tests/test_allowed_files.py`; holds
