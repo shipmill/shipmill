@@ -539,7 +539,7 @@ def walked_decision(found: Walked, sessions: Sequence[Session], retry: dt.timede
         )
         return Decision(Action.UNCHANGED, f"{reason}; {read}", (found.taken,))
     if found.taken is not None and found.hand is not None:
-        again = (found.hand.at + retry).isoformat(timespec="minutes")
+        again = found.hand.retried(retry).isoformat(timespec="minutes")
         first = f"{found.taken.brief()} (tier {tier_of(found.taken)})"
         reason = f"every item was handed; the first, {first}, went to session {found.hand.session}"
         return Decision(Action.UNCHANGED, f"{reason}; retried after {again}; {read}", (found.taken,))
@@ -1451,6 +1451,13 @@ def session_resets(state: Path, session: str) -> dt.datetime | None:
         raise ReleaseError(f"session {session}'s log {log} is malformed: {exc}", f"tail -n 20 {log}") from None
 
 
+def session_died(state: Path, hand: Hand) -> dt.datetime:
+    """When a hand's headless session ended: its log's last write, else, its log gone, the hand
+    itself (spec 089's backoff counts from it, S-089-11)"""
+    log = session_log(state, hand.session)
+    return dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC) if log.is_file() else hand.at
+
+
 def hand_end(state: Path, last: Launch | None, session: str) -> End | None:
     """A hand's session's end, as session_end reads it, save the last launch's when it was
     interactive, as in a gate switched to headless since: that session leaves no log, so its
@@ -2091,16 +2098,24 @@ def tick_walk(
     handed = Handed.load(state / HANDED)
     # a dead session is a change until a walk drops its hand from handed.json, not on every
     # tick while gate.json still names it: with its item gone, every tick would walk
-    unseen = dead is not None and not capped and any(h.session == dead.session for h in handed.hands.values())
+    # a headless gate's dead session's hands are held by their backoff instead (S-089-11)
+    unseen = (
+        ends is None
+        and dead is not None
+        and not capped
+        and any(h.session == dead.session for h in handed.hands.values())
+    )
     if not recorded and last is not None and now - last.at < retry:
         handed = Handed({**handed.hands, last.fingerprint: Hand(last.session, last.at)})
-    ended = False  # spec 089: a hand whose session didn't end ok drops, a change
+    ended = False  # spec 089: a hand whose session ended limit or auth drops, a change
     if ends is not None:
+        if dead is not None:  # the run gate.json held before this end, which the hands carry on (S-089-11)
+            handed = handed.carrying(dead.session, dead.deaths.count - 1)
         recorded_ends = handed.ending(ends)
-        fresh = [k for k, h in handed.hands.items() if h.ended is None]  # a held hand's end drops it no later tick
-        handed = recorded_ends.ended_ok(dead.session if dead is not None and capped else None, fresh)
+        fresh = [k for k, h in handed.hands.items() if h.ended is None]  # only this tick's ends act
+        handed = recorded_ends.settled(fresh, partial(session_died, state), retry)
         ended = len(handed.hands) < len(recorded_ends.hands)
-    if dead is not None and not capped:
+    elif dead is not None and not capped:  # an interactive gate's dead session (S-046-15)
         handed = handed.without(dead.session)
     known = Swept.load(state / SWEEP)
     # spec 079: tier 2 reads base_red.py on a failing default head, or after a reading not GREEN
@@ -3225,7 +3240,7 @@ def decided(
         flight = InFlight.of(ticked.changes.flight, result)
         decision = replace(decision, reason=f"{decision.reason}; {flight.line(now)}", in_flight=flight)
     if dead is not None and ticked.hand is not None and decision.action is Action.UNCHANGED:
-        again = (ticked.hand.at + retry).isoformat(timespec="minutes")
+        again = ticked.hand.retried(retry).isoformat(timespec="minutes")
         reason = f"{dead.summary()}; no session starts for the same item until {again}; fix: {dead.fix}"
         decision = replace(decision, action=Action.SESSION_DEAD, reason=reason)
 

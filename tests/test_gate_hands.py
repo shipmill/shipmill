@@ -324,10 +324,12 @@ def test_s061_9_an_idle_hand_drops_when_its_session_ended_dead(checkout: Git) ->
     dead_launch(checkout, row, None)
     seed(checkout, {"ISSUES VERIFY_DUE #842": hand(session=str(ONE), idle=True)})
     claude = FakeClaude()
-    later = NOW + dt.timedelta(minutes=15)
+    # spec 089 (S-089-11): its idle mark goes with the death, and it is handed again after its backoff
+    later = NOW + dt.timedelta(minutes=15, seconds=5)
     decision = tick(checkout, Source({6: [row]}, issued={842: BEFORE}), later, cfg(Mode.HEADLESS), claude)
     assert (decision.action, decision.work) == (Action.SESSION_DEAD, (row,)) and len(claude.started) == 1
-    assert handed(checkout) == {"ISSUES VERIFY_DUE #842": {"session": str(ONE), "at": later.isoformat()}}
+    again = {"session": str(ONE), "at": later.isoformat(), "errors": 1}  # the run it carries on
+    assert handed(checkout) == {"ISSUES VERIFY_DUE #842": again}
 
 
 def test_s061_4_a_subject_whose_session_ended_dead_is_never_idle(checkout: Git) -> None:

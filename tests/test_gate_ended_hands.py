@@ -25,6 +25,7 @@ SHA = "a" * 40
 NEW_SESSION = str(ONE)  # the session id a headless tick here launches
 HEAD = Head(SHA, "SUCCESS")
 DAY = dt.timedelta(hours=24)
+MINUTES_15 = dt.timedelta(minutes=15)
 BEFORE = NOW - dt.timedelta(hours=25)  # a hand past retry_hours (24)
 OK = {"type": "result", "subtype": "success", "is_error": False, "result": "Nothing to do on #3"}
 FAILED = {"type": "result", "subtype": "error_during_execution", "is_error": True}
@@ -85,12 +86,17 @@ def test_s089_3_a_subject_whose_session_didnt_end_ok_is_handed_again_not_idle(ch
     logged(checkout, "s0", *ENDS[end])
     decision = tick(checkout, Source({3: [prs(3)]}, pulls=unchanged(3)), NOW, cfg(Mode.HEADLESS), FakeClaude())
     assert decision.action is Action.LAUNCH
-    assert handed(checkout)["PRS_OPEN #3"] == {
-        "session": NEW_SESSION,
-        "at": NOW.isoformat(),
-        "head": SHA,
-        "rollup": "SUCCESS",
-    }
+    run = {"errors": 1} if end is End.ERROR else {}  # an error end's run goes on (S-089-11), its backoff long past
+    assert (
+        handed(checkout)["PRS_OPEN #3"]
+        == {
+            "session": NEW_SESSION,
+            "at": NOW.isoformat(),
+            "head": SHA,
+            "rollup": "SUCCESS",
+        }
+        | run
+    )
 
 
 def test_s089_3_a_subject_whose_session_ended_ok_and_didnt_change_turns_idle(checkout: Git) -> None:
@@ -174,19 +180,22 @@ def test_s089_4_a_dropped_hand_is_a_change_so_a_quiet_gate_walks(checkout: Git) 
     assert decision.action is not Action.QUIET and decision.walk is not None and decision.walk.change
 
 
-def test_s089_4_a_capped_dead_sessions_hands_still_hold_its_item() -> None:
-    """Until the backoff (S-089-11), DEAD_STREAK's hold stays: the capped dead session's own hands
-    are kept past their end, never idle; every other non-ok hand drops"""
+def test_s089_4_the_tick_that_records_an_end_drops_limit_and_auth_and_backs_off_error() -> None:
+    """A limit or auth hand drops; an error one is held for its backoff (S-089-11); an ok one ends
+    its run; a hand an earlier tick settled stays as it was"""
     hands = Handed(
         {
             "PRS_OPEN #3": Hand("dead", NOW, HEAD, ended=End.ERROR),
-            "PRS_OPEN #4": Hand("older", NOW, HEAD, ended=End.LIMIT),
-            "PRS_OPEN #5": Hand("ok", NOW, HEAD, ended=End.OK),
+            "PRS_OPEN #4": Hand("limited", NOW, HEAD, ended=End.LIMIT),
+            "PRS_OPEN #5": Hand("ok", NOW, HEAD, ended=End.OK, errors=2),
             "PRS_OPEN #6": Hand("running", NOW, HEAD),
+            "PRS_OPEN #7": Hand("earlier", NOW, HEAD, ended=End.AUTH),
         }
     )
-    assert set(hands.ended_ok("dead").hands) == {"PRS_OPEN #3", "PRS_OPEN #5", "PRS_OPEN #6"}
-    assert set(hands.ended_ok().hands) == {"PRS_OPEN #5", "PRS_OPEN #6"}
+    found = hands.settled(["PRS_OPEN #3", "PRS_OPEN #4", "PRS_OPEN #5", "PRS_OPEN #6"], lambda h: NOW, DAY).hands
+    assert set(found) == {"PRS_OPEN #3", "PRS_OPEN #5", "PRS_OPEN #6", "PRS_OPEN #7"}
+    assert (found["PRS_OPEN #3"].errors, found["PRS_OPEN #3"].until) == (1, NOW + dt.timedelta(minutes=15))
+    assert found["PRS_OPEN #5"].errors == 0
 
 
 CAPPED = "33333333-3333-4333-8333-333333333333"
@@ -205,9 +214,13 @@ def test_s089_4_a_capped_hold_outlives_a_later_session_on_another_item(checkout:
     logged(checkout, NEXT, *ENDS[End.ERROR], at=later)
     launched(checkout, NEXT, later, "PRS_OPEN #3")
     source = Source({1: [INCIDENT], 3: [prs(3)]}, pulls=unchanged(3, at=later))
-    decision = tick(checkout, source, NOW, cfg(Mode.HEADLESS), FakeClaude())
-    assert decision.work == (prs(3),)  # the dead session's own item again, not the held one
-    assert handed(checkout)[item_key(INCIDENT)]["session"] == CAPPED
+    claude = FakeClaude()
+    tick(checkout, source, later + dt.timedelta(minutes=10), cfg(Mode.HEADLESS), claude)  # within its backoff
+    assert not claude.started  # the held item waits, and the dead session's own item backs off (S-089-11)
+    found = handed(checkout)
+    assert found[item_key(INCIDENT)]["session"] == CAPPED
+    died = later + dt.timedelta(seconds=60)  # its log's last write
+    assert (found["PRS_OPEN #3"]["errors"], found["PRS_OPEN #3"]["until"]) == (1, (died + MINUTES_15).isoformat())
 
 
 # -- S-089-14: an ok end that wrote nothing, as before
