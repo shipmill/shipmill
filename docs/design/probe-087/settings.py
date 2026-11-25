@@ -5,7 +5,10 @@ maintainer accepted for the probe (#1524): the whole git common dir is writable 
 `hooks` and the gate's state dir (#1531 replaces this list), and the env is the gate's session
 env for the App, read from the gate's helpers folder.
 
-Usage: python3 settings.py <checkout> <app key> <bot login> <bot email> <maintainer>
+Usage: python3 settings.py <checkout> <app key> <bot login> <bot email> <maintainer> [mode port]
+
+The modes are probe.sh's. `port` puts `127.0.0.1:<port>` in allowedDomains in place of the bare
+`localhost`, and `binding` drops `localhost` and sets `allowLocalBinding` (#1588).
 """
 
 import json
@@ -59,7 +62,8 @@ def project_dir(checkout: Path) -> str:
 
 
 def main() -> None:
-    checkout, key, login, email, maintainer = sys.argv[1:]
+    checkout, key, login, email, maintainer = sys.argv[1:6]
+    mode, port = (sys.argv[6], sys.argv[7]) if len(sys.argv) > 6 else ("plain", "")
     root = Path(checkout).resolve()
     common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
     main_tree = common.parent
@@ -108,6 +112,12 @@ def main() -> None:
         env[f"GIT_CONFIG_KEY_{index}"] = name
         env[f"GIT_CONFIG_VALUE_{index}"] = value
 
+    network: dict[str, object] = {"allowedDomains": list(DOMAINS)}
+    if mode in ("port", "binding"):
+        domains = [d for d in DOMAINS if d != "localhost"]
+        network["allowedDomains"] = [*domains, f"127.0.0.1:{port}"] if mode == "port" else domains
+        if mode == "binding":
+            network["allowLocalBinding"] = True
     settings = {
         "env": env,
         "sandbox": {
@@ -115,7 +125,7 @@ def main() -> None:
             "allowUnsandboxedCommands": False,
             "failIfUnavailable": True,
             "filesystem": {"denyRead": deny, "allowWrite": write, "denyWrite": deny_write},
-            "network": {"allowedDomains": list(DOMAINS)},
+            "network": network,
         },
         # an absolute path in a permission rule starts with //
         "permissions": {"deny": [rule for p in deny for rule in (f"Read(/{p})", f"Read(/{p}/**)", f"Edit(/{p}/**)")]},

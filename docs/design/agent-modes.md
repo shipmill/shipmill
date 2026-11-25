@@ -362,6 +362,36 @@ Verified on Claude Code 2.1:
       ("renamed one or more entries in a .git folder so that git outside the sandbox does not
       follow them", as `.<name>.claude-sandbox-quarantine-<hex>`). The session's uv cache under
       `<common dir>/shipmill/uv-cache` had 26 entries renamed, so it belongs outside the git dir
+- One local port in the sandbox (spec 087's tunnels, S-087-10). macOS verified on Claude Code
+  2.1.330 (#1588) on 2026-11-25 with `probe.sh <out> port` and `probe.sh <out> binding`: the
+  spec's settings without the bare `localhost`, a file served on `127.0.0.1:18765` (the named
+  port), `127.0.0.1:18766` and `[::1]:18765`, and `prompt-port.md`'s checks
+  - **`"127.0.0.1:<port>"` in `sandbox.network.allowedDomains` opens that one port, and only
+    through the sandbox's proxy.** `curl --noproxy '' http://127.0.0.1:18765/` got the file;
+    port 18766 and `localhost:18765` through the proxy were refused (`deny network-outbound
+    127.0.0.1:18766`, `deny network-outbound localhost:18765`). The entry is matched as spelled,
+    host and port, so it names `127.0.0.1` exactly as the tunnel binds it; a bare host opens
+    every port of that host
+  - The sandbox sets `NO_PROXY` and `no_proxy` to `localhost,127.0.0.1,::1,169.254.0.0/16,
+    10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` for every command, so a client that honours it
+    (curl, Python's `urllib`) connects directly and is refused even on the named port: curl
+    `(7) Failed to connect to 127.0.0.1 port 18765 after 0 ms`, Python `[Errno 1] Operation not
+    permitted`. A raw TCP connect (`socket.create_connection`) is refused the same way on every
+    local port. So the named port is reached only by an HTTP client told to use the proxy for it
+    (`--noproxy ''`, or `NO_PROXY` without `127.0.0.1`); a tunnel to a database or any other
+    non-HTTP service stays unreachable. A SOCKS client through the sandbox's SOCKS proxy is not
+    probed
+  - `sandbox.network.allowLocalBinding: true` (macOS only) opens every local port: with no local
+    entry in `allowedDomains`, curl reached 18765, 18766, `localhost:18765` and `[::1]:18765`,
+    and a raw socket connected to both ports. The sandbox profile it adds is `(allow
+    network-outbound (remote ip "localhost:*"))`, so it is never one port
+  - Another loopback host goes through the proxy, since `NO_PROXY` doesn't list it, and is
+    refused in both modes: `curl http://127.0.0.2:18765/` reads `Connection blocked by network
+    allowlist` and `<sandbox_violations>` / `deny network-outbound 127.0.0.2:18765 (user denied)`
+  - **Refusal text for a closed local port.** Directly: only the program's own error, curl's
+    `(7) Failed to connect to <host> port <port>` or `Operation not permitted` (EPERM), with no
+    violation block, as for a refused path. Through the proxy: `Connection blocked by network
+    allowlist` and `<sandbox_violations>` / `deny network-outbound <host>:<port> (user denied)`
 
 ### State
 
