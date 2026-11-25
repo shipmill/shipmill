@@ -11,7 +11,7 @@ import pytest
 
 from shipmill.agents import Mode
 from shipmill.findings import Finding
-from shipmill.gate import RECORD, Action, Launch, Process, save_launch, session_log, state_dir
+from shipmill.gate import RECORD, Action, Deaths, Launch, Process, save_launch, session_log, state_dir
 from shipmill.gitrepo import Git
 from shipmill.walk import HANDED, Changes, End, Hand, Handed, Head, Pull, Swept, item_key, walk
 
@@ -181,8 +181,9 @@ def test_s089_4_a_dropped_hand_is_a_change_so_a_quiet_gate_walks(checkout: Git) 
 
 
 def test_s089_4_the_tick_that_records_an_end_drops_limit_and_auth_and_backs_off_error() -> None:
-    """A limit or auth hand drops; an error one is held for its backoff (S-089-11); an ok one ends
-    its run; a hand an earlier tick settled stays as it was"""
+    """A limit or auth hand drops, whichever tick recorded its end (#1602); an error one is held
+    for its backoff (S-089-11), an earlier tick's as that tick left it; an ok one ends its run"""
+    held = Hand("earlier error", NOW, HEAD, ended=End.ERROR, errors=1, until=NOW + MINUTES_15)
     hands = Handed(
         {
             "PRS_OPEN #3": Hand("dead", NOW, HEAD, ended=End.ERROR),
@@ -190,12 +191,45 @@ def test_s089_4_the_tick_that_records_an_end_drops_limit_and_auth_and_backs_off_
             "PRS_OPEN #5": Hand("ok", NOW, HEAD, ended=End.OK, errors=2),
             "PRS_OPEN #6": Hand("running", NOW, HEAD),
             "PRS_OPEN #7": Hand("earlier", NOW, HEAD, ended=End.AUTH),
+            "PRS_OPEN #8": held,
         }
     )
     found = hands.settled(["PRS_OPEN #3", "PRS_OPEN #4", "PRS_OPEN #5", "PRS_OPEN #6"], lambda h: NOW, DAY).hands
-    assert set(found) == {"PRS_OPEN #3", "PRS_OPEN #5", "PRS_OPEN #6", "PRS_OPEN #7"}
+    assert set(found) == {"PRS_OPEN #3", "PRS_OPEN #5", "PRS_OPEN #6", "PRS_OPEN #8"}
     assert (found["PRS_OPEN #3"].errors, found["PRS_OPEN #3"].until) == (1, NOW + dt.timedelta(minutes=15))
     assert found["PRS_OPEN #5"].errors == 0
+    assert found["PRS_OPEN #8"] == held  # not backed off a second time
+
+
+LIMITED_RUN = (  # three sessions in a row a usage limit stopped on one finding, as the live gate saw on #1602
+    "0450a36c-0000-4000-8000-000000000001",
+    "0450a36c-0000-4000-8000-000000000002",
+    "0450a36c-0000-4000-8000-000000000003",
+)
+
+
+# proves: S-089-4
+@pytest.mark.parametrize("end", [End.LIMIT, End.AUTH])
+def test_s089_4_a_limit_hand_saved_with_its_end_drops_on_a_later_tick(checkout: Git, end: End) -> None:
+    """#1602: three limit deaths in a row on one finding, the last one's hands saved with their end
+    by the tick that recorded it (as 0.167.0's capped run kept them); the next tick, within
+    retry_hours, drops them and hands the finding's subjects again instead of holding them"""
+    first = NOW - dt.timedelta(hours=3)
+    item = prs(1431, 1432, 1434)
+    last_at = NOW - dt.timedelta(hours=1)
+    for i, session in enumerate(LIMITED_RUN):
+        logged(checkout, session, *ENDS[end], at=first + i * dt.timedelta(hours=1))
+    last = LIMITED_RUN[-1]
+    stuck = {key: Hand(last, last_at, HEAD, ended=end) for key in (f"PRS_OPEN #{n}" for n in (1431, 1432, 1434))}
+    Handed(stuck).save(state_dir(checkout) / HANDED)
+    record = Launch(item_key(item), last, last_at, Process(PID, STARTED), Deaths(2, first))
+    save_launch(state_dir(checkout) / RECORD, record)
+    claude = FakeClaude()
+    source = Source({3: [item]}, pulls=unchanged(1431, 1432, 1434, at=last_at))
+    decision = tick(checkout, source, NOW, cfg(Mode.HEADLESS), claude)
+    assert claude.started and "starting another" in decision.reason  # SESSION_DEAD names the dead one, and relaunches
+    found = handed(checkout)
+    assert all(found[k]["session"] == NEW_SESSION and "ended" not in found[k] for k in stuck)
 
 
 CAPPED = "33333333-3333-4333-8333-333333333333"
