@@ -451,6 +451,9 @@ confined.
 - shipmill/shipmill#1589: S-087-10
 - shipmill/shipmill#1535: S-087-14, S-087-15, S-087-16
 - shipmill/shipmill#1536: S-087-20, S-087-21
-- shipmill/shipmill#1610: S-087-22, S-087-23, S-087-24, S-087-25, S-087-26, S-087-27, S-087-28, S-087-29
+- shipmill/shipmill#1649: S-087-26, S-087-27
+- shipmill/shipmill#1650: S-087-22, S-087-23, S-087-24, S-087-25
+- shipmill/shipmill#1651: S-087-28
+- shipmill/shipmill#1652: S-087-29
 
 ## Verification
