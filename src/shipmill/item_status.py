@@ -135,6 +135,7 @@ class Condition:
     reason: str
     who: Who
     clears: str
+    held: bool = False  # spec 091: the gate's record holds it (GATE_RETRY, GATE_IDLE, GATE_PAUSED)
 
     def record(self) -> dict[str, str]:
         return {"reason": self.reason, "who": self.who.value, "clears": self.clears}
@@ -310,7 +311,7 @@ def gate_conditions(facts: Facts, number: int, kind: Kind, stage: str | None) ->
         return []
     retry = [r for r in facts.rows if r.state == GATE_RETRY and names(r, number)]
     if retry:
-        return [Condition(f"the gate hands it again {retry[0].detail}", Who.AGENT, "the backoff's end")]
+        return [Condition(f"the gate hands it again {retry[0].detail}", Who.AGENT, "the backoff's end", held=True)]
     idle = [r for r in facts.rows if r.state == GATE_IDLE and names(r, number)]
     if idle:
         return [
@@ -318,6 +319,7 @@ def gate_conditions(facts: Facts, number: int, kind: Kind, stage: str | None) ->
                 "the gate handed it to a session that wrote nothing on it; it waits for a change",
                 Who.EVENT,
                 "a new comment, push, or label on it",
+                held=True,
             )
         ]
     land = _level(facts, StageKind.LAND).effective
@@ -335,7 +337,7 @@ def gate_conditions(facts: Facts, number: int, kind: Kind, stage: str | None) ->
         until = paused.detail.partition(": ")[0]  # `until <when>`, its time holding no ": "
         limit = paused.subject == "limit"
         who, clears = (Who.EVENT, "the limit's reset") if limit else (Who.MAINTAINER, paused.fix or "a new token")
-        return [Condition(f"the gate starts no session {until}, paused by {cause}", who, clears)]
+        return [Condition(f"the gate starts no session {until}, paused by {cause}", who, clears, held=True)]
     return [Condition("the gate takes it up on a coming tick, in its tier order", Who.AGENT, "the next gate tick")]
 
 
