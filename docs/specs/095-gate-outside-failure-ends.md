@@ -49,8 +49,8 @@ A session whose tool calls failed for any other reason keeps spec 089's rules an
 
 **`handed.json` records the new ends.** `ended` gains `github_limit`, `disk`, and `permission`.
 A hand whose session ended one of them drops on the tick that records it, as a `limit` hand
-does, never turns idle, and counts as no attempt: it adds no death toward `DEAD_STREAK` and
-neither starts nor resets a run of `error` ends. `watch_state.py` reads the three as it reads
+does, never turns idle, and counts as no attempt: it adds no death toward `DEAD_STREAK` and no
+end to a run of `error` ends; the hand that replaces it starts a run anew, as after a `limit`. `watch_state.py` reads the three as it reads
 spec 089's four.
 
 **The host's pause.** A `github_limit` or a `disk` end writes a record for the host, beside the
@@ -91,7 +91,7 @@ naming the session, and for `disk` the fix naming the folder.
 ## Acceptance criteria
 
 - S-095-1: A headless session whose last `result` has `is_error: false` and that spec 089 reads neither `limit` nor `auth` ends `github_limit` when a failed tool result in its log's tail reads GitHub's rate limit, `disk` when one reads `No space left on device`, `permission` when the last `result` lists `permission_denials` or a failed tool result reads a denied permission, and `error` when one reads a network failure, in that order; a session whose failed tool results read none of these ends `ok`
-- S-095-2: `handed.json` records `github_limit`, `disk`, and `permission` as `ended`, and `watch_state.py` reads them; a hand whose session ended one of them drops on the tick that records the end, is never marked idle, adds no death toward `DEAD_STREAK`, and leaves the item's run of `error` ends as it was
+- S-095-2: `handed.json` records `github_limit`, `disk`, and `permission` as `ended`, and `watch_state.py` reads them; a hand whose session ended one of them drops on the tick that records the end, is never marked idle, adds no death toward `DEAD_STREAK`, and adds no end to the item's run of `error` ends
 - S-095-3: A `github_limit` end writes `$XDG_STATE_HOME/shipmill/host/github_limit.json` holding the cause, the session, when, and `resets_at`, the latest reset of a `core` or `graphql` resource `gh api rate_limit` shows spent; a `disk` end writes `host/disk.json` holding the cause, the session, and when
 - S-095-4: While a host pause holds, a tick of any gate on the host starts no session, reads `PAUSED` naming the cause and its end, and counts no attempt against any item
 - S-095-5: While a `github_limit` pause holds, each tick runs `gh api rate_limit` and the first tick whose `core` and `graphql` both show some remaining lifts it; when the probe fails or can't be read, it lifts at `resets_at`, or one hour after the end without one
