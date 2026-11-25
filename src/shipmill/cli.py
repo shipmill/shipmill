@@ -394,6 +394,7 @@ from shipmill.gate import (
     refresh,
     run_command,
     run_state,
+    sandbox_for,
     state_dir,
     state_failed,
     stop_group,
@@ -927,6 +928,14 @@ def _parser() -> argparse.ArgumentParser:
         help="decide and print; start, stop, move, or prune nothing (lists what it would prune when due)",
     )
     p.add_argument("--json", action="store_true", help="print the decision, with the pruned worktrees, as JSON")
+    p.add_argument(
+        "--sandbox",
+        action="store_true",
+        help=(
+            '[agents] mode = "headless": run each session in Claude Code\'s sandbox, which keeps it from the'
+            " host's keys and from hosts [agents.sandbox] doesn't declare (spec 087)"
+        ),
+    )
     p.add_argument("--walk", action="store_true", help="walk the work tiers whether or not anything changed (spec 046)")
     p.add_argument("--sweep", action="store_true", help="read the timed sections whether or not a sweep is due")
     p.add_argument(
@@ -1286,6 +1295,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--every", type=int, default=DEFAULT_EVERY, help="minutes between runs (default: 15)")
     p.add_argument("--tool", default=DEFAULT_TOOL, help=f"where uvx gets shipmill (default: {DEFAULT_TOOL})")
     p.add_argument("--claude-arg", action="append", default=[], help="extra flag for the session (repeatable)")
+    p.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="pass --sandbox to the job's gate: its headless sessions run in Claude Code's sandbox (spec 087)",
+    )
     p.add_argument(
         "--app-key",
         type=Path,
@@ -1874,6 +1888,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         permissions=Seams(api_reads(args.slug, Openssl(), UrllibApi()), upgrades_as_app),
         pauses=pauses_dir(os.environ, Path.home()),  # spec 089: shared by every gate on the host
         usage=usage_probe(os.environ, shutil.which("claude", path=os.environ.get("PATH", ""))),
+        sandbox=sandbox_for(git, args.slug, Path.home()) if args.sandbox else None,  # spec 087
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11
@@ -4804,7 +4819,18 @@ def _launchd(root: Path, args: argparse.Namespace) -> int:
     key: Path | None = None if args.app_key is None else args.app_key.expanduser().resolve()
     token: Path | None = None if args.claude_token is None else TokenSource.of(args.claude_token, home).path
     path = os.environ.get("PATH", "")
-    job = build(args.slug, root, args.every, args.tool, args.claude_arg, home, path, app_key=key, claude_token=token)
+    job = build(
+        args.slug,
+        root,
+        args.every,
+        args.tool,
+        args.claude_arg,
+        home,
+        path,
+        app_key=key,
+        claude_token=token,
+        sandbox=args.sandbox,
+    )
     if args.print:
         sys.stdout.write(job.document.decode())
         return 0

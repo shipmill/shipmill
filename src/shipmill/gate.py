@@ -35,7 +35,7 @@ from typing import Any, Protocol
 from shipmill import land_window
 from shipmill.agents import MAINTAINER as MAINTAINER_ROLE
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
-from shipmill.app import AppCheck, Identity
+from shipmill.app import APP_KEY, BOT_IDS, HELPERS, AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
 from shipmill.bundle import skills_dir as skills_dir
 from shipmill.catch_up import CatchUp
@@ -84,6 +84,8 @@ from shipmill.plugin import (
 )
 from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import GATE_MAINTAINER, LoginReader, ResolvedRole, arguments
+from shipmill.sandbox import Sandbox, SandboxConfig, Where
+from shipmill.sandbox import launch as sandbox_launch
 from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
 from shipmill.verify import Planner, Verified
@@ -178,6 +180,9 @@ HEADLESS_REFUSED = (
     "--background",
     "--session-id",
 )
+# --claude-arg flags a sandboxed headless gate refuses too, alone or as --flag=value (spec 087):
+# the first could turn the sandbox off or widen it, the second widens the write scope
+SANDBOX_REFUSED = ("--settings", "--add-dir")
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,14 +703,21 @@ def interactive_prompt(
     return f"{prompt(template, repo, work, now, bot, roles, levels, subjects)}\n\n{gate_paragraph(login)}"
 
 
-def refuse_headless_args(args: Sequence[str]) -> None:
-    """Spec 005: a headless gate refuses HEADLESS_REFUSED's flags, alone or as --flag=value"""
+def refuse_headless_args(args: Sequence[str], sandboxed: bool = False) -> None:
+    """Spec 005: a headless gate refuses HEADLESS_REFUSED's flags, alone or as --flag=value;
+    with the sandbox on (spec 087, S-087-12), SANDBOX_REFUSED's too"""
     for arg in args:
         flag = arg.split("=", 1)[0]
         if flag in HEADLESS_REFUSED:
             raise ReleaseError(
                 f'--claude-arg {flag} is refused with [agents] mode = "headless": it would bring prompts back,'
                 " drop the tool allowlist, or break how the gate tracks the session"
+            )
+        if sandboxed and flag in SANDBOX_REFUSED:
+            raise ReleaseError(
+                f"--claude-arg {flag} is refused with --sandbox: it would turn a headless session's sandbox off"
+                " or widen it",
+                "declare what the session needs in [agents.sandbox] of .github/shipmill.toml, and drop the flag",
             )
 
 
@@ -768,9 +780,11 @@ class Claude(Protocol):
         token: Token | None = None,
         *,
         maintainer: str,
+        sandbox: Sandbox | None = None,
     ) -> int:
         """Start a headless `claude -p` session detached from the tick (D-17); its pid.
-        maintainer is the login the headless paragraph names (spec 062)"""
+        maintainer is the login the headless paragraph names (spec 062); sandbox, when given,
+        what its one `--settings` JSON and its allowlist gain (spec 087)"""
         ...
 
     def stop(self, session: str) -> None: ...
@@ -907,18 +921,28 @@ class ClaudeCli:
         token: Token | None = None,
         *,
         maintainer: str,
+        sandbox: Sandbox | None = None,
     ) -> int:
         """`claude -p` (spec 005): no prompt can block it and AskUserQuestion is gone; the tool
         lists come before --session-id, and `--` ends the options before the prompt, so a
         --claude-arg tool list that widens the allowlist never reads the prompt as a tool name.
         Its output is stream-json (S-048-17), so its log grows with each message it sends or
-        receives, not only at its end"""
+        receives, not only at its end. With sandbox (spec 087), the same one `--settings` JSON
+        carries its sandbox and permissions and its env gains the uv cache and gh config
+        folders, and the allowlist's Edit and Write are narrowed to the write scope; nothing is
+        written to a settings file"""
         # every headless session's hooks read it as a gate session: its uv run starts only
         # Python and the project's tools (D-82), and its Stop hook reads whom its final message
         # may not ask without a request on GitHub (spec 062)
         gate_env = {GATE_SESSION: "1", MAINTAINER: maintainer}
-        settings = ["--settings", json.dumps({"env": {**(env or {}), **gate_env}})]
-        tools = ["--allowedTools", HEADLESS_TOOLS, "--disallowedTools", "AskUserQuestion"]
+        allowed = HEADLESS_TOOLS
+        if sandbox is None:
+            settings = ["--settings", json.dumps({"env": {**(env or {}), **gate_env}})]
+        else:
+            carried = {"env": {**(env or {}), **sandbox.env, **gate_env}, **sandbox.settings}
+            settings = ["--settings", json.dumps(carried)]
+            allowed = sandbox.tools(HEADLESS_TOOLS)
+        tools = ["--allowedTools", allowed, "--disallowedTools", "AskUserQuestion"]
         stream = ["--output-format", "stream-json", "--verbose"]
         head = ["claude", "-p", "--permission-prompts", "none", *stream, *tools, "--session-id", str(session)]
         cmd = [*head, *settings, "-n", name, *self.args, "--", text]
@@ -2005,6 +2029,66 @@ def head_config(git: Git) -> Mapping[str, Any]:
     return loads(text, where)
 
 
+# The entries the gate writes in its state dir, which a sandboxed session may not write whether
+# or not they exist yet (S-087-6): the gate reads them unsandboxed
+STATE_FILES = (
+    RECORD,
+    WAITING,
+    DECISIONS,
+    SESSIONS,
+    AUTH,
+    PRUNE,
+    TICK,
+    LAST_RESULT,
+    VERIFY,
+    CURSOR,
+    HANDED,
+    SWEEP,
+    CLI_RECORD,
+    BOT_IDS,
+    HELPERS,
+)
+Sandboxer = Callable[[Mapping[str, str] | None], Sandbox]  # the session's env -> its sandbox, read at the launch
+
+
+def trusted_sandbox(git: Git) -> SandboxConfig:
+    """S-087-8: [agents.sandbox] as the config at origin's default branch has it, fetched first
+    and read from git at that ref, never from the working tree, which a session may have
+    changed (D-16); empty without the config, an [agents] table, or the table. A malformed key
+    is dropped, so the session runs narrower (D-64)"""
+    branch = git.default_branch()
+    ref = f"refs/remotes/origin/{branch}"
+    git.run("fetch", "-q", "origin", f"+refs/heads/{branch}:{ref}")  # the branch only inside a refspec (#889)
+    where = f"{CONFIG_PATH} at origin/{branch}"
+    text = git.show(ref, CONFIG_PATH.as_posix())
+    if text is None:
+        return SandboxConfig()
+    agents = loads(text, where).get("agents")
+    if not isinstance(agents, dict) or "sandbox" not in agents:
+        return SandboxConfig()
+    declared, _ = SandboxConfig.parse(agents["sandbox"], f"{where} [agents]")
+    return declared
+
+
+def sandbox_for(
+    git: Git, repo: str, home: Path, declared: Callable[[Git], SandboxConfig] = trusted_sandbox
+) -> Sandboxer:
+    """Spec 087: the sandbox of a headless launch in git's checkout, built at the launch from
+    the checkout, its git common dir as git names it (a linked worktree's differs from the
+    checkout's .git), the main working tree, the state dir, the App key the session's env
+    names, and declared's [agents.sandbox]"""
+
+    def build(env: Mapping[str, str] | None) -> Sandbox:
+        common = Path(git.run("rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve()
+        checkout = git.root.resolve()
+        main = session_project(checkout, str(common))
+        where = Where(home, checkout, common, main, common / "shipmill", repo)
+        key = None if env is None or not env.get(APP_KEY) else Path(env[APP_KEY])
+        return sandbox_launch(where, declared(git), key, STATE_FILES)
+
+    return build
+
+
 @dataclass(frozen=True, slots=True)
 class SweptUpgrades:
     """What a sweep's proposal did: the decision line's part (S-047-10), and what sweep.json
@@ -2572,14 +2656,17 @@ def as_app(app_id: int, app: AppCheck | None) -> Identity:
     return app(app_id)
 
 
-def checked(config: Callable[[], AgentsConfig], args: Sequence[str]) -> Callable[[], AgentsConfig]:
+def checked(
+    config: Callable[[], AgentsConfig], args: Sequence[str], sandboxed: bool = False
+) -> Callable[[], AgentsConfig]:
     """The config as the tick reads it, refusing a headless mode's forbidden --claude-arg
-    flags at every read, before the read can lead to stopping or starting a session"""
+    flags at every read, before the read can lead to stopping or starting a session; with the
+    sandbox on, its forbidden flags too (S-087-12)"""
 
     def read() -> AgentsConfig:
         agents = config()
         if agents.mode is Mode.HEADLESS:
-            refuse_headless_args(args)
+            refuse_headless_args(args, sandboxed)
         return agents
 
     return read
@@ -2884,6 +2971,7 @@ def gate(
     permissions: Seams | None = None,
     pauses: Path | None = None,
     usage: UsageProbe | None = None,
+    sandbox: Sandboxer | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -3027,7 +3115,13 @@ def gate(
     It reads the installation with a token of its own and writes with the gate's, as the App;
     with no [agents] app_id it reads and writes nothing. Its failure is sweep.json's
     permissions error and the decision line's `permissions failed: <first line>`, and changes
-    nothing else"""
+    nothing else
+
+    sandbox, `shipmill gate --sandbox` (spec 087), builds a headless launch's sandbox from the
+    session's env; None, the default, launches as before the spec. With it, every config read
+    in headless mode also refuses the --claude-arg flags in SANDBOX_REFUSED, and a real headless
+    LAUNCH builds the sandbox once, after the verify check and before any session is stopped,
+    so a failure stops none and starts none; an interactive launch never reads it"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -3069,6 +3163,7 @@ def gate(
             permissions=permissions,
             pauses=pauses,
             usage=usage,
+            sandbox=sandbox,
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -3134,6 +3229,7 @@ def decided(
     permissions: Seams | None = None,
     pauses: Path | None = None,
     usage: UsageProbe | None = None,
+    sandbox: Sandboxer | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -3146,7 +3242,7 @@ def decided(
         return refusal, None, ()
     token = None if found is None else found.token
     kind = Kind.LOGIN if found is None else found.kind
-    config = checked(config, claude.args)
+    config = checked(config, claude.args, sandbox is not None)
     state = state_dir(git)
     record = state / RECORD
     result = load_last_result(state / LAST_RESULT)  # before the tick acts: a malformed one stops nothing
@@ -3301,6 +3397,8 @@ def decided(
         return decision, None, waiting
     decision = verified(decision, verify, agents, state / VERIFY, notifier, repo, now, headless)
     decision = relaunching(decision)
+    # spec 087: read at this launch, before any session is stopped, so a failure stops none
+    confined = sandbox(env) if headless and sandbox is not None else None
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
@@ -3319,7 +3417,7 @@ def decided(
         return decision, launched, waiting
     session_id = new_session()
     log = session_log(state, str(session_id))
-    pid = claude.start(git.root, name, text, session_id, log, env, token, maintainer=host)
+    pid = claude.start(git.root, name, text, session_id, log, env, token, maintainer=host, sandbox=confined)
     process = Process(pid, started(pid))
     save_launch(record, Launch(item_key(item), str(session_id), now, process, deaths, item.brief(), credential=current))
     settled(ticked.handed.handing(item, str(session_id), now, pulls))

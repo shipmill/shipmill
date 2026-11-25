@@ -12,12 +12,17 @@ beyond the default, in .github/shipmill.toml (D-4), read from the default branch
 
 A malformed key is refused as D-64 says: the config still loads, the key is dropped, so the
 session runs with the narrower default, never a wider one, and doctor, the tick, and every
-command that loads the config name it. A key shipmill never knew fails the load (D-63)."""
+command that loads the config name it. A key shipmill never knew fails the load (D-63).
+
+`launch` builds what a sandboxed headless launch (`shipmill gate --sandbox`) adds to its one
+`--settings` JSON: the sandbox, the permission rules that make the file tools see what Bash
+sees, and the env's uv cache and gh config folders (#1531)."""
 
 import re
-from collections.abc import Callable, Mapping
+import shutil
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
@@ -274,3 +279,201 @@ def _tunnels(value: list[object]) -> tuple[Tunnel, ...]:
             raise ReleaseError(f"{LOCAL} {port} is given twice")
         seen.add(port)
     return tunnels
+
+
+# The launch (spec 087, #1531): the `sandbox` and `permissions` a sandboxed headless session's
+# one `--settings` JSON carries beside its env. Every path is absolute and expanded; the
+# listings of ~/.config/shipmill and ~/.claude/projects are read at each launch, never cached
+
+# What a session can't read, under the home, whether or not each exists
+DENIED = (
+    ".ssh",
+    ".gnupg",
+    ".netrc",
+    ".git-credentials",
+    ".pypirc",
+    ".npmrc",
+    ".docker/config.json",
+    ".kube",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".password-store",
+    "Library/Keychains",
+    ".config/gh/hosts.yml",  # the host's own GitHub login; the session's gh reads GH_CONFIG_DIR (D-105)
+    ".claude.json",
+    ".claude/.credentials.json",
+    ".claude/history.jsonl",
+)
+SHIPMILL_CONFIG = ".config/shipmill"  # each entry denied but the App key the session writes with
+PROJECTS = ".claude/projects"  # each folder denied but the session's own; ~/.claude/plugins stays readable
+MEMORY = "memory"  # the session's own project memory, which its Edit and Write tools may reach
+DEFAULT_DOMAINS = (
+    "github.com",
+    "*.github.com",
+    "*.githubusercontent.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "astral.sh",
+    "*.astral.sh",
+)
+UV_CACHE = ".cache/shipmill"  # <home>/.cache/shipmill/<owner>-<repo>/uv, outside the git dir (D-105)
+GH_CONFIG = "gh-config"  # in the state dir, created empty before each launch (D-105)
+TOKEN_CACHES = "app-token"  # the state dir's entries the session's helpers write start with it
+SETTINGS_FILES = (".claude/settings.json", ".claude/settings.local.json", ".mcp.json")
+FILE_TOOLS = ("Edit", "Write")  # narrowed to the write scope in a sandboxed launch (S-087-7)
+UV_CACHE_DIR = "UV_CACHE_DIR"
+GH_CONFIG_DIR = "GH_CONFIG_DIR"
+_PLAIN = re.compile(r"[A-Za-z0-9._-]+")
+_TOOL = re.compile(r"[A-Za-z]\w*(?:\([^)]*\))?")  # one entry of an allowlist: a name, or a name and its rule
+
+
+@dataclass(frozen=True, slots=True)
+class Where:
+    """The host paths a sandboxed launch is built from, each absolute: the gate's checkout, its
+    git common dir as git names it, the main working tree, and the gate's state dir"""
+
+    home: Path
+    checkout: Path
+    common: Path
+    main: Path
+    state: Path
+    repo: str
+
+    def __post_init__(self) -> None:
+        for name in ("home", "checkout", "common", "main", "state"):
+            path = getattr(self, name)
+            if not path.is_absolute():
+                raise ReleaseError(f"the sandbox's {name} must be an absolute path, got {str(path)!r}")
+        owner, slash, name = self.repo.partition("/")
+        if not slash or not all(_PLAIN.fullmatch(p) and p not in (".", "..") for p in (owner, name)):
+            raise ReleaseError(f"repo must be owner/name, got {self.repo!r}")
+
+    @property
+    def uv_cache(self) -> Path:
+        owner, _, name = self.repo.partition("/")
+        return self.home / UV_CACHE / f"{owner}-{name}" / "uv"
+
+    @property
+    def gh_config(self) -> Path:
+        return self.state / GH_CONFIG
+
+    @property
+    def projects(self) -> tuple[str, ...]:
+        """The session's own project folders under ~/.claude/projects: its checkout's, where its
+        transcript goes, and its main working tree's, whose memory every worktree shares"""
+        return tuple(dict.fromkeys(project_folder(p) for p in (self.checkout, self.main)))
+
+
+def project_folder(path: Path) -> str:
+    """The folder name Claude Code gives a working directory under ~/.claude/projects"""
+    return re.sub(r"[^A-Za-z0-9-]", "-", str(path))
+
+
+def expand(path: SandboxPath, home: Path) -> Path:
+    """A declared path, absolute: `~/` is the home"""
+    text = str(path)
+    return home / text.removeprefix(HOME) if text.startswith(HOME) else Path(text)
+
+
+def _listed(folder: Path) -> list[Path]:
+    """The folder's entries, read now; none when it doesn't exist"""
+    return sorted(folder.iterdir()) if folder.is_dir() else []
+
+
+def denied_reads(where: Where, declared: SandboxConfig, app_key: Path | None) -> tuple[Path, ...]:
+    """S-087-3, S-087-4: every path of "What a session can't read", existing or not, the
+    entries of ~/.config/shipmill but the App key, and the folders of ~/.claude/projects but
+    the session's own, less each path a declared read entry is or holds"""
+    home = where.home
+    key = None if app_key is None else app_key.resolve()
+    found = [home / p for p in DENIED]
+    found += [p for p in _listed(home / SHIPMILL_CONFIG) if key is None or p.resolve() != key]
+    found += [p for p in _listed(home / PROJECTS) if p.name not in where.projects]
+    allowed = [expand(p, home) for p in declared.read]
+    return tuple(p for p in found if not any(p == a or a in p.parents for a in allowed))
+
+
+def write_scope(where: Where, declared: SandboxConfig) -> tuple[Path, ...]:
+    """S-087-5: the checkout, the main working tree's .claude/worktrees, the git common dir,
+    the session's uv cache, and each declared write entry"""
+    worktrees = where.main / ".claude" / "worktrees"
+    return (where.checkout, worktrees, where.common, where.uv_cache, *(expand(p, where.home) for p in declared.write))
+
+
+def denied_writes(where: Where, state_files: Sequence[str]) -> tuple[Path, ...]:
+    """S-087-6: the common dir's config and hooks, the state dir's entries (those there now
+    and the ones the gate writes, state_files) but the token caches and gh-config, and the
+    settings files of the checkout and of the main working tree"""
+    names = {p.name for p in _listed(where.state)} | set(state_files)
+    kept = sorted(n for n in names if n != GH_CONFIG and not n.startswith(TOKEN_CACHES))
+    trees = dict.fromkeys((where.checkout, where.main))
+    return (
+        where.common / "config",
+        where.common / "hooks",
+        *(where.state / n for n in kept),
+        *(tree / f for tree in trees for f in SETTINGS_FILES),
+    )
+
+
+def _rule(tool: str, path: Path) -> str:
+    """A permission rule on an absolute path, which Claude Code writes with a leading //"""
+    return f"{tool}(/{path})"
+
+
+@dataclass(frozen=True, slots=True)
+class Sandbox:
+    """What a sandboxed headless launch adds: its env's UV_CACHE_DIR and GH_CONFIG_DIR, the
+    settings' sandbox and permissions, and the folders its Edit and Write tools may reach"""
+
+    env: Mapping[str, str]
+    settings: Mapping[str, object]
+    editable: tuple[Path, ...]
+
+    def tools(self, allowed: str) -> str:
+        """allowed with each bare Edit and Write in it narrowed to one rule per editable
+        folder, `Edit(//<path>/**)`; every other entry as it was (S-087-7)"""
+        entries = _TOOL.findall(allowed)
+        if " ".join(entries) != allowed:
+            raise ReleaseError(f"the allowlist {allowed!r} is not space-separated tool entries")
+        narrowed: list[str] = []
+        for entry in entries:
+            if entry in FILE_TOOLS:
+                narrowed += [_rule(entry, p / "**") for p in self.editable]
+            else:
+                narrowed.append(entry)
+        return " ".join(narrowed)
+
+
+def launch(where: Where, declared: SandboxConfig, app_key: Path | None, state_files: Sequence[str]) -> Sandbox:
+    """Spec 087's settings for one headless launch, read now: the listings it denies by path,
+    and gh-config, created empty, and the uv cache, created, before the session starts.
+    declared is [agents.sandbox] as origin's default branch has it; app_key, the path the
+    session's SHIPMILL_APP_KEY names, None without an App"""
+    deny = denied_reads(where, declared, app_key)
+    scope = write_scope(where, declared)
+    gh = where.gh_config  # what the last session's gh wrote there goes
+    if gh.is_symlink() or gh.is_file():
+        gh.unlink()
+    elif gh.exists():
+        shutil.rmtree(gh)
+    gh.mkdir(parents=True)
+    where.uv_cache.mkdir(parents=True, exist_ok=True)
+    sandbox = {
+        "enabled": True,
+        "allowUnsandboxedCommands": False,
+        "failIfUnavailable": True,
+        "filesystem": {
+            "denyRead": [str(p) for p in deny],
+            "allowWrite": [str(p) for p in scope],
+            "denyWrite": [str(p) for p in denied_writes(where, state_files)],
+        },
+        "network": {"allowedDomains": [*DEFAULT_DOMAINS, *(str(d) for d in declared.domains)]},
+    }
+    rules = [_rule(tool, q) for p in deny for tool in ("Read", "Edit") for q in (p, p / "**")]
+    memory = tuple(where.home / PROJECTS / name / MEMORY for name in where.projects)
+    return Sandbox(
+        env={UV_CACHE_DIR: str(where.uv_cache), GH_CONFIG_DIR: str(where.gh_config)},
+        settings={"sandbox": sandbox, "permissions": {"deny": rules}},
+        editable=(*scope, *memory),
+    )
