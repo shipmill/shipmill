@@ -413,8 +413,8 @@ Agents (all reported, never an action by itself):
                   resetsAt, or retry_hours after it began), `until the token changes: ...` for
                   an auth pause on a token file, `until claude auth status reports a login:
                   ...` on the login. Fix: the token's (`claude setup-token`) or `claude auth
-                  login` for auth, none for a limit. A lifted pause, or a limit past its time,
-                  no row. Where GATE_IDLE is; reported, never an agent's
+                  login` for auth, none for a limit. A lifted pause, a limit past its time, or
+                  a token file the gate refuses (CLAUDE_AUTH), no row. Where GATE_IDLE is; reported, never an agent's
   GATE_RETRY      spec 089: one row per hand in handed.json an error end's backoff holds,
                   soonest first: subject the hand's key (`<kind> #<N>`, or the item gate.json
                   names for its fingerprint), detail `after <YYYY-MM-DD HH:MM> UTC: <n> error
@@ -619,6 +619,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -5075,25 +5076,50 @@ def pauses_folder(environ: dict[str, str], home: Path) -> Path:
     return folder / PAUSES
 
 
+TOKEN_PREFIX = "sk-ant-oat"  # shipmill's claude_token.PREFIX
+
+
 def token_file(args: list[str], home: Path) -> Path:
     """The token file the gate's sessions use: its job's --claude-token, else the default"""
-    if "--claude-token" in args[:-1]:
+    if token_named(args):
         return Path(args[args.index("--claude-token") + 1]).expanduser()
     return home / TOKEN_DEFAULT
 
 
-def credential_name(token: Path) -> str | None:
+def token_named(args: list[str]) -> bool:
+    """Whether the job's --claude-token names the file, so a missing one is refused, not the login"""
+    return "--claude-token" in args[:-1]
+
+
+def token_refused(content: bytes) -> bool:
+    """Whether shipmill's claude_token.checked refuses the content; nothing of it is shown"""
+    if not content.strip() or any(b > 0x7E or (b < 0x20 and b not in b"\t\n\r") for b in content):
+        return True
+    text = content.decode("ascii")
+    value = text[:-1] if text.endswith("\n") else text
+    lines = [line for line in text.splitlines() if line.strip()]
+    return len(lines) > 1 or any(c.isspace() for c in value) or not value.startswith(TOKEN_PREFIX)
+
+
+def credential_name(token: Path, named: bool = False) -> str | None:
     """shipmill's claude_pause.credential_id: 16 hex digits of the SHA-256 of the token file's
-    content, or login without the file; the token is read only to hash it, never shown. None
-    for a file the gate's user can't read: the gate refuses it (CLAUDE_AUTH) and starts no
-    session with it, so no pause names it"""
-    if not token.is_file():
-        return LOGIN_CREDENTIAL
+    content, or login without the default file; the token is read only to hash it, never shown.
+    None for a file the gate refuses as claude_token.read_token does (a named one missing, not
+    a regular file, another user's, group or others' to read, unreadable, or not a token): the
+    gate stops at CLAUDE_AUTH and reads no pause"""
+    try:
+        found = token.stat()
+    except FileNotFoundError:
+        return None if named else LOGIN_CREDENTIAL
+    except OSError:
+        return None
+    if not stat.S_ISREG(found.st_mode) or found.st_uid != os.getuid() or found.st_mode & 0o077:
+        return None
     try:
         content = token.read_bytes()
     except OSError:
         return None
-    return hashlib.sha256(content).hexdigest()[:16]
+    return None if token_refused(content) else hashlib.sha256(content).hexdigest()[:16]
 
 
 def pause_record(path: Path) -> dict[str, object] | None:
@@ -5131,14 +5157,14 @@ def retry_hours(repo_dir: Path) -> int:
     return int(value)
 
 
-def paused_rows(pauses: Path, token: Path, retry: int, now: dt.datetime) -> list[Row]:
+def paused_rows(pauses: Path, token: Path, retry: int, now: dt.datetime, named: bool = False) -> list[Row]:
     """Spec 089 (S-089-13): GATE_PAUSED while a pause holds for the credential the gate's
     sessions use, its subject the cause and its detail `until <when>`: a limit's resetsAt, or
     retry_hours after it began without one, or sooner once /usage shows room; an auth pause
     until the token changes, or for the login until claude auth status reports one. A limit
     whose time has passed lifts on the gate's next tick: no row. The fix is the token's for
     auth, none for a limit. Reported, never an agent's"""
-    credential = credential_name(token)
+    credential = credential_name(token, named)
     if credential is None:
         return []
     found = pause_record(pauses / f"{credential}.json")
@@ -5180,7 +5206,9 @@ def retry_rows(path: Path, record: Path, now: dt.datetime) -> list[Row]:
             loaded = json.loads(record.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise Refused(f"error: {record}: not JSON: {exc}") from None
-        last = loaded if isinstance(loaded, dict) else {}
+        if not isinstance(loaded, dict):  # shipmill's gate.load_launch refuses it too
+            raise Refused(f"error: {record}: expected a JSON object, as shipmill gate writes it")
+        last = loaded
     held = []
     for key, entry in data.items():
         idle_hand(path, key, entry)  # checked as the gate writes it
@@ -5234,6 +5262,7 @@ def gate_wait_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
         token_file(job, Path.home()),
         retry_hours(repo_dir),
         now,
+        token_named(job),
     )
     return [*idle_rows(state / HANDED, now), *paused, *retry_rows(state / HANDED, state / "gate.json", now)]
 

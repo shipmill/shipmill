@@ -16,7 +16,7 @@ import pytest
 
 from shipmill.autonomy import Autonomy, AutonomyPolicy
 from shipmill.claude_pause import Pause, credential_id, pause_path, save_pause
-from shipmill.claude_token import PREFIX, Token
+from shipmill.claude_token import API_KEY, PREFIX, Token, TokenSource, inspect
 from shipmill.item_status import Who
 from shipmill.status import Pull, Row, Verdict, report
 from shipmill.walk import HANDED, End, Hand, Handed, Head
@@ -35,6 +35,7 @@ RESETS = NOW + dt.timedelta(hours=2)
 
 def token_at(path: Path) -> Path:
     path.write_text(TOKEN, encoding="utf-8")
+    path.chmod(0o600)  # the gate refuses a token file group or others can read
     return path
 
 
@@ -176,6 +177,33 @@ def test_s089_13_an_unreadable_token_file_gives_no_row_not_a_crash(ws: ModuleTyp
         assert ws.paused_rows(tmp_path, token, 24, NOW) == []
     finally:
         token.chmod(0o600)
+
+
+def test_s089_13_a_token_file_the_gate_refuses_gives_no_row_not_the_logins(ws: ModuleType, tmp_path: Path) -> None:
+    # the gate stops at CLAUDE_AUTH before it reads a pause, so the login's pause holds nothing
+    # there; the row would send the person to `claude auth login` for a missing or bad token file
+    save_pause(tmp_path, "login", Pause(End.AUTH, "s1", NOW))
+    named = ws.token_file(["shipmill", "--claude-token", str(tmp_path / "gone"), "gate", REPO], tmp_path)
+    assert ws.paused_rows(tmp_path, named, 24, NOW, named=True) == []
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    assert ws.paused_rows(tmp_path, folder, 24, NOW) == []
+    readable = token_at(tmp_path / "readable")
+    readable.chmod(0o644)
+    assert ws.paused_rows(tmp_path, readable, 24, NOW) == []
+    for bad in ("", f"{API_KEY}01-fake\n", f"{PREFIX}01 fake\n", f"{PREFIX}01\n{PREFIX}02\n"):
+        wrong = token_at(tmp_path / "wrong")
+        wrong.write_text(bad, encoding="utf-8")
+        save_pause(tmp_path, hashlib.sha256(bad.encode()).hexdigest()[:16], Pause(End.AUTH, "s2", NOW))
+        assert inspect(TokenSource(wrong)).refused is not None, bad  # as the gate reads it
+        assert ws.paused_rows(tmp_path, wrong, 24, NOW) == [], bad
+
+
+def test_s089_13_a_gate_json_shipmill_doesnt_write_is_refused(ws: ModuleType, tmp_path: Path) -> None:
+    Handed({}).save(tmp_path / HANDED)
+    (tmp_path / "gate.json").write_text("[1]", encoding="utf-8")
+    with pytest.raises(ws.Refused, match="gate.json: expected a JSON object"):
+        ws.retry_rows(tmp_path / HANDED, tmp_path / "gate.json", NOW)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the gate's launchd job is a Mac's")
