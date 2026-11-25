@@ -37,6 +37,7 @@ UV_HTTP_RETRIES = "8"
 _TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 LABEL_PREFIX = "dev.shipmill.gate."  # each gate job's label, and its plist's name, begins with it
 OPTIONS = ("--repo", "--from")  # the job's options before the gate whose value could read "gate"
+SANDBOX_FLAG = "--sandbox"  # the gate's headless sessions run in Claude Code's sandbox (spec 087)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +89,12 @@ def build(
     skip: Callable[[str], bool] = is_temporary,
     app_key: Path | None = None,
     claude_token: Path | None = None,
+    sandbox: bool = False,
 ) -> Job:
     """The job's plist; app_key, the App's private key, and claude_token, the Claude token
     file's path (spec 035), go into the gate's arguments. Never the token itself: the gate
-    reads the file on each tick, and the plist has no CLAUDE_CODE_OAUTH_TOKEN"""
+    reads the file on each tick, and the plist has no CLAUDE_CODE_OAUTH_TOKEN. sandbox puts
+    --sandbox after --refresh (spec 087); without it the arguments are as before"""
     if not 5 <= interval_minutes <= 24 * 60:
         raise ReleaseError(f"the interval must be 5..1440 minutes, got {interval_minutes}")
     found = [find_tool(t, path, skip) for t in TOOLS]
@@ -99,6 +102,8 @@ def build(
     log = home / "Library" / "Logs" / "shipmill" / f"{name}.log"
     args = [str(found[TOOLS.index("uvx")]), "--from", tool, "shipmill", "--repo", str(checkout), "gate", repo]
     args += ["--refresh"]
+    if sandbox:
+        args += [SANDBOX_FLAG]
     if app_key is not None:
         args += ["--app-key", str(app_key)]
     if claude_token is not None:
@@ -233,6 +238,8 @@ def cli_fix(job: dict[str, object] | None, repo: str) -> str:
         command += ["--app-key", args[args.index("--app-key") + 1]]
     if "--claude-token" in args[:-1]:
         command += ["--claude-token", args[args.index("--claude-token") + 1]]
+    if SANDBOX_FLAG in args:  # the job keeps its sandbox (spec 087)
+        command += [SANDBOX_FLAG]
     command += [a for a in args if a.startswith("--claude-arg=")]
     return shlex.join(command)
 

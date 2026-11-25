@@ -43,6 +43,7 @@ from shipmill.gate import (
 from shipmill.gitrepo import Git
 from shipmill.notify import NotifyFailed
 from shipmill.policy import Policy
+from shipmill.sandbox import Sandbox
 from shipmill.worktrees import Judged
 
 from .conftest import POLICY
@@ -98,6 +99,7 @@ class FakeClaude:
     pid: int = 4242  # each headless start's pid
     tokens: list[Token | None] = field(default_factory=list)  # each start's token (spec 035)
     maintainers: list[str] = field(default_factory=list)  # each headless start's maintainer (spec 062)
+    sandboxes: list[Sandbox | None] = field(default_factory=list)  # each headless start's sandbox (spec 087)
 
     def sessions(self, workspace: Path, repo: str) -> list[Session]:
         return list(self.listed)
@@ -121,11 +123,13 @@ class FakeClaude:
         token: Token | None = None,
         *,
         maintainer: str,
+        sandbox: Sandbox | None = None,
     ) -> int:
         self.started.append((name, text, session, log))
         self.envs.append(env)
         self.tokens.append(token)
         self.maintainers.append(maintainer)
+        self.sandboxes.append(sandbox)
         return self.pid
 
     def stop(self, session: str) -> None:
