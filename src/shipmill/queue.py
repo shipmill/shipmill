@@ -170,6 +170,7 @@ def items(
     read_detail: Callable[[int], PullDetail],
     window: LandWindow | None,
     start: Sequence[int] | None = None,
+    held: tuple[Holds, Mapping[int, str]] | None = None,
 ) -> dict[int, Item]:
     """S-094-1, S-094-2, S-094-8: the records of the open items from start (every open item
     when None) and of the open items of the repo they count with, by number; --item and the
@@ -194,7 +195,7 @@ def items(
             return deciding(via)
         return next(c for c in conditions[n] if c.holder is holder)
 
-    holds, buckets = local_links(facts)
+    holds, buckets = local_links(facts) if held is None else held
     found = {}
     for n in sorted(conditions):
         holder, via = lines[n]
@@ -271,7 +272,7 @@ def counted(count: int, what: str) -> str:
 def queue(facts: Facts, read_detail: Callable[[int], PullDetail], window: LandWindow | None) -> Queue:
     issues = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
     holds, buckets = local_links(facts)
-    found = tuple(items(facts, read_detail, window).values())
+    found = tuple(items(facts, read_detail, window, held=(holds, buckets)).values())
     return Queue(facts.repo, issues, len(facts.pulls), found, holds, buckets)
 
 

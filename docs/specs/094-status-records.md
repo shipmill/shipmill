@@ -119,8 +119,10 @@ does, so the two agree for every item.
 
 It carries `queue`'s `parent` too. Its `blocks` stays spec 088's: this repo's BLOCKED notes,
 which `queue` reads, together with `chains.py show`'s walk from the item, which also finds a
-native `blockedBy` from a repo `queue` didn't read. So it holds every entry of `queue`'s
-`blocks`, and equals it when no item outside the repo waits on N.
+native `blockedBy` from a repo `queue` didn't read. So it equals `queue`'s `blocks` when the
+walk reads and finds no hold outside the repo; with one, it lists that waiter too, or names
+the item's other holds in an entry's `waits_on`, and a walk that fails leaves `blocks` empty
+with `blocks_error` (S-088-14).
 
 `status --summary` keeps spec 091's lines and JSON keys, with no `schema` and no `items`. Its
 split comes from the same records as `queue`'s, with `people`, `elsewhere`, and `postponed`
@@ -167,7 +169,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-13: `status --summary` keeps spec 091's lines and JSON keys, and counts the people, elsewhere, and postponed items of `queue` on its waits on nobody line
 - S-094-14: each `queue --json` record carries `blocks`, one `{ref, bucket, waits_on}` per open issue of the repo that waits on the item, as `status --item --json`'s `blocks` reads it, and `[]` when none does, and `parent`, its open sub-issue parent as `owner/name#N` or `null`, read from the facts with no read per item; the schema stays 1
 - S-094-15: `queue --fleet --json` lists in an item's `blocks` the open issues of every repo it read that wait on the item, and reads no repo more than once
-- S-094-16: `status --item N --json` carries the same `parent` as `queue`'s record of N, and its `blocks` holds every entry of `queue`'s record of N, equal to it when no item outside the repo waits on N
+- S-094-16: `status --item N --json` carries the same `parent` as `queue`'s record of N, and the same `blocks` when its walk reads and finds no hold outside the repo; a walk that fails leaves its `blocks` empty with `blocks_error`, as spec 088 says
 
 ## Out of scope
 

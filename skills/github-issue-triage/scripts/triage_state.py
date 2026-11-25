@@ -329,7 +329,7 @@ whatever its state: github-ship-watch's SPEC_UNSPLIT reads it as following the s
 053) without reading the issue again. A line without such a path has no "specs".
 
 With --json, an open issue that is a sub-issue of an open issue carries "parent", that
-issue as owner/repo#N, in any repo and whatever its state, from the parent field the first
+issue as owner/repo#N, in any repo and whatever the child's own state, from the parent field the first
 query reads (spec 094: shipmill queue's record); a line without an open parent, or read on
 a forge without sub-issues, has no "parent".
 
