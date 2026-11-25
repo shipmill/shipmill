@@ -31,6 +31,7 @@ def ch() -> ModuleType:
 # The body edit as the fake forge records it: REST's PATCH, never a GraphQL mutation (spec
 # 050), classed with the writes as the mutations are
 EDIT = "rest mutation: PATCH repos/<owner>/<repo>/issues/<n>"
+COMMENT = "rest mutation: POST repos/<owner>/<repo>/issues/<n>/comments"
 
 
 def edited(variables: dict[str, Any]) -> str:
@@ -60,6 +61,7 @@ class Forge:
         self.relation_error: tuple[str, dict[str, Any]] | None = None
         self.page = 100
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.comments: list[tuple[str, str]] = []  # (ref, body) unlink posted
 
     def add(self, ref: str, body: str = "", kind: str = "Issue", state: str = "OPEN") -> str:
         repo, _, number = ref.partition("#")
@@ -129,12 +131,18 @@ class Forge:
         mutations = {self.ch.ADD_BLOCKED_BY: "addBlockedBy", self.ch.ADD_SUB_ISSUE: "addSubIssue"}
         mutations |= {self.ch.REMOVE_BLOCKED_BY: "removeBlockedBy", self.ch.REMOVE_SUB_ISSUE: "removeSubIssue"}
         mutations[EDIT] = "PATCH"
+        mutations[COMMENT] = "comment"
         return [mutations[q] for q, _ in self.calls if q in mutations]
 
     def edit(self, ref: Any, body: str) -> None:
         """chains.py's Edit: the body set through REST"""
         response = self(EDIT, {"ref": (ref.owner, ref.name, ref.number), "body": body})
         assert not response.get("errors"), response
+
+    def comment(self, ref: Any, body: str) -> None:
+        """chains.py's Comment: unlink's comment through REST"""
+        self.calls.append((COMMENT, {"ref": str(ref), "body": body}))
+        self.comments.append((str(ref), body))
 
     def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((query, variables))

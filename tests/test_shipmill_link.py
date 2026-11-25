@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def unlink(ch: ModuleType, forge: Forge, *argv: str) -> int:
-    result: int = ch.main(["unlink", *argv], run=forge, write=forge, edit=forge.edit)
+    result: int = ch.main(["unlink", *argv], run=forge, write=forge, edit=forge.edit, comment=forge.comment)
     return result
 
 
@@ -149,14 +149,14 @@ def test_s041_19_unlink_removes_both_forms_and_again_nothing(
     b = forge.add("o/r#4")
     forge.blocked.add((a, b))
     assert unlink(ch, forge, "o/r#5", "--blocked-by", "o/r#4") == 0
-    assert forge.writes() == ["removeBlockedBy", "PATCH"]
+    assert forge.writes() == ["removeBlockedBy", "PATCH", "comment"]
     assert forge.blocked == set()
     assert forge.body("o/r#5") == "Build it.\r\n\r\nMore text.\r\n"  # the line and its break, the rest as it was
     out = capsys.readouterr().out
     assert "unlinked: o/r#5 is no longer blocked by o/r#4" in out
     assert "removed from o/r#5: Depends on o/r#4" in out
     assert unlink(ch, forge, "o/r#5", "--blocked-by", "o/r#4") == 0
-    assert forge.writes() == ["removeBlockedBy", "PATCH"]
+    assert forge.writes() == ["removeBlockedBy", "PATCH", "comment"]  # nothing more
     assert capsys.readouterr().out.strip() == "not linked"
 
 
@@ -168,7 +168,7 @@ def test_s041_19_unlink_keeps_a_lines_other_references_and_its_note(
     forge.add("o/r#4")
     assert unlink(ch, forge, "o/r#5", "--blocked-by", "o/r#4") == 0
     assert forge.body("o/r#5") == "- Depends on: #3, x/y#9 (all deployed)"
-    assert forge.writes() == ["PATCH"]
+    assert forge.writes() == ["PATCH", "comment"]
 
 
 def test_s041_19_unlink_of_a_child_and_of_a_pull_request(ch: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
@@ -178,14 +178,34 @@ def test_s041_19_unlink_of_a_child_and_of_a_pull_request(ch: ModuleType, capsys:
     forge.parents[c] = p
     assert unlink(ch, forge, "o/r#1", "--child", "o/r#2") == 0
     assert forge.parents == {} and forge.body("o/r#1") == ""
-    assert forge.writes() == ["removeSubIssue", "PATCH"]
+    assert forge.writes() == ["removeSubIssue", "PATCH", "comment"]
 
     forge = Forge(ch)
     forge.add("o/r#115", "Adds it.\n\nDepends on x/y#116", kind="PullRequest")
     forge.add("x/y#116")
     assert unlink(ch, forge, "o/r#115", "--blocked-by", "x/y#116") == 0
     assert forge.body("o/r#115") == "Adds it.\n"
-    assert forge.writes() == ["PATCH"]
+    assert forge.writes() == ["PATCH", "comment"]
+
+
+def test_s041_19_unlinks_comment_takes_the_hold_up_so_triage_asks_no_link_again(
+    ch: ModuleType, ts: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The review's case: a hold line beside its link, then the link removed (an unlink, or a
+    cycle's answer): the agent's newest word is unlink's comment, which names no hold"""
+    forge = Forge(ch)
+    a = forge.add("o/r#7", "Depends on o/r#12")
+    b = forge.add("o/r#12")
+    forge.blocked.add((a, b))
+    assert unlink(ch, forge, "o/r#7", "--blocked-by", "o/r#12") == 0
+    [(ref, note)] = forge.comments
+    assert ref == "o/r#7" and note.startswith("Unlinked from o/r#12: it no longer holds this item")
+    assert ts.hold_refs({"number": 7, "comments": {"nodes": [{"body": note}]}}, ("o", "r")) == {}
+    hold_line = by_bot(HOLD, day(2))
+    before = issue(hold_line)
+    assert unlinked(ts, before, HOLDS)[0] == "HOLD_UNLINKED"  # without unlink's comment it asks again
+    after = issue(hold_line, by_bot(note, day(3)))
+    assert unlinked(ts, after, HOLDS)[0] == "BLOCKED"
 
 
 def test_s041_19_a_malformed_line_naming_it_is_refused_before_any_write(

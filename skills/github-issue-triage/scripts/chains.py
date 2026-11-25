@@ -245,6 +245,8 @@ Standing = Callable[[str, str], bool]
 Execute = Callable[[list[str]], subprocess.CompletedProcess[str]]
 # Sets an issue's body to the text given; any failure exits 2
 Edit = Callable[["Ref", str], None]
+# Posts a comment on an issue or pull request; any failure exits 2
+Comment = Callable[["Ref", str], None]
 
 REFERENCE = re.compile(r"^(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)#(?P<num>[1-9]\d*)$")
 # a user's login, as a URL path segment; an Enterprise Managed User's is handle_shortcode
@@ -448,6 +450,24 @@ def gh_editor(gh: Sequence[str], execute: Execute = capture) -> Edit:
             fail(f"editing the body of {ref} failed")
 
     return edit
+
+
+def gh_commenter(gh: Sequence[str], execute: Execute = capture) -> Comment:
+    """unlink's comment through the gh command gh names: one REST `gh api -X POST
+    repos/<owner>/<repo>/issues/<n>/comments -F body=@<file>`, which comments on a pull request
+    too. A failure, a `shipmill gh` exit 2 among them, prints gh's message and exits 2"""
+
+    def post(ref: Ref, body: str) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "comment.md"
+            path.write_text(body, encoding="utf-8", newline="")
+            endpoint = f"repos/{ref.owner}/{ref.name}/issues/{ref.number}/comments"
+            proc = execute([*gh, "api", "-X", "POST", endpoint, "-F", f"body=@{path}"])
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stderr or f"error: {' '.join(gh)} api -X POST {endpoint} exited {proc.returncode}\n")
+            fail(f"commenting on {ref} failed")
+
+    return post
 
 
 def writer(checkout: Path) -> list[str]:
@@ -799,6 +819,9 @@ def link(
 
 
 LINE_BREAK = re.compile(r"(\r?\n)")
+# unlink's comment: no hold phrase (triage_state.py's HOLD), so it names no hold, and the agent
+# marker, so it is the agent's newest word on the item whatever gh posts it
+UNLINKED_NOTE = "Unlinked from {other}: it no longer holds this item (`shipmill unlink`).\n\n<!-- shipmill:agent -->\n"
 
 
 def without(body: str, home: Ref, target: Ref) -> tuple[str, list[str]]:
@@ -851,12 +874,15 @@ def unlink(
     child: bool,
     write: Runner,
     edit: Edit,
+    comment: Comment,
     run_other: Runner | None = None,
 ) -> int:
     """Removes the link link writes, both forms of it (spec 041): the native relation (GraphQL
     removeBlockedBy, or removeSubIssue for --child) when the forge records it, and other from
     each Depends on line of target's body that holds on it. A pull request's link is its line
-    alone. Idempotent: with neither form there it prints "not linked" and writes nothing"""
+    alone. Then it posts the agent's comment that takes the hold up (UNLINKED_NOTE), so an older
+    hold comment is no longer its newest word and triage reads no HOLD_UNLINKED for it (#1645).
+    Idempotent: with neither form there it prints "not linked" and writes nothing"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
     read_other = run if run_other is None else run_other
@@ -884,6 +910,8 @@ def unlink(
         lines += [f"removed from {target}: {line}" for line in changed]
     if refused is not None:
         lines.append(f"text only: {refused}")
+    if lines:
+        comment(target, UNLINKED_NOTE.format(other=other))
     print("\n".join(lines) if lines else "not linked")
     return 0
 
@@ -1676,9 +1704,10 @@ def main(
     execute: Execute = capture,
     edit: Edit | None = None,
     now: dt.datetime | None = None,
+    comment: Comment | None = None,
 ) -> int:
     """write is link's runner for the relation's mutation and edit its body edit, given
-    together; None for both reads the checkout for the gh command they go through (see writer
+    together, with unlink's comment too; None for both reads the checkout for the gh command they go through (see writer
     and product_writer). checkout is the folder whose config link reads, the current one when
     None; execute runs git (its origin) and the writes' gh. now is the moment show's idle_days
     count to, the clock's when None"""
@@ -1791,8 +1820,11 @@ def main(
     if write is None or edit is None:  # neither, as the check above has it
         command = product_writer(product, target, other) if product_flag and product is not None else writer(here)
         write, edit = gh_runner(command, execute), gh_editor(command, execute)
+        comment = gh_commenter(command, execute)
     if args.command == "unlink":
-        return unlink(run, target, other, args.child is not None, write, edit)
+        if comment is None:
+            raise ValueError("main takes unlink's comment with write and edit")
+        return unlink(run, target, other, args.child is not None, write, edit, comment)
     return link(
         run,
         target,
