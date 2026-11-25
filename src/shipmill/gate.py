@@ -2126,7 +2126,8 @@ def tick_walk(
         if dead is not None:  # the run gate.json held before this end, which the hands carry on (S-089-11)
             handed = handed.carrying(dead.session, dead.deaths.count - 1)
         recorded_ends = handed.ending(ends)
-        fresh = [k for k, h in handed.hands.items() if h.ended is None]  # only this tick's ends act
+        # only this tick's error and ok ends act; a limit or auth hand drops whenever its end was saved (#1602)
+        fresh = [k for k, h in handed.hands.items() if h.ended is None]
         handed = recorded_ends.settled(fresh, partial(session_died, state), retry)
         ended = len(handed.hands) < len(recorded_ends.hands)
     elif dead is not None and not capped:  # an interactive gate's dead session (S-046-15)
