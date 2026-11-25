@@ -27,3 +27,18 @@ def test_s087_1_the_design_doc_records_the_macos_sandbox_probe() -> None:
         "**Refusal text the tick reads.**",
     ):
         assert observed in section, observed
+
+
+def test_the_design_doc_records_the_local_port_probe() -> None:
+    # #1588: the setting that opens one local port to a sandboxed command, for S-087-10's tunnels
+    section = provides()
+    assert "macOS verified on Claude Code 2.1.330 (#1588)" in section
+    assert ROOT.joinpath("docs", "design", "probe-087", "prompt-port.md").is_file()
+    for observed in (
+        '`"127.0.0.1:<port>"` in `sandbox.network.allowedDomains` opens that one port',
+        "only through the sandbox's proxy",
+        "deny network-outbound 127.0.0.1:18766",
+        "`sandbox.network.allowLocalBinding: true` (macOS only) opens every local port",
+        "**Refusal text for a closed local port.**",
+    ):
+        assert observed in section, observed

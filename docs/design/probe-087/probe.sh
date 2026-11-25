@@ -6,6 +6,13 @@
 #   probe.sh <out dir>           the spec's settings, with no project settings file
 #   probe.sh <out dir> widen     the same, plus a .claude/settings.local.json in the checkout
 #                                that adds example.com to allowedDomains
+#   probe.sh <out dir> port      #1588: allowedDomains names one local port, 127.0.0.1:18765, in
+#                                place of the bare localhost, and prompt-port.md's checks run
+#   probe.sh <out dir> binding   #1588: no local entry in allowedDomains and
+#                                sandbox.network.allowLocalBinding on, with prompt-port.md
+#
+# The port modes serve the same file on 127.0.0.1:18765 (the named port), 127.0.0.1:18766 (another
+# local port) and [::1]:18765 (the named port on another loopback address).
 #
 # Writes <out dir>/settings.json, prompt.txt, session.jsonl and result.txt. The canary, the local
 # web server and the widening file are removed on exit, whatever happens.
@@ -23,16 +30,17 @@ bot_id=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))[sys.argv
 login="$slug[bot]"
 email="$bot_id+$slug[bot]@users.noreply.github.com"
 port=18765
+other=18766
 stamp=$(date +%s)
 canary="$HOME/.ssh/shipmill-probe-canary-$stamp"
 outside="$HOME/shipmill-probe-outside-$stamp"
 widen_file="$checkout/.claude/settings.local.json"
-server=""
+servers=""
 
 cleanup() {
     rm -f "$canary" "$outside" "$common/hooks/shipmill-probe-$stamp"
     [ "$mode" = widen ] && rm -f "$widen_file" && rmdir "$checkout/.claude" 2>/dev/null || true
-    [ -n "$server" ] && kill "$server" 2>/dev/null || true
+    for pid in $servers; do kill "$pid" 2>/dev/null || true; done
     [ ! -e "$canary" ] && echo "canary removed: $canary"
 }
 trap cleanup EXIT
@@ -41,8 +49,16 @@ mkdir -p "$HOME/.ssh" "$out/www"
 python3 -c "import secrets;print(secrets.token_hex(16))" > "$canary"
 chmod 600 "$canary"
 echo ok > "$out/www/ok.txt"
-python3 -m http.server "$port" --bind 127.0.0.1 --directory "$out/www" >/dev/null 2>&1 &
-server=$!
+serve() {
+    python3 -m http.server "$1" --bind "$2" --directory "$out/www" >/dev/null 2>&1 &
+    servers+=" $!"
+}
+serve "$port" 127.0.0.1
+case "$mode" in
+    plain|widen) prompt="$here/prompt.md" ;;
+    port|binding) prompt="$here/prompt-port.md"; serve "$other" 127.0.0.1; serve "$port" ::1 ;;
+    *) echo "unknown mode $mode" >&2; exit 2 ;;
+esac
 
 if [ "$mode" = widen ]; then
     [ -e "$widen_file" ] && { echo "refusing to overwrite $widen_file" >&2; exit 2; }
@@ -50,11 +66,11 @@ if [ "$mode" = widen ]; then
     echo '{"sandbox": {"network": {"allowedDomains": ["example.com"]}}}' > "$widen_file"
 fi
 
-python3 "$here/settings.py" "$checkout" "$key" "$login" "$email" romamo > "$out/settings.json"
-python3 - "$here/prompt.md" "$out/prompt.txt" <<EOF
+python3 "$here/settings.py" "$checkout" "$key" "$login" "$email" romamo "$mode" "$port" > "$out/settings.json"
+python3 - "$prompt" "$out/prompt.txt" <<EOF
 import sys
 text = open(sys.argv[1]).read().format(
-    canary="$canary", ssh_dir="$HOME/.ssh", port=$port, branch="probe/s-087-1-$stamp",
+    canary="$canary", ssh_dir="$HOME/.ssh", port=$port, other=$other, branch="probe/s-087-1-$stamp",
     outside="$outside", checkout="$checkout", hooks="$common/hooks/shipmill-probe-$stamp",
 )
 open(sys.argv[2], "w").write(text)
