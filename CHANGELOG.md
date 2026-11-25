@@ -7,6 +7,26 @@ bot.
 
 ## [Unreleased]
 
+## [0.168.0] - 2026-11-25
+
+### Fixed
+
+- `pr_gate.py` no longer lands an agent's docs-only pull request that sets a spec's `status:` to `built` without a review: that line claims a feature finished, so the PR reads UNREVIEWED until a review of its head is recorded, read from the patches of the files API call the docs-only check already makes; every other docs-only change keeps its verdict (#1486)
+- An `upstream` report with no link to an issue in another repo and no assignee no longer waits on nobody: without a coordinator, `triage_state.py` reads it `UPSTREAM_UNOWNED` (not an action), `fleet.py queue` lists it as an `UPSTREAM` row for the maintainer to report it where it belongs until it is linked or assigned, and `shipmill status --item` says so; the queue now passes the clone's `[product] home` to `triage_state.py` as `--home`, as the watch does, and in the home repo (its config has `[product] repos`) both pass the repo itself, whose coordinator routes its reports (#1487)
+- The watch's `GATE_PAUSED` reads the gate's token file as the gate does: a `--claude-token` file that is missing, or a token file the gate refuses (not a regular file, another user's, readable by group or others, not a token), prints no row instead of the login's pause and its `claude auth login` fix; a `gate.json` that isn't a JSON object stops with exit 2, as the gate refuses it (#1583)
+
+### Added
+
+- The gate takes what holds the most first: `watch_state.py --tier 4` and `--tier 6` run one `chains.py show` over the repo's open issues and give each ISSUES row `"impact": [[number, held], ...]` (its issues other open issues wait on, most held first), the walk orders the rows of tiers 4 and 6 by their highest `held` after the expedite rows and before the kind's place, and a LAUNCH of such an item names its issue of highest `held` and its count in the decision's reason and the prompt; `impact` joins no fingerprint, a malformed one fails the read, and a failed walk adds its CHAIN_UNREADABLE row and leaves the tier in its old order (spec 086) (#1532)
+- Gate: a headless session that ended on a usage limit (`limit`) or a refused credential (`auth`) pauses the credential it ran with, in `$XDG_STATE_HOME/shipmill/claude/<credential>.json` (`~/.local/state` without `XDG_STATE_HOME`), `<credential>` the first 16 hex digits of the token file content's SHA-256, or `login`, never the token. Every gate on the host reads its credential's pause before it launches and, while it holds, starts no session and reads `PAUSED`, naming the cause and when it ends; neither end counts toward `DEAD_STREAK`. A `limit` pause lifts at the log's newest `resetsAt`, or after `retry_hours` without one; an `auth` pause lifts once the token file's content changes, or, without a token file, once `claude auth status` reports a login, and sends one notification. `gate.json` records the credential each launch ran with (#1552)
+- Gate: while a usage limit pauses the sessions' credential, each tick runs `claude -p "/usage"`, which calls no model, with that credential (the token file's token as `CLAUDE_CODE_OAUTH_TOKEN`, never the host login), and lifts the pause on the first tick whose output shows every window under 100% used; one showing a window full holds it. When the probe exits non-zero, doesn't answer in 60 s, or its output names no window, the pause lifts at the log's `resetsAt`, or after `retry_hours` without one (#1553)
+- Gate: a subject a session left unchanged because it waits on another item is handed again once that item changes. The session names the item in a comment on the subject whose first line is `<!-- shipmill:waits-on owner/repo#N -->`, posted as the App; a walk that would mark the subject idle reads its newest such marker by the `--bot-login` and, when the named item's `updatedAt` is later than the hand, hands it again. A marker by anyone else counts for nothing. github-issue-triage's and github-pr-triage's hold comments now start with the marker (#1555)
+- `shipmill status` and the watch name why the gate waits: `GATE_PAUSED <limit|auth> until <when>` while the credential its sessions use is paused, with the token's fix for `auth`, and `GATE_RETRY <item> after <time>: <n> error ends in a row` for each item in backoff; `shipmill status --item N` says the pause or the backoff for an item the gate would take up, instead of "the gate takes it up on a coming tick". Spec 089 is built (#1556)
+
+### Changed
+
+- Gate: an item whose headless session ended `error` is handed again 15 minutes after the death, then 1 hour after the next, then 4 hours after the third; the fourth `error` end in a row holds it for `retry_hours` and reads SESSION_DEAD, where three dead sessions in a row held it before. The run is kept on the item's hand in `handed.json` (`errors`, and `until` while it waits), so it survives another item's session in between, an `ok` end resets it, and a hand whose session ended `error` never turns idle (#1554)
+
 ## [0.167.0] - 2026-11-24
 
 ### Changed
@@ -3017,7 +3037,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.167.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.168.0...HEAD
+[0.168.0]: https://github.com/shipmill/shipmill/compare/v0.167.0...v0.168.0
 [0.167.0]: https://github.com/shipmill/shipmill/compare/v0.166.0...v0.167.0
 [0.166.0]: https://github.com/shipmill/shipmill/compare/v0.165.0...v0.166.0
 [0.165.0]: https://github.com/shipmill/shipmill/compare/v0.164.1...v0.165.0

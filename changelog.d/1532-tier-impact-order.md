@@ -1,3 +1,0 @@
-### Added
-
-- The gate takes what holds the most first: `watch_state.py --tier 4` and `--tier 6` run one `chains.py show` over the repo's open issues and give each ISSUES row `"impact": [[number, held], ...]` (its issues other open issues wait on, most held first), the walk orders the rows of tiers 4 and 6 by their highest `held` after the expedite rows and before the kind's place, and a LAUNCH of such an item names its issue of highest `held` and its count in the decision's reason and the prompt; `impact` joins no fingerprint, a malformed one fails the read, and a failed walk adds its CHAIN_UNREADABLE row and leaves the tier in its old order (spec 086) (#1532)
