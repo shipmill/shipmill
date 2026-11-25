@@ -7,6 +7,20 @@ bot.
 
 ## [Unreleased]
 
+## [0.176.0] - 2026-11-25
+
+### Changed
+
+- Spec 087 widens the headless sandbox per item: a narrow grant (`[agents.sandbox.grant]`, switched on by a `sandbox:<kind>` label a trusted person set, never the App) opens a domain, a path, local ports or a tunnel for one launch and is named on the tick; tunnels reach their port through `local_ports` (`allowLocalBinding`), since one `127.0.0.1:<port>` serves only a proxy-aware HTTP client (#1588); full access (ssh with a key, Docker) never runs headless and goes to its people as a `role:maintainer` item with the command that opens an interactive session (#1610)
+
+### Fixed
+
+- `shipmill status --item` and `status --summary` read an opportunity the maintainer accepted (labelled `planned`, named on the watch's SPEC_DUE row) as waiting on triage's spec gate, an agent's, no longer on the maintainer's accept (#1611)
+
+### Added
+
+- Each record of `shipmill queue --json` carries `blocks`, the open issues that wait on the item, in the shape `status --item --json` gives them (`ref`, `bucket`, `waits_on`), and `parent`, the open issue it is a sub-issue of as `owner/name#N` or `null`; `queue --fleet` adds the waiters of every repo it read, `status --item --json` carries `parent` too, `triage_state.py --json` gives an issue's open `parent`, and the schema stays 1 (#1639)
+
 ## [0.175.0] - 2026-11-25
 
 ### Added
@@ -3133,7 +3147,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.175.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.176.0...HEAD
+[0.176.0]: https://github.com/shipmill/shipmill/compare/v0.175.0...v0.176.0
 [0.175.0]: https://github.com/shipmill/shipmill/compare/v0.174.0...v0.175.0
 [0.174.0]: https://github.com/shipmill/shipmill/compare/v0.173.1...v0.174.0
 [0.173.1]: https://github.com/shipmill/shipmill/compare/v0.173.0...v0.173.1
