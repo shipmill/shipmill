@@ -88,7 +88,9 @@ COLLABORATOR, a comment by an OWNER, MEMBER, or COLLABORATOR other than the --bo
 agent marker, whose first word is `veto`, or the --bot-login's relay of the maintainer's veto
 (D-103, #1482: its first line `Decision by @<login>` naming the maintainer as the answer's relay
 does, in the relay grammar, its answer line `own: veto [<text>]` or starting with `veto`; the line
-names that login), with no newer `<!-- shipmill:veto-handled ... -->` by such an author. It reads
+names that login; without an [agents.roles] maintainer user, a read of that login's permission
+that fails, a 404 aside, stops the gate with exit 2, #1569), with no newer
+`<!-- shipmill:veto-handled ... -->` by such an author. It reads
 the newest 100 comments of each, in one GraphQL read of the PR's thread and those of the issues it
 closes or names as Part of #N, which the answer above reads too. A thread with older comments
 unread fails closed (#1330): when those 100 hold no veto it reads as VETOED but do hold such a
@@ -1072,14 +1074,19 @@ def maintainer_users(text: str, where: str) -> frozenset[str]:
 class Maintainers:
     """Whether a login a relay names is the maintainer's (spec 055): one [agents.roles] maintainer
     lists, or, when it lists no user, one whose permission on the repo is admin, read from GitHub
-    once per login and only when asked; a permission that can't be read is no maintainer's"""
+    once per login and only when asked; for an answer, a permission that can't be read is no
+    maintainer's, the safe side, while the veto's view (vetoing) stops the gate on it (#1569)"""
 
     def __init__(self, listed: frozenset[str], repo: str | None) -> None:
         self.listed = listed
         self.repo = repo
-        self.read: dict[str, bool] = {}
+        self.read: dict[str, bool | None] = {}  # None: the read failed
 
     def __contains__(self, login: object) -> bool:
+        return self.admin_or_unread(login) is True
+
+    def admin_or_unread(self, login: object) -> bool | None:
+        """Whether login is the maintainer's, or None when its permission couldn't be read"""
         if not isinstance(login, str):
             return False
         if self.listed:
@@ -1088,16 +1095,41 @@ class Maintainers:
             self.read[login] = self.admin(login)
         return self.read[login]
 
-    def admin(self, login: str) -> bool:
+    @property
+    def vetoing(self) -> Vetoing:
+        return Vetoing(self)
+
+    def admin(self, login: str) -> bool | None:
+        """Whether login's permission on the repo is admin; False on a 404, GitHub's answer that it
+        is no collaborator; None when the read fails otherwise or its answer isn't one"""
         cmd, env = api([f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"], self.repo)
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if proc.returncode != 0:
-            return False  # a 404 or any other failure: not a maintainer, fail closed
+            return False if "(HTTP 404)" in proc.stderr else None
         try:
             answer = json.loads(proc.stdout)
         except json.JSONDecodeError:
-            return False
-        return isinstance(answer, dict) and answer.get("permission") == "admin"
+            return None
+        if not isinstance(answer, dict) or not isinstance(answer.get("permission"), str):
+            return None
+        return bool(answer["permission"] == "admin")
+
+
+class Vetoing:
+    """The maintainers as a relayed veto reads them (D-103): a permission that can't be read stops
+    the gate instead of dropping the veto, which would let the pull request land (#1569)"""
+
+    def __init__(self, maintainers: Maintainers) -> None:
+        self.maintainers = maintainers
+
+    def __contains__(self, login: object) -> bool:
+        found = self.maintainers.admin_or_unread(login)
+        if found is None:
+            raise GateError(
+                f"can't read @{login}'s permission on the repo, which a relayed veto names: "
+                "it decides whether the veto holds the pull request, so nothing is judged"
+            )
+        return found
 
 
 def load(name: str, path: Path) -> ModuleType:
@@ -2832,7 +2864,9 @@ def main() -> int:
                 if data["state"] == "OPEN":  # an unhandled veto of a notify decision blocks it (D-48, #1309)
                     thread, issues = threads_of(data, number, args.repo)
                     # a maintainer's veto relayed by the --bot-login counts too (D-103, #1482)
-                    judged = replace(judged, vetoes=vetoes_of(data, number, thread, issues, args.bot_login, who))
+                    # a permission it can't read stops the gate there rather than dropping the veto (#1569)
+                    vetoes = vetoes_of(data, number, thread, issues, args.bot_login, who.vetoing)
+                    judged = replace(judged, vetoes=vetoes)
                 if thread is not None and issues is not None and agent:  # the files its issues allow (spec 085)
                     files = files_hold(data, number, args.repo, thread, issues, args.bot_login, base)
                     judged = replace(judged, files=files)

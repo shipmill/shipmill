@@ -1,12 +1,16 @@
-"""Spec 030's veto as triage_state.py and watch_state.py read it (S-030-14 to S-030-16)"""
+"""Spec 030's veto as triage_state.py and watch_state.py read it (S-030-14 to S-030-16), and as
+pr_gate.py reads a relayed veto when a permission read fails (#1569)"""
 
 from __future__ import annotations
 
 import datetime as dt
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import ModuleType
 from typing import Any
 
@@ -14,6 +18,7 @@ import pytest
 
 from shipmill.autonomy import Autonomy
 from shipmill.gate import Action, decide, parse_findings
+from tests import test_pr_gate as pg
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
@@ -228,6 +233,83 @@ def test_1482_the_maintainers_come_from_the_role_flags(ts: ModuleType) -> None:
     roles = ts.parse_roles(["maintainer=Amy,@o/core", "ops=bob"])
     assert ts.maintainers_of(roles) == frozenset({"amy"})
     assert ts.maintainers_of(None) == frozenset()
+
+
+# -- #1569: pr_gate.py's relayed veto when the maintainer's permission can't be read
+
+NOT_FOUND = 'sys.exit("gh: Not Found (HTTP 404)")'
+
+
+def failing_gate(tmp_path: Path, failure: str, issue_comments: tuple[dict[str, Any], ...]) -> CompletedProcess[str]:
+    """pr_gate.py on #7, a person's PR closing #12 whose thread holds issue_comments, outside a
+    checkout and with no [agents.roles], as test_pr_gate.py's run_gate runs it, but each permission
+    read ends as failure does instead of answering"""
+    assert NOT_FOUND in pg.FAKE_GH
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    gh = fakes / "gh"
+    gh.write_text(pg.FAKE_GH.format(python=sys.executable).replace(NOT_FOUND, failure), encoding="utf-8")
+    gh.chmod(0o700)
+    data = tmp_path / "gh.json"
+    fake = {
+        "7": pg.pr(body="Fixes #12", login="amy"),
+        "repo": "demo/app",
+        "issues": {"12": pg.thread(*issue_comments)},
+        "base": {"sha": pg.BASE_SHA, "statuses": [], "check_runs": []},
+        "threads": {"7": pg.thread()},
+        "permissions": {},
+        "reviews": {"7": [pg.APPROVED]},
+        "holds": [],
+        "deployments": {},
+        "incidents": {},
+    }
+    data.write_text(json.dumps(fake), encoding="utf-8")
+    env = {
+        **os.environ,
+        "PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]),
+        "FAKE_GH_DATA": str(data),
+        "FAKE_GH_CALLS": str(tmp_path / "gh-calls"),
+        "GIT_CEILING_DIRECTORIES": str(tmp_path),
+    }
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cmd = [sys.executable, str(pg.SCRIPT), "7", "--bot-login", pg.BOT]
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env, cwd=outside)
+
+
+RELAYED = (pg.decided_by_app(), pg.RELAYED_VETO)  # the App's decided marker, then its relay of @romamo's veto
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param('sys.exit("gh: Bad Gateway (HTTP 502)")', id="a server error"),
+        pytest.param('sys.exit("gh: Resource not accessible by integration (HTTP 403)")', id="forbidden"),
+        pytest.param('print("<html>rate limited</html>")', id="an answer that is no JSON"),
+    ],
+)
+def test_1569_a_relayed_veto_whose_permission_read_fails_stops_the_gate(tmp_path: Path, failure: str) -> None:
+    """with no [agents.roles] maintainer, a failed read of the relay's named login stops the gate
+    (exit 2) rather than reading no veto and letting the PR land"""
+    proc = failing_gate(tmp_path, failure, RELAYED)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "READY" not in proc.stdout
+    assert "romamo" in proc.stderr and "permission" in proc.stderr, proc.stderr
+
+
+def test_1569_a_relayed_veto_naming_a_login_github_does_not_find_keeps_the_verdict(tmp_path: Path) -> None:
+    """a 404 is GitHub's answer that the login is no collaborator, so no maintainer: the gate reads on"""
+    proc = failing_gate(tmp_path, NOT_FOUND, RELAYED)
+    assert (proc.returncode, proc.stdout) == (0, pg.MAIN_READY), proc.stderr
+
+
+def test_1569_a_relay_that_is_no_veto_reads_no_permission_so_a_failing_read_never_stops_it(tmp_path: Path) -> None:
+    """the veto's path asks for the named login last (triage_state.py's relayed_veto): a relayed
+    option is no veto, so the gate reads on whatever a permission read would do"""
+    relayed_option = (pg.decided_by_app(), pg.relay(pg.RELAY_HEADER, "1. Land it"))
+    proc = failing_gate(tmp_path, 'sys.exit("gh: Bad Gateway (HTTP 502)")', relayed_option)
+    assert (proc.returncode, proc.stdout) == (0, pg.MAIN_READY), proc.stderr
+    assert pg.permission_reads(tmp_path) == []
 
 
 # -- S-030-15: a closed issue
