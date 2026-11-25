@@ -1,12 +1,34 @@
 """Spec 085: an agent's pull request lands only with the files its issue allows, end to end
-through pr_gate.py with test_pr_gate.py's stand-in gh on PATH (S-085-1 to S-085-8)"""
+through pr_gate.py with test_pr_gate.py's stand-in gh on PATH (S-085-1 to S-085-10)"""
 
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from .test_pr_gate import BOT, MAIN_READY, at, calls_of, checkout, comment, gate, pr, run_gate, thread
+from .conftest import Repo
+from .test_app_gh_merge import FakeGate
+from .test_merge_gate import run as merge
+from .test_pr_gate import (
+    BOT,
+    MAIN_READY,
+    asked,
+    at,
+    branched,
+    calls_of,
+    checkout,
+    comment,
+    committed,
+    gate,
+    git,
+    headed,
+    pr,
+    push,
+    ready_line,
+    review,
+    run_gate,
+    thread,
+)
 
 FRAGMENTS = '[changelog]\nfragments = "changelog.d"\n'
 HELD = MAIN_READY.replace("READY", "NEEDS_DECISION")
@@ -271,3 +293,86 @@ def test_s085_8_a_thread_cut_off_with_no_counting_comment_in_its_newest_100_hold
 def test_s085_8_a_cut_off_thread_with_a_counting_comment_reads_it(tmp_path: Path) -> None:
     ready(gated(tmp_path, ("src/a.py",), {12: thread(verdict("src/a.py"), whole=False)}))
     assert held(gated(tmp_path, ("src/a.py", CI), {12: thread(verdict("src/a.py"), whole=False)})) == [outside(CI)]
+
+
+# S-085-9
+
+
+def answered(
+    tmp_path: Path, data: dict[str, Any], pr_thread: dict[str, Any], issue: dict[str, Any], work: Path | None = None
+) -> Any:
+    """The gate on #7, the App's PR data, its thread pr_thread, #12's thread issue; romamo, who
+    answers, has admin on the repo and approved the PR's head (spec 055)"""
+    reviews = {7: [review(commit=data["headRefOid"])]}
+    return run_gate(
+        tmp_path,
+        work,
+        {7: data},
+        "--bot-login",
+        BOT,
+        issues={12: issue},
+        threads={7: pr_thread},
+        permissions={"romamo": "admin"},
+        reviews=reviews,
+    )
+
+
+def test_s085_9_the_maintainers_accepting_answer_lifts_the_files_lines_and_ci_decides(tmp_path: Path) -> None:
+    issue = thread(verdict("src/a.py"))
+    data = headed(body="Fixes #12", files=("src/a.py", CI))
+    proc = answered(tmp_path, data, thread(asked(), comment("1", at(12))), issue)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    data["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    proc = answered(tmp_path, data, thread(asked(), comment("1", at(12))), issue)
+    assert proc.returncode == gate.FAILED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == ["  failed: test (FAILURE)"]
+
+
+def test_s085_9_an_answer_not_taking_the_recommended_option_keeps_the_files_lines(tmp_path: Path) -> None:
+    data = headed(body="Fixes #12", files=("src/a.py", CI))
+    proc = answered(tmp_path, data, thread(asked(), comment("2", at(12))), thread(verdict("src/a.py")))
+    assert held(proc) == ["  needs-decision: the answer doesn't take the recommended option", outside(CI)]
+
+
+def test_s085_9_a_head_whose_own_change_differs_keeps_the_files_lines(tmp_path: Path) -> None:
+    work = checkout(tmp_path, {})
+    first = branched(tmp_path, work, {"src/a.py": "a = 1\n", CI: "on: push\n"})
+    head = committed(work, {CI: "on: pull_request\n"}, "Change the workflow")
+    data = headed(head, ((first, at(10, 30)), (head, at(13))), body="Fixes #12", files=("src/a.py", CI))
+    proc = answered(tmp_path, data, thread(asked(head=first), comment("1", at(12))), thread(verdict("src/a.py")), work)
+    assert proc.returncode == gate.NEEDS_DECISION, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        f"  needs-decision: answered at {first[:7]}, and the change differs since",
+        outside(CI),
+    ]
+
+
+def test_s085_9_a_rebase_with_the_same_own_change_keeps_the_answer(tmp_path: Path) -> None:
+    """spec 055: the answer binds to the change, not the sha, so a rebase alone keeps it"""
+    work = checkout(tmp_path, {})
+    first = branched(tmp_path, work, {"src/a.py": "a = 1\n", CI: "on: push\n"})
+    git(work, "rebase", "-q", "origin/main")
+    head = git(work, "rev-parse", "HEAD").strip()
+    data = headed(head, ((head, at(13)),), body="Fixes #12", files=("src/a.py", CI))
+    rebased = thread(asked(head=first), comment("1", at(12)), pushes=(push(at(13), first),))
+    proc = answered(tmp_path, data, rebased, thread(verdict("src/a.py")), work)
+    assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+
+
+def test_s085_9_a_new_verdict_by_the_app_after_the_pr_opened_doesnt_lift_the_files_lines(tmp_path: Path) -> None:
+    later = verdict("src/a.py", CI, when=at(11))
+    proc = gated(tmp_path, ("src/a.py", CI), {12: thread(verdict("src/a.py"), later)})
+    assert held(proc) == [outside(CI)]
+
+
+# S-085-10
+
+
+def test_s085_10_a_merge_of_a_pr_the_files_lines_hold_exits_2_before_gh(repo: Repo, tmp_path: Path) -> None:
+    """the gate's own output for S-085-4's pull request, as `shipmill gh pr merge 7` reads it"""
+    proc = gated(tmp_path, ("src/a.py", CI), {12: thread(verdict("src/a.py"))})
+    assert proc.returncode == gate.NEEDS_DECISION, proc.stdout + proc.stderr
+    runner, refused = merge(repo, tmp_path, ["pr", "merge", "7", "--squash"], FakeGate(proc.stdout, proc.returncode))
+    assert runner.calls == []  # gh never ran
+    assert refused is not None and "is refused: pr_gate.py reads #7 NEEDS_DECISION" in refused
+    assert outside(CI) in refused.splitlines()
