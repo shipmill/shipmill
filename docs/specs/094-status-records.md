@@ -200,14 +200,13 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 
 - shipmill/shipmill#1620: S-094-1, S-094-2, S-094-3, S-094-4, S-094-5, S-094-6, S-094-7, S-094-8, S-094-9, S-094-10, S-094-11, S-094-12, S-094-13
 - shipmill/shipmill#1639: S-094-14, S-094-15, S-094-16
-- shipmill/shipmill#1641: S-094-4, S-094-13
 
 ## Verification
 
 - S-094-1: `shipmill queue --json` on shipmill/shipmill printed `schema`, `repo`, `totals`, `split` with the seven holders, and 85 records for 79 issues and 6 pull requests, ascending, each with the nine keys and on its split line
 - S-094-2: the same run's #1531 read `via` 1524 with #1524's why and clears, and #1516 `via` 1622, its spec pull request's question; #322 read its own `postponed` condition with `via` null
 - S-094-3: #1531's `waits_on` was `["shipmill/shipmill#1524", "shipmill/shipmill#1528"]`, the open items its BLOCKED note names
-- S-094-4: #338 (labelled blocked) read `elsewhere` and the postponed issues `postponed`; no issue there was a person's, so `people` and the rest of the table are each a case of `test_s094_4_each_condition_has_its_finer_holder`
+- S-094-4: #338 (labelled blocked) read `elsewhere` and the postponed issues `postponed`; no issue there was a person's, so `people` and the rest of the table are each a case of `test_s094_4_each_condition_has_its_finer_holder`; an item assigned to the maintainer reads `maintainer` in `test_s094_4_an_item_assigned_to_the_maintainer_waits_on_them`, and in `queue`, `status --item`, and `status --summary` alike in `test_s094_4_queue_summary_and_item_put_the_maintainers_item_on_waits_on_you` (shipmill/shipmill#1641)
 - S-094-5: the run placed 63 items with the maintainer, 11 with the agent, 1 elsewhere, and 10 postponed, each once; a parent moving through its children read `postponed` in its test
 - S-094-6: the run marked 50 issues `accept: "opportunity"` and 4 `accept: "plan"`, each held by the maintainer
 - S-094-7: `shipmill queue` printed the repo with its totals, then each holder's label with its items as `#N <kind>: <why> (clears: <clears>)`
@@ -219,4 +218,4 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-14: `shipmill queue --json` on shipmill/shipmill on 2026-11-25 printed `blocks` and `parent` on all 80 records with `"schema": 1`: #1616 listed #1610, #1589, and #1439, nearest first, #1534 had `parent` `shipmill/shipmill#1439` and #1439 itself `blocks: []` and `parent: null`; `test_s094_14_queue_prints_blocks_and_parent_with_no_read_per_item` asserts no item's own read and no walk
 - S-094-15: `test_s094_15_the_fleet_lists_another_repos_waiters` reads two gate jobs, lists acme/api#2 in acme/web#4's `blocks`, and runs triage_state.py once per repo
 - S-094-16: `status --item N --json` for #1616, #1534, and #1439 in that run matched `queue`'s `parent` and `blocks` of N, and every other key of its record
-- S-094-13: `shipmill status --summary` on shipmill/shipmill printed spec 091's four lines, its JSON with spec 091's keys, with #338 and the postponed issues on waits on nobody
+- S-094-13: `shipmill status --summary` on shipmill/shipmill printed spec 091's four lines, its JSON with spec 091's keys, with #338 and the postponed issues on waits on nobody; an item assigned to the maintainer counts on waits on you in `test_s094_13_the_summary_counts_the_maintainers_assigned_item_as_waiting_on_you`
