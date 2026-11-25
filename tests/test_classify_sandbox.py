@@ -106,7 +106,15 @@ def test_s087_11_sandbox_added_compares_raw_entries() -> None:
         return {"agents": {"prompt": "/t", "sandbox": sandbox}}
 
     assert sandbox_added({}, config({"domains": ["https://x.org"]})) == ["domains 'https://x.org'"]
-    assert sandbox_added(config({"domains": "a.org"}), config({"domains": ["a.org"]})) == []
+    assert sandbox_added(config({"domains": ["a.org"]}), config({"domains": ["a.org"]})) == []
+    # fixing a key the base refused widens: the base's sessions ran without any of its entries
+    assert sandbox_added(config({"domains": "a.org"}), config({"domains": ["a.org"]})) == ["domains 'a.org'"]
+    assert sandbox_added(config({"write": ["/", "tmp"]}), config({"write": ["/"]})) == ["write '/'"]
+    tunnel = {"ssh": "h.org", "local": 2000, "remote": "db:5432"}
+    twice = config({"tunnels": [tunnel, tunnel | {"remote": "db:5433"}]})  # a repeated local
+    assert sandbox_added(twice, config({"tunnels": [tunnel]})) == [f"tunnels {tunnel!r}"]
+    unknown = config({"write": ["/"], "network": ["x"]})  # fails the load at the base (D-63)
+    assert sandbox_added(unknown, config({"write": ["/"]})) == ["write '/'"]
     assert sandbox_added(config({}), config({"network": ["x"]})) == ["network 'x'"]  # a key it doesn't know
     assert sandbox_added(config({}), config(["a.org"])) == ["[agents.sandbox] ['a.org']"]
     assert sandbox_added(config({"write": ["/a", "/b"]}), config({"write": ["/b"]})) == []

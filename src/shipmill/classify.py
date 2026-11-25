@@ -56,6 +56,7 @@ from shipmill.gitrepo import Git
 from shipmill.policy import Policy
 from shipmill.review import REVIEW, Protected
 from shipmill.review import parse as parse_review
+from shipmill.sandbox import SandboxConfig
 from shipmill.workflows import WORKFLOWS_DIR, Job, has_environment, is_workflow, jobs
 
 DIRECTION = "docs/product.md"
@@ -487,9 +488,25 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
 def sandbox_added(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
     """Each entry [agents.sandbox] holds at the head and not at the merge base, as `<key>
     <entry>`, compared raw, so an entry a malformed key would drop still counts, as does a key
-    shipmill doesn't know; a sandbox that isn't a table is one entry of its own"""
-    was, now = _sandbox_entries(before), _sandbox_entries(after)
+    shipmill doesn't know; a sandbox that isn't a table is one entry of its own. The merge base
+    holds only the entries its sessions ran with: none of a key it refused, so fixing a malformed
+    key widens, nor any when its table fails the load"""
+    was, now = _sandbox_held(before), _sandbox_entries(after)
     return [f"{key} {entry!r}" for key, entries in now.items() for entry in entries if entry not in was.get(key, [])]
+
+
+def _sandbox_held(raw: Mapping[str, Any]) -> dict[str, list[object]]:
+    """The merge base's entries, less each key SandboxConfig.parse refuses there (D-64)"""
+    agents = raw.get(AGENTS_TABLE)
+    sandbox = agents.get(SANDBOX_TABLE) if isinstance(agents, Mapping) else None
+    if not isinstance(sandbox, dict):  # none, or one refused whole
+        return {}
+    try:
+        _, refused = SandboxConfig.parse(sandbox, f"[{AGENTS_TABLE}]")
+    except ReleaseError:  # a key shipmill doesn't know fails the load (D-63): no session ran with any
+        return {}
+    dropped = {r.key for r in refused}
+    return {key: entries for key, entries in _sandbox_entries(raw).items() if key not in dropped}
 
 
 def _sandbox_entries(raw: Mapping[str, Any]) -> dict[str, list[object]]:
