@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.174.0] - 2026-11-25
+
+### Changed
+
+- `docs/design/agent-modes.md` records the Linux half of spec 087's sandbox probe, run on Claude Code 2.1.332 on Ubuntu 24.04, beside the macOS half, with where Linux differs: a refused path reads `No such file or directory` or `Read-only file system` instead of `Operation not permitted`, `gh api` ran, and git warns it can't read `.gitmodules` (#1524)
+- `shipmill status --item --json` carries `"schema": 1`, a `holder` on each condition, and the same `holder`, `via`, `accept`, `why`, `clears`, and `waits_on` as `shipmill queue`'s record of the item; `status --summary` reads the open pull requests' checks in one read rather than one per pull request (spec 094) (#1620)
+
+### Added
+
+- `shipmill queue [--json] [--fleet]` says who holds each open issue and pull request of a gated repo, why, what clears it, what it waits on, and whether it is an opportunity or plan to accept, built from one read of the repo's facts by the same code as `status --item`; holders are finer than `status --summary`'s four lines (waits on people, waits elsewhere, postponed), the JSON carries `"schema": 1`, and `--fleet` reads every gate job on this host one repo at a time, stopping once GitHub's rate limit is reached (spec 094) (#1620)
+
+### Fixed
+
+- The triage skill drops the `postponed` label whenever a postponed issue is decided again as anything but a postpone, not only as implement, so one re-decided as opportunity or feature no longer reads POSTPONED in triage and stays out of product intake (#1630)
+- `shipmill doctor` says when the checkout it reads is behind origin's default branch: a new `checkout` row, after the policy row and before the rows read from the working tree, WARNs with the branch or detached HEAD, how many commits it is behind `origin/<default>`, and the fix, since the workflows, `.github/shipmill.toml`, and `pyproject.toml` rows describe that older commit (#1632)
+
 ## [0.173.1] - 2026-11-25
 
 ### Fixed
@@ -3110,7 +3126,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.173.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.174.0...HEAD
+[0.174.0]: https://github.com/shipmill/shipmill/compare/v0.173.1...v0.174.0
 [0.173.1]: https://github.com/shipmill/shipmill/compare/v0.173.0...v0.173.1
 [0.173.0]: https://github.com/shipmill/shipmill/compare/v0.172.0...v0.173.0
 [0.172.0]: https://github.com/shipmill/shipmill/compare/v0.171.0...v0.172.0
