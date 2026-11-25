@@ -1213,6 +1213,11 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(
             JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: Claude Code's credential was refused", fix)
         )
+    elif last.startswith("PAUSED: disk"):  # spec 095: a full disk starts no session until space is back
+        named = last.rpartition("; fix: ")[2]  # the gate writes its fix last
+        found.append(
+            JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the disk is full", named or _log_fix(job, repo))
+        )
     elif last.startswith("SESSION_DEAD"):  # #500: the gate's sessions end right after they start
         named = last.rpartition("; fix: ")[2]  # the gate writes its fix last, after the log's line
         gates = (

@@ -44,6 +44,13 @@ OWN_NUMBER = re.compile(r"(?<![\w/#])#(\d+)\b")
 GATE_IDLE = "GATE_IDLE"  # watch_state.py's row for an item handed to a session that wrote nothing on it
 GATE_RETRY = "GATE_RETRY"  # spec 089: its row for an item whose session ended error, held by the backoff
 GATE_PAUSED = "GATE_PAUSED"  # spec 089: its row for the credential's pause, which holds every launch
+# what pauses the gate, by a GATE_PAUSED row's subject (spec 089, spec 095)
+PAUSE_CAUSES = {
+    "limit": "a usage limit",
+    "auth": "a refused credential",
+    "github_limit": "GitHub's rate limit",
+    "disk": "a full disk",
+}
 FAILED = frozenset({"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"})
 PENDING = frozenset({"PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"})
 
@@ -389,11 +396,15 @@ def gate_conditions(facts: Facts, number: int, kind: Kind, stage: str | None) ->
     if not work or stage is None or _level(facts, stage).effective is not Autonomy.ACT:
         return []
     paused = next((r for r in facts.rows if r.state == GATE_PAUSED), None)
-    if paused is not None:  # spec 089: the credential's pause holds every launch
-        cause = "a usage limit" if paused.subject == "limit" else "a refused credential"
+    if paused is not None:  # spec 089: the credential's pause holds every launch, spec 095: the host's
+        cause = PAUSE_CAUSES.get(paused.subject, "a refused credential")
         until = paused.detail.partition(": ")[0]  # `until <when>`, its time holding no ": "
-        limit = paused.subject == "limit"
-        who, clears = (Who.EVENT, "the limit's reset") if limit else (Who.MAINTAINER, paused.fix or "a new token")
+        if paused.subject in ("limit", "github_limit"):
+            who, clears = Who.EVENT, "the limit's reset"
+        elif paused.subject == "disk":
+            who, clears = Who.MAINTAINER, paused.fix or "free disk space"
+        else:
+            who, clears = Who.MAINTAINER, paused.fix or "a new token"
         return [Condition(f"the gate starts no session {until}, paused by {cause}", who, clears, held=True)]
     return [Condition("the gate takes it up on a coming tick, in its tier order", Who.AGENT, "the next gate tick")]
 

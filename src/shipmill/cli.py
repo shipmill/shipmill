@@ -408,6 +408,7 @@ from shipmill.github_auth import github_auth
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.handoff_close import hold_close, issue_close
 from shipmill.hooks import HookTest, run_hook, self_test
+from shipmill.host_pause import HostSeams, host_dir, rate_probe
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import (
     ActionsRun,
@@ -1918,6 +1919,11 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         pauses=pauses_dir(os.environ, Path.home()),  # spec 089: shared by every gate on the host
         usage=usage_probe(os.environ, shutil.which("claude", path=os.environ.get("PATH", ""))),
         sandbox=sandbox_for(git, args.slug, Path.home()) if args.sandbox else None,  # spec 087
+        # spec 095: a GitHub limit or a full disk pauses every gate on the host
+        host_seams=HostSeams(
+            host_dir(os.environ, Path.home()),
+            rate_probe(os.environ, shutil.which("gh", path=os.environ.get("PATH", ""))),
+        ),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11

@@ -1,6 +1,6 @@
 # S-095: A session that ended ok after an outside failure records that failure, not idle
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -127,4 +127,13 @@ naming the session, and for `disk` the fix naming the folder.
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+Checked on the build's pull request beside the tests `specs.py coverage --spec 095` lists. The classifier reads the tool results Claude Code writes in stream-json (`user` events' `tool_result` blocks and the result's `permission_denials`); a malformed one fails the tick, as spec 089's events do.
+
+- S-095-1: each cause from a failed tool result or `permission_denials`, the order github_limit, disk, permission, network, spec 089's ends first, the same words in a result that didn't fail or in the assistant's text read as no cause, and a malformed tool result failing fast, in `tests/test_gate_outside_ends.py`
+- S-095-2: the three ends saved and loaded in `handed.json` and read by `watch_state.py`, their hands dropped with no error run kept, and a permission end past `DEAD_STREAK` handed again with no death counted, in `tests/test_gate_outside_ends.py`
+- S-095-3: the host folder under `XDG_STATE_HOME`, a github_limit record with the spent resource's reset, a disk record, the rate read from `gh api rate_limit`'s JSON, and a file shipmill doesn't write refused, in `tests/test_gate_outside_ends.py`
+- S-095-4: PAUSED on every tick of a gate that never launched, and no attempt counted past `DEAD_STREAK` github_limit ends, in `tests/test_gate_outside_ends.py`
+- S-095-5: the probe holding the pause until it shows room, and an unread probe lifting it at its reset or an hour after the end, in `tests/test_gate_outside_ends.py`
+- S-095-6: a disk pause holding below 2 GiB and lifting at it, its PAUSED naming the free space, the floor, and the folder, and `shipmill status` reading it as waiting on you with its fix, in `tests/test_gate_outside_ends.py`
+- S-095-7: one notification per denied tool naming the session, the tool, and the command, a tool-result denial named by its `tool_use`, a recorded tool sending none, a failed send retried, notify off recording without a send, and the gate launching again, in `tests/test_gate_outside_ends.py`
+- S-095-8: `watch_state.py`'s GATE_PAUSED rows for github_limit and disk, a lifted one giving none, and `shipmill status` and `--item` naming the host's pause, in `tests/test_gate_outside_ends.py`

@@ -428,7 +428,12 @@ Agents (all reported, never an action by itself):
                   an auth pause on a token file, `until claude auth status reports a login:
                   ...` on the login. Fix: the token's (`claude setup-token`) or `claude auth
                   login` for auth, none for a limit. A lifted pause, a limit past its time, or
-                  a token file the gate refuses (CLAUDE_AUTH), no row. Where GATE_IDLE is; reported, never an agent's
+                  a token file the gate refuses (CLAUDE_AUTH), no row. Spec 095: the host's
+                  pause too, read from $XDG_STATE_HOME/shipmill/host/<cause>.json: subject
+                  github_limit, detail `until gh api rate_limit shows room, <YYYY-MM-DD HH:MM>
+                  UTC by the clock: ...`, no fix; subject disk, detail `until 2.0 GiB free:
+                  ...`, its fix freeing space. A lifted one, no row. Where GATE_IDLE is;
+                  reported, never an agent's
   GATE_RETRY      spec 089: one row per hand in handed.json an error end's backoff holds,
                   soonest first: subject the hand's key (`<kind> #<N>`, or the item gate.json
                   names for its fingerprint), detail `after <YYYY-MM-DD HH:MM> UTC: <n> error
@@ -5083,7 +5088,8 @@ HANDED = "handed.json"  # shipmill's walk.HANDED: the gate's hands, in its state
 HAND_KEYS = frozenset({"session", "at"})
 PULL_KEYS = frozenset({"head", "rollup"})
 SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")
-ENDS = ("ok", "limit", "auth", "error")  # shipmill's walk.End: how a hand's session ended (spec 089)
+# shipmill's walk.End: how a hand's session ended (spec 089, spec 095)
+ENDS = ("ok", "limit", "auth", "error", "github_limit", "disk", "permission")
 HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})  # walk.HAND_EXTRA; errors and until: the backoff
 
 
@@ -5309,6 +5315,64 @@ def paused_rows(pauses: Path, token: Path, retry: int, now: dt.datetime, named: 
     return [Row("GATE_PAUSED", "auth", f"until the token changes: its token was refused for session {session}", fix)]
 
 
+HOST_PAUSES = Path("shipmill") / "host"  # shipmill's host_pause.host_dir, under $XDG_STATE_HOME
+HOST_CAUSES = ("github_limit", "disk")  # shipmill's host_pause.CAUSES
+HOST_KEYS = frozenset({"cause", "session", "at", "resets_at", "lifted"})  # host_pause.KEYS
+GITHUB_WINDOW_HOURS = 1  # shipmill's host_pause.GITHUB_WINDOW
+DISK_FLOOR_GIB = 2  # shipmill's host_pause.DISK_FLOOR, in GiB
+
+
+def host_record(path: Path, cause: str) -> dict[str, object] | None:
+    """A host pause as shipmill's host_pause.load_host_pause reads it, its times parsed; None
+    without the file; anything else the gate never writes is refused"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise Refused(f"error: {path}: not JSON: {exc}") from None
+    if not isinstance(data, dict) or not {"cause", "session", "at"} <= set(data) <= HOST_KEYS:
+        raise Refused(f"error: {path}: expected cause, session, at, and resets_at and lifted or not")
+    if data["cause"] != cause or not isinstance(data["session"], str):
+        raise Refused(f"error: {path}: cause must be {cause}, and session a string")
+    found: dict[str, object] = {"cause": cause, "session": data["session"]}
+    for key in ("at", "resets_at", "lifted"):
+        if key in data:
+            when = moment_of(data[key])
+            if when is None:
+                raise Refused(f"error: {path}: {key} must be an ISO 8601 time with its offset")
+            found[key] = when.astimezone(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
+    return found
+
+
+def host_paused_rows(folder: Path) -> list[Row]:
+    """Spec 095 (S-095-8): GATE_PAUSED while the host's pause holds, its subject the cause:
+    github_limit until gh api rate_limit shows room, or by the clock at its reset or GitHub's
+    hour after it began; disk until the gate's checkout has the floor free, its fix freeing
+    space. A lifted pause, no row. Reported, never an agent's"""
+    rows = []
+    for cause in HOST_CAUSES:
+        found = host_record(folder / f"{cause}.json", cause)
+        if found is None or "lifted" in found:
+            continue
+        session, at = found["session"], found["at"]
+        if not isinstance(at, dt.datetime):
+            raise Refused(f"error: {folder}: the {cause} pause has no at")
+        if cause == "github_limit":
+            resets = found.get("resets_at")
+            lifts = resets if isinstance(resets, dt.datetime) else at + dt.timedelta(hours=GITHUB_WINDOW_HOURS)
+            detail = (
+                f"until gh api rate_limit shows room, {lifts:%Y-%m-%d %H:%M} UTC by the clock: "
+                f"GitHub's rate limit stopped session {session}"
+            )
+            rows.append(Row("GATE_PAUSED", cause, detail))
+        else:
+            detail = f"until {DISK_FLOOR_GIB}.0 GiB free: no space left on device stopped session {session}"
+            fix = f"free space on the file system holding the gate's checkout, {DISK_FLOOR_GIB} GiB or more"
+            rows.append(Row("GATE_PAUSED", cause, detail, fix))
+    return rows
+
+
 def retry_rows(path: Path, record: Path, now: dt.datetime) -> list[Row]:
     """Spec 089 (S-089-13): one GATE_RETRY row per hand in handed.json its backoff holds, its
     until still ahead, soonest first: the subject the hand's key (an item's fingerprint named
@@ -5369,8 +5433,8 @@ def gate_environ(plist: dict[str, object] | None, environ: Mapping[str, str]) ->
 
 
 def gate_wait_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
-    """GATE_IDLE, then spec 089's GATE_PAUSED for the credential the gate's sessions use and
-    GATE_RETRY for its hands in backoff, from the gate's folder as gate_idle_rows finds it"""
+    """GATE_IDLE, then spec 089's GATE_PAUSED for the credential the gate's sessions use, spec
+    095's for the host, and GATE_RETRY for its hands in backoff, from the gate's folder as gate_idle_rows finds it"""
     plist = gate_plist(repo)
     workdir = plist.get("WorkingDirectory") if plist else None
     folder = gate_folder(repo_dir, workdir if isinstance(workdir, str) else None, gate_home(repo, Path.home()))
@@ -5379,14 +5443,16 @@ def gate_wait_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
         return []
     args = plist.get("ProgramArguments") if plist else None
     job = [str(a) for a in args] if isinstance(args, list) else []
+    pauses = pauses_folder(gate_environ(plist, os.environ), Path.home())
     paused = paused_rows(
-        pauses_folder(gate_environ(plist, os.environ), Path.home()),
+        pauses,
         token_file(job, Path.home()),
         retry_hours(repo_dir),
         now,
         token_named(job),
     )
-    return [*idle_rows(state / HANDED, now), *paused, *retry_rows(state / HANDED, state / "gate.json", now)]
+    hosted = host_paused_rows(pauses.parent.parent / HOST_PAUSES)  # spec 095: the host's, after the credential's
+    return [*idle_rows(state / HANDED, now), *paused, *hosted, *retry_rows(state / HANDED, state / "gate.json", now)]
 
 
 GATE_PREFIX = "dev.shipmill.gate."  # shipmill's launchd.LABEL_PREFIX: each gate job's label and plist name
