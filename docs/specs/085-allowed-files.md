@@ -1,6 +1,6 @@
 # S-085: An agent's pull request lands only with the files its issue allows
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -169,3 +169,19 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 - shipmill/shipmill#1570: S-085-13
 
 ## Verification
+
+Checked against main plus #1600 (which reads a `Proposed plan:` under its `<!-- shipmill:... -->` lines, #1594): `uv run pytest -v tests/test_allowed_files.py tests/test_allowed_files_edited.py tests/test_allowed_files_skills.py -k s085` ran 75 tests, all passed, besides reading the code and prose each criterion names.
+
+- S-085-1: `allowance` in `pr_gate.py` read; a `Triage: **implement**` and a `Proposed plan:` comment, the latter as `autonomy.md` writes it under the needs-decision and zone lines and answered `apply`, give the allowance, `Files:` lines add up, one in a fence adds nothing, the newest counting comment wins, and one without a `Files:` line declares none, in `tests/test_allowed_files.py`; holds
+- S-085-2: a CONTRIBUTOR's, a stranger's, another bot's, and the App's or the maintainer's comment after the PR opened leave the older allowance or none, in `tests/test_allowed_files.py`; holds
+- S-085-3: spec 061's grammar (`src/*.py`, `src/**`, `?`, a trailing `/`), a renamed file's old path, and only a file directly inside the base config's fragments folder covered, in `tests/test_allowed_files.py`; holds
+- S-085-4: the App's ready, green PR changing `src/a.py` and `.github/workflows/ci.yml` exits 5 with `  files: .github/workflows/ci.yml is outside what #12 allows`, and with `src/a.py` and its fragment reads READY, in `tests/test_allowed_files.py`; holds
+- S-085-5: two issues' allowances add up, one declaring none adds nothing, and the line names `#A, #B allow`, in `tests/test_allowed_files.py`; holds
+- S-085-6: more than 20 uncovered paths print 20 lines and `  files: and <k> more outside the allowed files`, in `tests/test_allowed_files.py`; holds
+- S-085-7: a person's PR, a draft, an agent's PR whose issues declare none, and one naming no issue read as before with no `files:` line, in `tests/test_allowed_files.py`, and `files_hold` runs only for an agent's open, non-draft PR in `pr_gate.py`'s main loop; holds
+- S-085-8: a `Files:` line with no backticked, an empty, an absolute, or a `..` path, and a thread cut off at 100 comments with no counting one, read NEEDS_DECISION with their lines, in `tests/test_allowed_files.py`; holds
+- S-085-9: the maintainer's accepting answer lifts the `files:` lines, one not taking the recommended option or a head whose own change differs keeps them, and the App's new verdict after the PR opened lifts nothing, in `tests/test_allowed_files.py`; holds
+- S-085-10: `shipmill gh pr merge 7 --squash` on S-085-4's PR runs no gh and prints `is refused: pr_gate.py reads #7 NEEDS_DECISION` with the `files:` line (`src/shipmill/merge_gate.py`), in `tests/test_allowed_files.py`; holds
+- S-085-11: `comments.md`'s Implement template has `- Files:` with backticked paths and names a build issue's spec file, and `autonomy.md`'s `Proposed plan:` writes backticked paths, read and in `tests/test_allowed_files_skills.py`; holds
+- S-085-12: `implementer-brief.md`, `github-issue-resolve`'s Phase 4, `landing.md`, and `pr_gate.py`'s docstring (the `files:` lines and exit 5) read and in `tests/test_allowed_files_skills.py`; holds
+- S-085-13: a counting comment edited at or after the PR opened holds it with `  files: the allowance on #<n> changed after this pull request opened`, a `Proposed plan:` under its markers included, the answer lifts it, one edited before or never counts, an edited comment that doesn't count holds nothing, and a malformed `lastEditedAt` stops the gate, in `tests/test_allowed_files_edited.py` and `tests/test_allowed_files.py`; holds
