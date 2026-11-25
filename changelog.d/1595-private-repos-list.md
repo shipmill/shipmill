@@ -1,3 +1,0 @@
-### Fixed
-
-- `shipmill gh` now refuses a write to a public repo that names a private repo listed under the new `repos` key of `~/.config/shipmill/private.toml` (`owner/name`, or `owner/*` for a whole owner, in any case), whatever any token reads: a gate session writes with the App's installation token, which reads another installation's private repo as a 404, so the `private-repo` detector caught nothing there; the token's read still adds what it can see, a malformed entry fails every write naming its place, never its text, and `shipmill doctor` warns while the file lists no repos (D-107, S-081-20) (#1595)

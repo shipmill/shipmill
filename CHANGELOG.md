@@ -7,6 +7,23 @@ bot.
 
 ## [Unreleased]
 
+## [0.173.0] - 2026-11-25
+
+### Added
+
+- `shipmill review record` ends the review it posts with a `## Landing` section: the landing level and one line per piece of evidence (`checks`, `size`, `record`, `kind`) that `decide classify --pr N` gives at the recorded head, by origin/HEAD's levels; the verdict's marker stays the body's first line, and when that classify fails, or reads the pull request at another head, `review record` exits 2 and posts nothing. The "Who decides" docs name the `area-record` zone, `[decisions.earned]`, the four pieces of evidence, and the three ceiling kinds (spec 083) (#1549)
+
+### Changed
+
+- `pr_gate.py` carries the maintainer's answer over a rebase that only brought main's changes: when every approved spec the pull request edits passes `specs.py same-approval` between the answered and the judged head, and the change between those heads is exactly main's change between their merge-bases, file by file on the lines `git diff` removes and adds, the answer covers the judged head and the gate prints `accepted: answer carried over from <sha7>: only main's changes since`, lifting every ask but an agent's `files:` lines (D-109); any other difference asks again (S-055-20, D-108) (#1587)
+- The decisions log records D-107 to D-109 from the maintainer's answers: the private terms file names private repositories for the leak check, superseding D-102 (#1595); an answer on a pull request carries over a rebase that only brought main's changes (#1587); an answer given before an agent's pull request opened never widens its files (#1604)
+
+### Fixed
+
+- `shipmill gh` now refuses a write to a public repo that names a private repo listed under the new `repos` key of `~/.config/shipmill/private.toml` (`owner/name`, or `owner/*` for a whole owner, in any case), whatever any token reads: a gate session writes with the App's installation token, which reads another installation's private repo as a 404, so the `private-repo` detector caught nothing there; the token's read still adds what it can see, a malformed entry fails every write naming its place, never its text, and `shipmill doctor` warns while the file lists no repos (D-107, S-081-20) (#1595)
+- `pr_gate.py` no longer lifts an agent's `files:` lines on the maintainer's answer on an issue given before the pull request opened; that answer still lifts the other asks, and only an answer whose question names the judged head, or a head with the same change, lifts a `files:` line (S-085-14, D-109) (#1604)
+- `shipmill spec open` no longer commits a `--with` file, or the spec itself, over a change the default branch gained since the working tree was made: it exits 2 naming the file and asking to rebase first, before anything is written (#1623)
+
 ## [0.172.0] - 2026-11-25
 
 ### Added
@@ -3087,7 +3104,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.172.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.173.0...HEAD
+[0.173.0]: https://github.com/shipmill/shipmill/compare/v0.172.0...v0.173.0
 [0.172.0]: https://github.com/shipmill/shipmill/compare/v0.171.0...v0.172.0
 [0.171.0]: https://github.com/shipmill/shipmill/compare/v0.170.0...v0.171.0
 [0.170.0]: https://github.com/shipmill/shipmill/compare/v0.169.0...v0.170.0
