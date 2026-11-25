@@ -7,6 +7,19 @@ bot.
 
 ## [Unreleased]
 
+## [0.171.0] - 2026-11-25
+
+### Added
+
+- `shipmill status --summary [--json]` says in a few lines whether the gate works (its last tick, the session running now, the last result, the last landed pull request) and who holds the open work: you, the agent, needs attention (a session that ended in error, a paused credential, an idle hand), or nobody, each item counted once from the conditions `status --item` gives it (spec 091) (#1522)
+- `fleet.py queue --order impact` lists what waits on the maintainer by how many open issues each item holds back, most first, then oldest first: one `chains.py impact` walk over every fleet repo gives each row its `holds`, printed on its line and in `--json` with the object's `order`; a walk that fails keeps the oldest-first order, prints `IMPACT_ERROR`, and exits 2. Without `--order` the queue is unchanged. github-ship-watch's Fleet section documents it, and github-issue-triage's Chains section documents `chains.py impact`, `stalled`, and `path` (spec 086) (#1533)
+- `shipmill decide classify` reports the `area-record` zone for a changed path whose area a failed release raised, with the reason `<area> is raised: <tag> failed in <env> (#N), K of M clean releases since`, at the base's `[decisions] area-record` level; it reads the production record only when the base sets `area-record` above `act` or has `[decisions.earned]`, so a repo that sets neither makes no new GitHub read, and a record read that fails exits 2 naming what couldn't be read, so `pr_gate.py` fails closed; `decide record` names the issues or deployments read that failed (spec 083) (#1546)
+
+### Fixed
+
+- `pr_gate.py` reads a `Proposed plan:` written under its `<!-- shipmill:needs-decision -->` and zone lines, as `fix = "propose"` writes it, as the issue's allowed files: the leading `<!-- shipmill:... -->` lines are skipped, so an agent's pull request changing a file outside the plan's `Files:` line is held instead of reading READY (#1594)
+- `shipmill gate` drops a hand whose session ended `limit` or `auth` on every tick, not only on the tick that records the end, so the hands 0.167.0 saved with their end after a capped run of usage limits no longer hold their pull requests until `retry_hours` (#1602)
+
 ## [0.170.0] - 2026-11-25
 
 ### Fixed
@@ -3067,7 +3080,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.170.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.171.0...HEAD
+[0.171.0]: https://github.com/shipmill/shipmill/compare/v0.170.0...v0.171.0
 [0.170.0]: https://github.com/shipmill/shipmill/compare/v0.169.0...v0.170.0
 [0.169.0]: https://github.com/shipmill/shipmill/compare/v0.168.0...v0.169.0
 [0.168.0]: https://github.com/shipmill/shipmill/compare/v0.167.0...v0.168.0
