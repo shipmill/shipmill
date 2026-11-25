@@ -87,7 +87,7 @@
                   in a component, with a read-only token over its product's other repos (D-84).
                   `issue|pr comment <n> --status` writes the item's one status comment, creating
                   it once and editing it after (spec 090)
-  app-create     create the gate's GitHub App in one click: owner and visibility planned from the
+  app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
   app-login       let the App write as you (spec 051): GitHub's device flow for [agents] app_id's App,

@@ -15,7 +15,7 @@ Once a question mentions the maintainer on an item, GitHub emails them every lat
 These stay new comments, since they reach someone or a reader dates them by their place in the thread:
 
 - A `Triage:` verdict with its hold sentences ("On hold: ..."), and a hold line on a pull request
-- A needs-decision question, a decided comment, a relayed decision (`Decision by`), and a veto-handled comment
+- A needs-decision question, a decided comment, a relayed decision (`Decision by`), and a veto's take-up
 - A hand-off, a still-waits, check-waiting, check-failed, or verified comment, and a close-confirmed comment
 - The final result: the item is done (a fix merged, a check holds, a parent or report closes as done), closed (as not planned, won't fix, duplicate, or stale), or a pull request is refused
 

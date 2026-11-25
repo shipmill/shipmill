@@ -29,7 +29,7 @@ def test_s090_8_comments_md_has_a_status_comment_section_listing_what_stays_new(
         "needs-decision question",
         "decided comment",
         "relayed decision (`Decision by`)",
-        "veto-handled comment",
+        "a veto's take-up",  # S-030-21 keeps the veto-handled marker's name in needs-decision.md alone
         "hand-off",
         "still-waits",
         "check-waiting",
