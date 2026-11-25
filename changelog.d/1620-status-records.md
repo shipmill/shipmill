@@ -1,7 +1,7 @@
 ### Added
 
-- `shipmill status --summary --json` lists each open issue and pull request with its holder, why, what clears it, what it waits on, and whether it is an opportunity or plan to accept, built by the same code as `status --item --json`, which now carries the same fields; `status --summary --host [--json]` summarizes every gate job's repo on this host from its checkout, so tools read one JSON instead of parsing the text or the gate's files (spec 094) (#1620)
+- `shipmill queue [--json] [--fleet]` says who holds each open issue and pull request of a gated repo, why, what clears it, what it waits on, and whether it is an opportunity or plan to accept, built from one read of the repo's facts by the same code as `status --item`; holders are finer than `status --summary`'s four lines (waits on people, waits elsewhere, postponed), the JSON carries `"schema": 1`, and `--fleet` reads every gate job on this host one repo at a time, stopping once GitHub's rate limit is reached (spec 094) (#1620)
 
 ### Changed
 
-- `shipmill status --summary` splits "waits on nobody" into waits on people (an assignee, the reporter), waits elsewhere (another repo's item, an upstream report, labelled blocked), postponed (postponed, or a parent moving through its children), and nobody; its JSON and `status --item --json` carry `"schema": 1`, and each condition its `holder` (spec 094) (#1620)
+- `shipmill status --item --json` carries `"schema": 1`, a `holder` on each condition, and the same `holder`, `via`, `accept`, `why`, `clears`, and `waits_on` as `shipmill queue`'s record of the item; `status --summary` reads the open pull requests' checks in one read rather than one per pull request (spec 094) (#1620)

@@ -1,6 +1,6 @@
-"""Spec 094: one record per open item in `status --summary --json`, from the same code as
-`status --item --json`, with finer holders, a schema version, and a fleet form over this
-host's gate jobs"""
+"""Spec 094: `shipmill queue`, one record per open item from one read of the repo's facts, by
+the same code as `status --item --json`, with finer holders, a schema version, and a fleet
+form over this host's gate jobs read one at a time"""
 
 import json
 import plistlib
@@ -13,11 +13,13 @@ from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.item_status import Condition, Holder, Who
 from shipmill.launchd import label
+from shipmill.queue import Item, items, own_holder
 from shipmill.status import Facts, Issue, Pull, Row
-from shipmill.status_summary import Item, items, own_holder
-from tests.test_status_item import NONE, OPEN
+from shipmill.status_summary import Holder as SummaryHolder
+from shipmill.status_summary import split
+from tests.test_status_item import NONE, OPEN, WRITES
 from tests.test_status_picture import REPO, facts, host, repo_with_release
-from tests.test_status_summary import SummaryFake, configured, run_summary
+from tests.test_status_summary import SummaryFake, configured
 
 OTHER = "other/lib"
 
@@ -43,13 +45,23 @@ class LinkedFake(SummaryFake):
         return super().__call__(cmd)
 
 
+def run_queue(root: Path, capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, SummaryFake]:
+    fake = SummaryFake()
+    code = main(["--repo", str(root), "queue", *args], state=fake, login=host)
+    return code, capsys.readouterr().out, fake
+
+
 def test_s094_1_every_open_item_has_one_record_on_its_split_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = configured(repo_with_release(tmp_path / "repo"))
-    code, out, _ = run_summary(root, capsys, "--json")
+    code, out, _ = run_queue(root, capsys, "--json")
     found = json.loads(out)
-    assert code == 0 and [i["number"] for i in found["items"]] == sorted(OPEN)
+    assert code == 0 and out.count("\n") == 1
+    assert list(found) == ["schema", "repo", "totals", "split", "items"]  # S-094-9: the schema first
+    assert found["schema"] == 1 and found["repo"] == REPO and found["totals"] == {"issues": 1, "pulls": 1}
+    assert list(found["split"]) == ["maintainer", "agent", "attention", "people", "elsewhere", "postponed", "nobody"]
+    assert [i["number"] for i in found["items"]] == sorted(OPEN)
     keys = {"number", "kind", "holder", "via", "accept", "why", "clears", "waits_on", "conditions"}
     assert all(set(i) == keys for i in found["items"])
     for record in found["items"]:
@@ -147,15 +159,46 @@ def test_s094_6_opportunities_and_plans_are_marked_to_accept() -> None:
     assert got[3].accept is None and got[4].accept is None
 
 
-def test_s094_8_item_json_agrees_with_the_summarys_record(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_s094_7_the_text_names_each_item_under_its_holder(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = configured(repo_with_release(tmp_path / "repo"))
-    main(["--repo", str(root), "status", "--summary", "--json"], state=LinkedFake(), login=host)
+    code, out, _ = run_queue(root, capsys)
+    assert code == 0
+    assert out.splitlines() == [
+        f"{REPO}: 1 open issue, 1 pull request",
+        "  waits on you",
+        "    #4 issue: triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
+        " (clears: accept or decline the opportunity)",
+        "  agent takes it",
+        "    #9 pull: check check failed (clears: a session fixes the cause or reruns a flake)",
+        "  needs attention: none",
+        "  waits on people: none",
+        "  waits elsewhere: none",
+        "  postponed: none",
+        "  waits on nobody: none",
+    ]
+
+
+def test_s094_10_one_read_of_the_facts_and_no_read_per_item(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    _, _, fake = run_queue(root, capsys, "--json")
+    gh = [c for c in fake.seen if c[0] == "gh"]
+    detail = ["gh", "pr", "list", "-R", REPO, "--json", "number,statusCheckRollup,reviewDecision,labels", "-L", "1000"]
+    assert gh.count(detail) == 1
+    assert not any(c[1:3] == ["pr", "view"] for c in gh)  # no read per item
+    assert not any(c[1:3] == ["api", f"repos/{REPO}/issues/4"] for c in gh)
+    assert not any(set(c) & WRITES for c in gh)
+    assert not any(Path(c[0]).name == "shipmill" or c[1:2] == ["gh"] for c in fake.seen)  # no shipmill gh
+
+
+def test_s094_8_item_json_agrees_with_the_queues_record(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    main(["--repo", str(root), "queue", "--json"], state=LinkedFake(), login=host)
     summary = {i["number"]: i for i in json.loads(capsys.readouterr().out)["items"]}
     assert summary[2]["via"] == 9  # counts with its pull request
     for number in (2, 4, 9):
         main(["--repo", str(root), "status", "--item", str(number), "--json"], state=LinkedFake(), login=host)
         item = json.loads(capsys.readouterr().out)
-        assert item["schema"] == 1  # S-094-9
+        assert next(iter(item)) == "schema" and item["schema"] == 1  # S-094-9
         assert {k: item[k] for k in summary[number] if k != "number"} == {
             k: v for k, v in summary[number].items() if k != "number"
         }
@@ -190,7 +233,7 @@ def test_s094_8_item_json_reads_the_rows_of_the_items_it_counts_with(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = configured(repo_with_release(tmp_path / "repo"))
-    main(["--repo", str(root), "status", "--summary", "--json"], state=RetryFake(), login=host)
+    main(["--repo", str(root), "queue", "--json"], state=RetryFake(), login=host)
     summary = {i["number"]: i for i in json.loads(capsys.readouterr().out)["items"]}
     assert summary[2]["holder"] == "attention" and summary[2]["via"] == 9
     fake = RetryFake()
@@ -213,12 +256,28 @@ def gate_job(home: Path, repo: str, checkout: Path) -> None:
     (agents / f"{label(repo)}.plist").write_bytes(plistlib.dumps(job))
 
 
-def run_fleet(home: Path, capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str]:
-    code = main(["status", "--summary", "--host", *args], state=SummaryFake(), login=host, home=home)
+def run_fleet(
+    home: Path, capsys: pytest.CaptureFixture[str], *args: str, fake: SummaryFake | None = None
+) -> tuple[int, str]:
+    code = main(["queue", "--fleet", *args], state=fake or SummaryFake(), login=host, home=home)
     return code, capsys.readouterr().out
 
 
-def test_s094_10_the_fleet_form_summarizes_every_gate_job(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+class LimitedFake(SummaryFake):
+    """SummaryFake's picture, whose reads of one repo GitHub refuses for its rate limit"""
+
+    def __init__(self, limited: str) -> None:
+        super().__init__()
+        self.limited = limited
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "gh" and self.limited in cmd:
+            self.seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "GraphQL: API rate limit already exceeded for user ID 1.\n")
+        return super().__call__(cmd)
+
+
+def test_s094_11_the_fleet_form_reads_every_gate_job(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = tmp_path / "home"
     gate_job(home, REPO, configured(repo_with_release(tmp_path / "web")))
     gate_job(home, "acme/api", configured(repo_with_release(tmp_path / "api", "acme/api")))
@@ -226,7 +285,7 @@ def test_s094_10_the_fleet_form_summarizes_every_gate_job(tmp_path: Path, capsys
     found = json.loads(out)
     assert code == 0 and out.count("\n") == 1
     assert found["schema"] == 1 and [r["repo"] for r in found["repos"]] == ["acme/api", REPO]  # plist order
-    assert all(set(r) == {"schema", "repo", "gate", "totals", "split", "items"} for r in found["repos"])
+    assert all(list(r) == ["schema", "repo", "totals", "split", "items"] for r in found["repos"])
     code, text = run_fleet(home, capsys)
     assert code == 0 and text.startswith("acme/api: 1 open issue") and f"\n\n{REPO}: 1 open issue" in text
     empty = tmp_path / "nobody"
@@ -234,7 +293,7 @@ def test_s094_10_the_fleet_form_summarizes_every_gate_job(tmp_path: Path, capsys
     assert run_fleet(empty, capsys) == (0, "no gate job on this host\n")
 
 
-def test_s094_11_a_failed_repo_is_its_entry_and_the_rest_print(
+def test_s094_12_a_failed_repo_is_its_entry_and_the_rest_print(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = tmp_path / "home"
@@ -249,9 +308,33 @@ def test_s094_11_a_failed_repo_is_its_entry_and_the_rest_print(
     assert code == 2 and text.startswith("acme/api: unread: ") and f"{REPO}: 1 open issue" in text
 
 
-@pytest.mark.parametrize("args", [["--host"], ["--host", "--json"], ["--summary", "--host", REPO]])
-def test_s094_11_host_without_summary_or_with_a_repo_exits_2(tmp_path: Path, args: list[str]) -> None:
+def test_s094_12_a_rate_limit_stops_the_fleet_read(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = tmp_path / "home"
+    gate_job(home, "acme/api", configured(repo_with_release(tmp_path / "api", "acme/api")))
+    gate_job(home, "acme/cli", configured(repo_with_release(tmp_path / "cli", "acme/cli")))
+    gate_job(home, REPO, configured(repo_with_release(tmp_path / "web")))
+    fake = LimitedFake("acme/api")
+    code, out = run_fleet(home, capsys, "--json", fake=fake)
+    api, cli, web = json.loads(out)["repos"]
+    assert code == 2 and "rate limit" in str(api["error"])
+    for entry, repo in ((cli, "acme/cli"), (web, REPO)):
+        assert entry == {
+            "schema": 1,
+            "repo": repo,
+            "error": "not read: GitHub's rate limit was reached on an earlier repo",
+        }
+    assert not any(repo in c for c in fake.seen for repo in ("acme/cli", REPO))  # nothing of theirs was read
+
+
+def test_s094_12_fleet_with_a_repo_exits_2(tmp_path: Path) -> None:
     fake = SummaryFake()
-    with pytest.raises(ReleaseError, match="--host reads every gate job on this host"):
-        main(["status", *args], state=fake, login=host, home=tmp_path)
+    with pytest.raises(ReleaseError, match="--fleet reads every gate job on this host"):
+        main(["queue", "--fleet", REPO], state=fake, login=host, home=tmp_path)
     assert fake.seen == []
+
+
+def test_s094_13_the_summary_keeps_its_four_lines_and_folds_the_finer_holders() -> None:
+    issues = [Issue(1, "WITH_PERSON", assignees=("amy",)), Issue(2, "UPSTREAM"), Issue(3, "POSTPONED")]
+    found = facts(issues=issues)
+    assert {records(found)[n].holder for n in (1, 2, 3)} == {Holder.PEOPLE, Holder.ELSEWHERE, Holder.POSTPONED}
+    assert split(found, lambda _: NONE, None).issues == {SummaryHolder.NOBODY: (1, 2, 3)}

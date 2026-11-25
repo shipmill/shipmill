@@ -86,6 +86,9 @@ class Fake:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(line) + "\n", "")
         if cmd[:3] == ["gh", "pr", "list"]:
             pull = {"number": 9, "isDraft": False, "mergeStateStatus": "UNSTABLE", "baseRefName": "main", "labels": []}
+            if "statusCheckRollup" in cmd[cmd.index("--json") + 1]:  # S-094-10: the checks of every pull request
+                rollup = [{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+                pull = {"number": 9, "statusCheckRollup": rollup, "reviewDecision": "", "labels": []}
             return subprocess.CompletedProcess(cmd, 0, json.dumps([pull]), "")
         if cmd[:3] == ["gh", "pr", "view"]:
             rollup = [{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"}]

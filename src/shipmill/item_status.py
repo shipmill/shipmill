@@ -9,6 +9,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from shipmill.autonomy import HOLD_LABEL, Autonomy, Source, StageKind, StageLevel
 from shipmill.config import CONFIG_PATH
@@ -133,7 +134,10 @@ class PullDetail:
 
 
 def parse_pull_detail(text: str) -> PullDetail:
-    raw = json.loads(text)
+    return pull_detail(json.loads(text))
+
+
+def pull_detail(raw: dict[str, Any]) -> PullDetail:
     checks = []
     for c in raw.get("statusCheckRollup") or ():
         if c.get("__typename") == "StatusContext":
@@ -143,6 +147,13 @@ def parse_pull_detail(text: str) -> PullDetail:
             checks.append(Check(str(c["name"]), conclusion if status == "COMPLETED" else status or "PENDING"))
     labels = tuple(str(label["name"]) for label in raw.get("labels") or ())
     return PullDetail(tuple(checks), str(raw.get("reviewDecision") or ""), labels)
+
+
+def read_pull_details(repo: str, run: StateRunner) -> dict[int, PullDetail]:
+    """S-094-10: every open pull request's checks, review decision, and labels in one read"""
+    fields = "number,statusCheckRollup,reviewDecision,labels"
+    cmd = ["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "1000"]
+    return {int(p["number"]): pull_detail(p) for p in json.loads(gh_read(cmd, run, "gh pr list (checks and reviews)"))}
 
 
 def read_pull_detail(repo: str, number: int, run: StateRunner) -> PullDetail:

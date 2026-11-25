@@ -1,19 +1,20 @@
 """Spec 091: the repo's status in a few lines. `shipmill status --summary` prints the gate's
 state from its state directory (tick.json, gate.json, last-result.json) and the default
 branch's last landed pull request, the totals of open issues and pull requests, and each open
-item on one of four lines by who holds it. The split is read from the conditions
+item on one of four lines by who holds it, folded from spec 094's records (`shipmill queue`).
+The split is read from the conditions
 `status --item` gives each item (spec 088), and through them from watch_state.py's GATE_RETRY,
 GATE_PAUSED, and GATE_IDLE rows, which come from the gate's hand-off record, handed.json
-(spec 046, D-87, spec 089). It only reads (S-091-9). Spec 094 adds one record per open item,
-its holder, why, and what clears it, from finer holders, and a schema version."""
+(spec 046, D-87, spec 089). It only reads (S-091-9)."""
 
 import datetime as dt
 import json
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
+from shipmill import queue
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
@@ -28,113 +29,61 @@ from shipmill.gate import (
     load_launch,
     load_tick,
 )
-from shipmill.item_status import CHILDREN, WAIT, Condition, Holder, Kind, PullDetail, Ref, explain
+from shipmill.item_status import Condition, Kind, PullDetail
+from shipmill.item_status import Holder as ItemHolder
 from shipmill.land_window import LandWindow
-from shipmill.status import CHECK_FAILURES, CLOSED_STATES, Facts, Issue, ago, first_line, gh_read
+from shipmill.queue import linked as linked
+from shipmill.status import CHECK_FAILURES, CLOSED_STATES, Facts, ago, first_line, gh_read
 from shipmill.walk import HISTORY, LANDED, Landed, last_landed
 
-SCHEMA = 1  # S-094-9: raised by a change that removes or renames a key, or changes a value's meaning
-# S-091-5, S-091-6, S-094-5: an item counts on the first of these that holds
-PRECEDENCE = (
-    Holder.ATTENTION,
-    Holder.MAINTAINER,
-    Holder.AGENT,
-    Holder.PEOPLE,
-    Holder.ELSEWHERE,
-    Holder.POSTPONED,
-    Holder.NOBODY,
-)
-# S-091-1, S-094-7: the lines in the order they print, with their labels
+
+class Holder(StrEnum):
+    """Who holds an open item, one of the summary's four lines (spec 091)"""
+
+    MAINTAINER = "maintainer"
+    AGENT = "agent"
+    ATTENTION = "attention"
+    NOBODY = "nobody"
+
+
+# S-091-5, S-091-6: an item counts on the first of these that holds
+PRECEDENCE = (Holder.ATTENTION, Holder.MAINTAINER, Holder.AGENT, Holder.NOBODY)
+# S-091-1: the lines in the order they print, with their labels
 LINES = (
     (Holder.MAINTAINER, "waits on you"),
     (Holder.AGENT, "agent takes it"),
     (Holder.ATTENTION, "needs attention"),
-    (Holder.PEOPLE, "waits on people"),
-    (Holder.ELSEWHERE, "waits elsewhere"),
-    (Holder.POSTPONED, "postponed"),
     (Holder.NOBODY, "waits on nobody"),
 )
-ACCEPTS = frozenset({"opportunity", "plan"})  # S-094-6: verdicts the maintainer accepts or declines
 WIDTH = max(len(label) for _, label in LINES)
 RUNS = frozenset({Action.RUNNING.value, Action.STALLED.value})  # tick.json names the session it waits on
 LAUNCHES = frozenset({Action.LAUNCH.value, Action.SESSION_DEAD.value})  # gate.json names the session it started
-LINKED_STATES = frozenset({"IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD"})  # its open pull requests, as --item reads
-OPEN_PULL = re.compile(r"(?<![\w/])#(\d+):(?:open|draft)\b")
-DONE = frozenset({"closed", "merged", "not_planned"})
 SESSION_SHOWN = 8  # a session id's first characters on the text line
 
 
+# S-094-13: the finer holders of spec 094 count on the four lines; a person, another repo, or a
+# postponement is outside the factory, as spec 091's waits on nobody
+FOLD = {
+    ItemHolder.ATTENTION: Holder.ATTENTION,
+    ItemHolder.MAINTAINER: Holder.MAINTAINER,
+    ItemHolder.AGENT: Holder.AGENT,
+    ItemHolder.PEOPLE: Holder.NOBODY,
+    ItemHolder.ELSEWHERE: Holder.NOBODY,
+    ItemHolder.POSTPONED: Holder.NOBODY,
+    ItemHolder.NOBODY: Holder.NOBODY,
+}
+
+
 def own_holder(conditions: Sequence[Condition]) -> Holder:
-    """S-091-5, S-091-6, S-094-5: the first holder in PRECEDENCE among its conditions'; nobody
-    for none"""
-    return min((c.holder for c in conditions), key=PRECEDENCE.index, default=Holder.NOBODY)
-
-
-def linked(repo: str, issue: Issue, opened: frozenset[int]) -> tuple[int, ...]:
-    """S-091-7: the open items of the repo the issue counts with: its open pull requests
-    (IN_PROGRESS, AGENT_DRAFT) or the open items it waits on (BLOCKED), as --item names them; a
-    parent moving through its children counts by its own conditions alone (S-094-5)"""
-    found: list[int] = []
-    if issue.state in LINKED_STATES:
-        found = [int(n) for n in OPEN_PULL.findall(issue.note)]
-    elif issue.state == "BLOCKED" and not issue.note.startswith(CHILDREN):
-        for w in WAIT.finditer(issue.note):
-            own, _, number = w["ref"].rpartition("#")
-            if own.casefold() == repo.casefold() and w["state"].lower() not in DONE:
-                found.append(int(number))
-    return tuple(dict.fromkeys(n for n in found if n in opened and n != issue.number))
-
-
-def waits_on(repo: str, issue: Issue) -> tuple[str, ...]:
-    """S-094-3: the not-closed targets of a BLOCKED note, of this repo or another, and the open
-    pull requests of an IN_PROGRESS or AGENT_DRAFT note, as owner/name#N"""
-    if issue.state in LINKED_STATES:
-        found = [f"{repo}#{n}" for n in OPEN_PULL.findall(issue.note)]
-    elif issue.state == "BLOCKED":
-        found = [w["ref"] for w in WAIT.finditer(issue.note) if w["state"].lower() not in DONE]
-    else:
-        found = []
-    return tuple(dict.fromkeys(found))
+    """S-091-5, S-091-6: attention when the gate's record holds it, else the maintainer, else
+    an agent, else nobody (a person or an event), folded from queue's holder (S-094-13)"""
+    return FOLD[queue.own_holder(conditions)]
 
 
 def resolve(own: Mapping[int, Holder], links: Mapping[int, tuple[int, ...]]) -> dict[int, Holder]:
-    """S-091-7: each item's line"""
-    return {n: holder for n, (holder, _) in placed(own, links).items()}
-
-
-def placed(own: Mapping[int, Holder], links: Mapping[int, tuple[int, ...]]) -> dict[int, tuple[Holder, int | None]]:
-    """S-091-7, S-094-2: each item's line, the first in PRECEDENCE among its own and its links'
-    lines, and the link it took it from (None for its own, which wins a tie); an item on a
-    cycle of links counts by its own conditions alone, so every walk ends"""
-
-    def reaches(start: int) -> bool:
-        seen: set[int] = set()
-        todo = list(links.get(start, ()))
-        while todo:
-            n = todo.pop()
-            if n == start:
-                return True
-            if n not in seen:
-                seen.add(n)
-                todo.extend(links.get(n, ()))
-        return False
-
-    looped = {n for n in own if reaches(n)}
-    found: dict[int, tuple[Holder, int | None]] = {}
-
-    def line(n: int) -> Holder:
-        if n not in found:
-            best: tuple[Holder, int | None] = (own[n], None)
-            for m in () if n in looped else links.get(n, ()):
-                theirs = line(m)
-                if PRECEDENCE.index(theirs) < PRECEDENCE.index(best[0]):
-                    best = (theirs, m)
-            found[n] = best
-        return found[n][0]
-
-    for n in own:
-        line(n)
-    return found
+    """S-091-7: each item's line, the first in PRECEDENCE among its own and its links' lines;
+    an item on a cycle of links counts by its own conditions alone, so every walk ends"""
+    return {n: holder for n, (holder, _) in queue.placed(own, links, PRECEDENCE).items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,104 +97,17 @@ class Split:
         return {h.value: {"issues": list(self.issues.get(h, ())), "pulls": list(self.pulls.get(h, ()))} for h in Holder}
 
 
-@dataclass(frozen=True, slots=True)
-class Item:
-    """S-094-1: one open item's record: its line, the link it took it from, what it waits on,
-    and the condition that places it"""
-
-    number: int
-    kind: Kind
-    holder: Holder
-    via: int | None
-    accept: str | None
-    why: str
-    clears: str
-    waits_on: tuple[str, ...]
-    conditions: tuple[Condition, ...]
-
-    def placing(self) -> dict[str, object]:
-        """S-094-8: the keys --item adds to its explanation, the same as the summary's"""
-        return {
-            "holder": self.holder.value,
-            "via": self.via,
-            "accept": self.accept,
-            "why": self.why,
-            "clears": self.clears,
-            "waits_on": list(self.waits_on),
-        }
-
-    def record(self) -> dict[str, object]:
-        return {
-            "number": self.number,
-            "kind": self.kind.value,
-            **self.placing(),
-            "conditions": [c.record() for c in self.conditions],
-        }
-
-
-def items(
-    facts: Facts,
-    read_detail: Callable[[int], PullDetail],
-    window: LandWindow | None,
-    start: Sequence[int] | None = None,
-) -> dict[int, Item]:
-    """S-094-1, S-094-2, S-094-8: the records of the open items from start (every open item
-    when None) and of the open items of the repo they count with, by number; --item and the
-    summary both build theirs here"""
-    issues = {i.number: i for i in facts.issues if i.state not in CLOSED_STATES and not i.closed}
-    kinds = {n: Kind.ISSUE for n in issues} | {p.number: Kind.PULL for p in facts.pulls}
-    opened = frozenset(kinds)
-    links = {n: linked(facts.repo, i, opened) for n, i in issues.items()}
-    todo = list(kinds if start is None else start)
-    conditions: dict[int, tuple[Condition, ...]] = {}
-    while todo:  # the closure over links, each item explained once
-        n = todo.pop()
-        if n not in conditions:
-            conditions[n] = explain(facts, Ref(str(n), n, kinds.get(n)), read_detail, window).conditions
-            todo.extend(links.get(n, ()))
-    own = {n: own_holder(found) for n, found in conditions.items()}
-    lines = placed(own, {n: links.get(n, ()) for n in conditions})
-
-    def deciding(n: int) -> Condition:
-        holder, via = lines[n]
-        if via is not None:
-            return deciding(via)
-        return next(c for c in conditions[n] if c.holder is holder)
-
-    found = {}
-    for n in sorted(conditions):
-        holder, via = lines[n]
-        issue = issues.get(n)
-        verdict = None if issue is None or issue.state != "TRIAGED" else issue.verdict
-        decided = deciding(n)
-        found[n] = Item(
-            n,
-            kinds[n],
-            holder,
-            via,
-            verdict if verdict in ACCEPTS else None,
-            decided.reason,
-            decided.clears,
-            () if issue is None else waits_on(facts.repo, issue),
-            conditions[n],
-        )
-    return found
-
-
-def split_of(found: Mapping[int, Item]) -> Split:
+def split(facts: Facts, read_detail: Callable[[int], PullDetail], window: LandWindow | None) -> Split:
+    """S-091-4 to S-091-7: every open issue and pull request on exactly one line, from the
+    records queue builds, each holder folded onto its line (S-094-13)"""
     by_issue: dict[Holder, list[int]] = {}
     by_pull: dict[Holder, list[int]] = {}
-    for n, item in found.items():
-        (by_issue if item.kind is Kind.ISSUE else by_pull).setdefault(item.holder, []).append(n)
+    for n, item in queue.items(facts, read_detail, window).items():
+        (by_issue if item.kind is Kind.ISSUE else by_pull).setdefault(FOLD[item.holder], []).append(n)
     return Split(
         {h: tuple(sorted(ns)) for h, ns in by_issue.items()},
         {h: tuple(sorted(ns)) for h, ns in by_pull.items()},
     )
-
-
-def split(facts: Facts, read_detail: Callable[[int], PullDetail], window: LandWindow | None) -> Split:
-    """S-091-4 to S-091-7: every open issue and pull request on exactly one line"""
-    return split_of(items(facts, read_detail, window))
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,7 +233,6 @@ class Summary:
     issues: int
     pulls: int
     split: Split
-    items: tuple[Item, ...] = ()
 
     def text(self, now: dt.datetime) -> str:
         lines = [f"{self.repo}: {counted(self.issues, 'open issue')}, {counted(self.pulls, 'pull request')}"]
@@ -384,12 +245,10 @@ class Summary:
 
     def record(self) -> dict[str, object]:
         return {
-            "schema": SCHEMA,
             "repo": self.repo,
             "gate": self.gate.record(),
             "totals": {"issues": self.issues, "pulls": self.pulls},
             "split": self.split.record(),
-            "items": [i.record() for i in self.items],
         }
 
 
@@ -397,6 +256,6 @@ def counted(count: int, what: str) -> str:
     return f"{count} {what}{'' if count == 1 else 's'}"
 
 
-def summarize(facts: Facts, gate: GateState, found: Mapping[int, Item]) -> Summary:
+def summarize(facts: Facts, gate: GateState, found: Split) -> Summary:
     issues = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
-    return Summary(facts.repo, gate, issues, len(facts.pulls), split_of(found), tuple(found.values()))
+    return Summary(facts.repo, gate, issues, len(facts.pulls), found)
