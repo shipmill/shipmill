@@ -10,8 +10,9 @@ another file or turns a detector off. Three detectors refuse:
   private file's `secret_files`, in any repo
 - `secret-format`: a known token format, in any repo, and each finding of `gitleaks` 8.19 or
   newer when it is on PATH, run with its default rules only (S-081-7)
-- `private-repo`: an `owner/name` reference the token at hand reads as private, in a
-  `shipmill gh` write to a public repo, with or without the private file (S-081-18, D-102)
+- `private-repo`: an `owner/name` reference the private file's `repos` lists (S-081-20, D-107),
+  or that the token at hand reads as private, with or without the private file (S-081-18), in a
+  `shipmill gh` write to a public repo
 
 In a checkout whose config has `[agents]`, a `shipmill gh` write to a public repo is refused
 while the private file is missing (S-081-19, D-102), `missing_private`'s refusal.
@@ -48,7 +49,7 @@ TERM_MIN = 3  # a term's least length, trimmed
 SECRET_MIN = 8  # a secret value's least length, and a URL password's
 SHOWN_PREFIX = 4  # a format's characters a finding may name
 LISTED = 10  # the findings a refusal names before `and N more`
-_KEYS = frozenset({"terms", "secret_files"})
+_KEYS = frozenset({"terms", "secret_files", "repos"})
 # a dotenv name holding one of these, in any case, gives a secret
 _SECRET_WORDS = (
     "KEY",
@@ -102,24 +103,27 @@ class Term:
 
 @dataclass(frozen=True, slots=True)
 class Private:
-    """The private file as loaded: where it is, whether it exists, its terms, and the secret
-    files it names (`~` expanded), each kept with its path as written for the findings"""
+    """The private file as loaded: where it is, whether it exists, its terms, the secret files
+    it names (`~` expanded), each kept with its path as written for the findings, and the
+    private repos it lists (S-081-20)"""
 
     path: Path
     present: bool
     terms: tuple[Term, ...]
     secret_files: tuple[tuple[str, Path], ...]
+    repos: tuple[ListedRepo, ...]
 
     @classmethod
     def load(cls, home: Path) -> Private:
         """The private file under home; one with no file holds nothing. An unknown key (by its
-        line), a wrong type (by its key), a term under 3 characters, or a file that isn't TOML
-        exits 2 naming the file (Q-1)"""
+        line), a wrong type (by its key), a term under 3 characters, a repos entry that isn't
+        owner/name or owner/* (by its place), or a file that isn't TOML exits 2 naming the file
+        (Q-1)"""
         path = home / PRIVATE_FILE
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
-            return cls(path, False, (), ())
+            return cls(path, False, (), (), ())
         except OSError as exc:
             raise ReleaseError(
                 f"{path} can't be read ({exc.strerror}); the leak check reads it before any write"
@@ -139,7 +143,7 @@ class Private:
         if set(data) - _KEYS:
             raise ReleaseError(
                 f"{path} has an unknown key at line {_unknown_line(text)}; "
-                "it takes only terms and secret_files (spec 081)"
+                "it takes only terms, secret_files, and repos (spec 081)"
             )
         listed = _strings(data, "terms", path)
         short = next((text for text in listed if len(text.strip()) < TERM_MIN), None)
@@ -150,11 +154,19 @@ class Private:
             )
         terms = tuple(Term.of(text.strip()) for text in listed)
         files = tuple((given, _expanded(given, home)) for given in _strings(data, "secret_files", path))
-        return cls(path, True, terms, files)
+        repos: list[ListedRepo] = []
+        for place, given in enumerate(_strings(data, "repos", path), 1):
+            entry = ListedRepo.of(given)
+            if entry is None:  # named by its place, never its text, which is a private name
+                raise ReleaseError(
+                    f"{path}'s repos holds an entry that isn't owner/name or owner/* (entry {place}); {refuses}"
+                )
+            repos.append(entry)
+        return cls(path, True, terms, files, tuple(repos))
 
 
 def _unknown_line(text: str) -> int:
-    """The line of text's first top-level key outside terms and secret_files: a table header's
+    """The line of text's first top-level key outside terms, secret_files, and repos: a table header's
     first part or a root key's. tomllib gives no positions, so this scans text, which has
     already parsed, statement by statement, stepping over strings, comments, and arrays"""
     position, line, root = 0, 1, True
@@ -718,13 +730,53 @@ def references(texts: Sequence[Text], own: str | None) -> list[str]:
     return found
 
 
+_LISTED_REPO = re.compile(rf"({_OWNER})/(\*|{_NAME})")
+
+
+@dataclass(frozen=True, slots=True)
+class ListedRepo:
+    """A repo the private file's repos key lists as private (S-081-20, D-107): an owner and a
+    name, or an owner alone (`owner/*`) for every repo of it, both lowercased, since GitHub
+    reads them case-insensitively"""
+
+    owner: str
+    name: str | None  # None: every repo of owner
+
+    @classmethod
+    def of(cls, text: str) -> ListedRepo | None:
+        """text as an `owner/name` or `owner/*` entry; None when it is neither. The name is read as
+        `_references` reads a reference's, a trailing `.` and `.git` dropped, so an entry written
+        `owner/name.git` still matches"""
+        matched = _LISTED_REPO.fullmatch(text)
+        if matched is None:
+            return None
+        given = matched.group(2)
+        name = given.rstrip(".").removesuffix(".git") if given != "*" else given
+        if name in ("", ".", ".."):
+            return None
+        return cls(matched.group(1).lower(), None if name == "*" else name.lower())
+
+    def covers(self, repo: str) -> bool:
+        """Whether this entry lists repo, an owner/name reference, in any case"""
+        owner, _, name = repo.lower().partition("/")
+        return owner == self.owner and self.name in (None, name)
+
+
 def private_repos(
-    texts: Sequence[Text], named: Sequence[str], visibility: Callable[[str], Visibility | None]
+    texts: Sequence[Text],
+    named: Sequence[str],
+    visibility: Callable[[str], Visibility | None],
+    listed: Sequence[ListedRepo],
 ) -> list[Finding]:
-    """S-081-18, D-102: a `private-repo` finding at each reference in texts to a repo of named
-    whose visibility reads private or internal, each read once; a read that fails or says
-    something else counts as no private repo"""
-    hidden = {repo.lower() for repo in named if visibility(repo) in (Visibility.PRIVATE, Visibility.INTERNAL)}
+    """S-081-18, S-081-20, D-107: a `private-repo` finding at each reference in texts to a repo
+    of named that listed covers, read by no token, or whose visibility reads private or
+    internal, each read once; one neither listed nor read so (a read that fails, as the App's
+    token reads another installation's private repo) counts as no private repo"""
+    hidden = {
+        repo.lower()
+        for repo in named
+        if any(entry.covers(repo) for entry in listed) or visibility(repo) in (Visibility.PRIVATE, Visibility.INTERNAL)
+    }
     findings: list[Finding] = []
     for item in texts:
         for at, repo in _references(item.text):

@@ -35,6 +35,7 @@ repo's config would publish the very names it hides.
 ```toml
 terms = ["Acme Rocket", "acmerocket", "rocket.example"]
 secret_files = ["~/work/acme-rocket/.env"]
+repos = ["acme/rocket", "acme-labs/*"]
 ```
 
 - `terms`: a list of strings, each at least 3 characters once trimmed. A term matches
@@ -43,11 +44,15 @@ secret_files = ["~/work/acme-rocket/.env"]
   are listed one by one
 - `secret_files`: a list of dotenv files (`~` expanded) whose values are secrets, beside the
   checkout's own (below)
+- `repos` (D-107, #1595): a list of private repos, each `owner/name`, or `owner/*` for every
+  repo of an owner, matched case-insensitively as GitHub matches them, a name's trailing `.`
+  and `.git` dropped as a reference's are (below)
 
-Both keys are optional. An unknown key, a wrong type, a term under 3 characters, a file that
-isn't TOML, or a `secret_files` path that can't be read fails every check that would read it
-with exit 2 naming the file and what is wrong (Q-1): an unknown key by its line and the keys
-the file takes, never by its text, which may be a private term (#1416). With no file, no term is checked and only the
+All three keys are optional. An unknown key, a wrong type, a term under 3 characters, a
+`repos` entry that is neither form, a file that isn't TOML, or a `secret_files` path that
+can't be read fails every check that would read it with exit 2 naming the file and what is
+wrong (Q-1): an unknown key by its line and the keys the file takes, and a `repos` entry by
+its place, never by its text, which may be a private name (#1416). With no file, no term is checked and only the
 checkout's own secret files are read. No environment variable or flag names another path or
 turns a check off: a session can't switch it off for itself (D-94).
 
@@ -83,10 +88,14 @@ scope (`@acme/widgets`), and a `~/` path aren't references; nor is a pair whose 
 holds no letter (a date, a version, a fraction), nor a bare pair whose owner is a branch's
 conventional prefix or a remote (`fix/1480-x`, `feature/y`, `origin/main`). A name's trailing
 `.` and `.git` are dropped.
-To a public repo, each distinct reference other than the write's own repo is read once,
-case-insensitively, as the write's repo is, with the token at hand, and one that reads
-`private` or `internal` is a finding naming it; one that can't be read counts as no private
-repo. This needs no private file.
+To a public repo, each distinct reference other than the write's own repo is a finding
+naming it when the private file's `repos` lists it, whatever any token reads, and is then
+not read (D-107). Any other is read once, case-insensitively, as the write's repo is, with
+the token at hand, and one that reads `private` or `internal` is a finding naming it; one
+neither listed nor read so counts as no private repo. The read needs no private file, but
+the App's installation token reads another installation's private repo as missing, so a
+gate session's writes catch only what `repos` lists; no other credential is read on the
+write path.
 
 **Secret values.** The secrets are read from the dotenv files `.env` and `.env.*` in the root
 of the checkout the command runs in that git doesn't track, and from `secret_files`. A line
@@ -182,6 +191,8 @@ for a finding the person judges harmless, as for every hook rule (spec 026).
 - `terms`: PASS `on: N terms from ~/.config/shipmill/private.toml`, never the terms
   themselves, or PASS `off: no ~/.config/shipmill/private.toml` (WARN when the repo is
   public)
+- `repos` (D-107): PASS `on: N repos from ~/.config/shipmill/private.toml`, never a repo, or
+  WARN `off` when the file lists none; a missing file gets no `repos` line
 - `secrets`: PASS naming each secret file read and how many values it gave, never a name or
   a value
 - `scanner`: PASS `built-in formats and gitleaks <version>`, or `built-in formats; gitleaks
@@ -203,7 +214,7 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 - S-081-1: with `terms = ["Acme Rocket"]` in the private file, `shipmill gh issue create`, `issue comment`, `issue edit`, `pr create`, `pr edit`, and `pr comment` to a public repo whose title, `--body`, or `--body-file` text holds `acme  rocket` exit 2 without running `gh`, naming the term and the field; the same writes pass when the text holds only `AcmeRocketry`
 - S-081-2: `shipmill gh api` with a write method to a public repo is refused the same way for a term in a `-f` or `-F` field value, an `@file` field's content, or an `--input` file, and the repo is the endpoint's `repos/<owner>/<name>` when it names one
 - S-081-3: a write whose repo's `visibility` reads `private` or `internal` is not checked for terms; a repo whose visibility read fails, a remote not on github.com, and a write to no repo are checked as public
-- S-081-4: with no `~/.config/shipmill/private.toml`, in a checkout without `[agents]`, no term is checked and, when the text names no other repo, no visibility is read (as amended on #1480); a file with an unknown key, a wrong type, a term under 3 characters, invalid TOML, or an unreadable `secret_files` path makes every write and push exit 2 naming the file and the problem: the key for a wrong type, and for an unknown key its line and the keys the file takes (`terms`, `secret_files`), never the unknown key's text
+- S-081-4: with no `~/.config/shipmill/private.toml`, in a checkout without `[agents]`, no term is checked and, when the text names no other repo, no visibility is read (as amended on #1480); a file with an unknown key, a wrong type, a term under 3 characters, invalid TOML, or an unreadable `secret_files` path makes every write and push exit 2 naming the file and the problem: the key for a wrong type, and for an unknown key its line and the keys the file takes (`terms`, `secret_files`, `repos`, as amended on #1595), never the unknown key's text
 - S-081-5: a `shipmill gh` write to a private repo whose text holds the exact value of `API_TOKEN` from an untracked `.env` in the checkout's root, or of a secret in a `secret_files` file, exits 2 without running `gh`, naming the variable and its file and never the value; a value under 8 characters, a value whose name holds none of the secret words, and a tracked `.env.example`'s value are not secrets
 - S-081-6: a `shipmill gh` write to any repo holding a GitHub token, an Anthropic key, an AWS access key id, a Slack token, a PEM private key block, or a URL with a literal password of 8 characters or more exits 2 naming the format and at most the first 4 characters; `https://x-access-token:${TOKEN}@github.com` passes
 - S-081-7: with `gitleaks` on PATH, a finding it reports on the outgoing text is refused as `secret-format`, and a `gitleaks:allow` comment or the checked repo's `.gitleaks.toml` passes nothing; without it, the built-in formats alone decide
@@ -219,6 +230,7 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 - S-081-17: `docs/leaks.md` documents the private file, the four detectors, and both refusals, `docs/install.md` links it, and neither it nor any fixture under `tests/` names a term outside `Acme` and `example` hosts
 - S-081-18: a `shipmill gh` write to a public repo whose text names `acme/secret`, bare or as a `github.com` URL, which the token at hand reads `private` or `internal`, exits 2 without running `gh` naming `private-repo` and the repo, with or without the private file; a reference read `public` or that can't be read, a path such as `src/shipmill/leaks.py`, a version string, an npm scope, a branch such as `fix/1480-x`, and another host's URL pass; each distinct reference is read once, and a write to a private repo reads none
 - S-081-19: in a checkout whose `.github/shipmill.toml` has `[agents]`, a `shipmill gh` write to a public repo exits 2 without running `gh` while `~/.config/shipmill/private.toml` is missing, naming the file and that an empty one is enough, and passes once an empty one exists; a write to a private repo passes, a checkout without `[agents]` reads a missing file as no terms, and `doctor`'s `terms` row for a missing file names the `touch` step
+- S-081-20: with `repos = ["acme/secret"]` (or `["ACME/Secret"]`, or `["acme/*"]`) in the private file, a `shipmill gh` write to a public repo whose text names `acme/secret` in any case, bare or as a `github.com` URL, exits 2 without running `gh` naming `private-repo` and the repo, as a host and as the App, though the token at hand reads it as a 404, and without reading its visibility; a repo neither listed nor read private passes, `acme/*` covers no other owner, the token's read still adds a repo it reads private, and a write to a private repo passes; a `repos` that isn't a list of strings, or an entry that isn't `owner/name` or `owner/*`, makes every write exit 2 naming the file and the key, and the entry by its place, never its text; an empty file stays valid; `doctor` prints a `repos` row with the count, never a repo, and WARNs when the file lists none (D-107)
 
 ## Out of scope
 
@@ -245,6 +257,7 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 - shipmill/shipmill#1318: S-081-12, S-081-13
 - shipmill/shipmill#1319: S-081-15, S-081-17
 - shipmill/shipmill#1480: S-081-18, S-081-19
+- shipmill/shipmill#1595: S-081-20
 
 ## Verification
 
@@ -266,4 +279,5 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 - S-081-16: `tests/test_leaks.py` set `SHIPMILL_`-prefixed variables, `--as-host`, config keys, a marker in the text, and `$HOME` elsewhere: every detector still refused, and only the account's own private file was read
 - S-081-18: `tests/test_leaks.py` ran `shipmill gh` writes through `main` with a stand-in visibility reader: a public write naming `acme/secret` bare, as a URL, and as an ssh remote was refused naming it with gh never run, with and without the private file; paths, versions, an npm scope, another host's URL, a public and an unreadable reference passed; a repeated reference was read once, and a private repo's write read no reference
 - S-081-19: `tests/test_leaks.py` refused a public write from an `[agents]` checkout without the private file, as a host and as the App, naming the file and the empty-file fix, and passed it with an empty file, to a private repo, and from a checkout without `[agents]`; `tests/test_leaks_doctor.py` read the `touch` step in the missing file's `terms` row
+- S-081-20: `tests/test_leaks.py` ran `shipmill gh` writes through `main` with a stand-in that reads as the App's token does (every repo but the write's own a 404): a public write naming a listed repo bare, as a URL, as an ssh remote, in another case, and under `owner/*` was refused, as a host and as the App; a listed repo another token reads public was refused with only the write's own repo read; an unlisted unreadable repo, another owner, and a write to a private repo passed; a repo the token reads private was still refused beside a listed one; each malformed `repos` exited 2 naming the file, the key, and the entry's place, never its text, and an empty file and `repos = []` loaded; `tests/test_leaks_doctor.py` read the `repos` row's count and its WARN for a file listing none
 - S-081-17: `tests/test_leaks_doctor.py` read `docs/leaks.md` for the private file, the four detectors, and both refusals, `docs/install.md`'s link to it, and found no term outside `Acme` and `example` hosts in it or the test fixtures
