@@ -274,6 +274,44 @@ def test_s053_2_body_file_follows_the_spec_for_line_and_with_paths_share_the_com
     assert git(clone, "rev-list", "--count", f"{base}..{head}").strip() == "1"
 
 
+def gain_on_origin(clone: Path, line: str) -> str:
+    """origin's main gains a line in docs/decisions.md after the working tree was made: the
+    commit is pushed, and the checkout goes back to where it started; the new head"""
+    decisions = clone / "docs" / "decisions.md"
+    decisions.write_text(decisions.read_text(encoding="utf-8") + line, encoding="utf-8")
+    git(clone, "commit", "-q", "-am", "Gain a decision")
+    git(clone, "push", "-q", "origin", "main")
+    head = git(clone, "rev-parse", "HEAD").strip()
+    git(clone, "reset", "-q", "--hard", "HEAD~1")
+    return head
+
+
+def test_1623_a_with_file_main_changed_since_the_working_tree_was_made_is_refused(clone: Path) -> None:
+    gain_on_origin(clone, "\n## D-9: Landed since\n")
+    (clone / "docs" / "decisions.md").write_text(DECISIONS + "\n## D-3: Dry runs\n", encoding="utf-8")
+    before = git(clone, "ls-remote", "origin").splitlines()
+    hub = FakeHub()
+    with pytest.raises(ReleaseError) as raised:
+        open_spec(clone, REPO, request(with_paths=("docs/decisions.md",)), GitCheckout(clone), hub, available, NO_LEAKS)
+    message = str(raised.value)
+    assert "docs/decisions.md" in message and "rebase" in message
+    assert hub.writes == []
+    assert git(clone, "ls-remote", "origin").splitlines() == before  # nothing pushed
+
+
+def test_1623_a_working_tree_on_mains_head_opens_with_the_file_as_before(clone: Path) -> None:
+    head = gain_on_origin(clone, "\n## D-9: Landed since\n")
+    git(clone, "merge", "-q", "--ff-only", "origin/main")
+    decisions = clone / "docs" / "decisions.md"
+    decisions.write_text(decisions.read_text(encoding="utf-8") + "\n## D-3: Dry runs\n", encoding="utf-8")
+    hub = FakeHub()
+    open_spec(clone, REPO, request(with_paths=("docs/decisions.md",)), GitCheckout(clone), hub, available, NO_LEAKS)
+    pushed = git(clone, "ls-remote", "--heads", "origin", BRANCH).split()[0]
+    assert git(clone, "rev-parse", f"{pushed}^").strip() == head
+    assert git(clone, "show", f"{pushed}:docs/decisions.md") == decisions.read_text(encoding="utf-8")
+    assert [write[0] for write in hub.writes] == ["pull", "comment"]
+
+
 @pytest.mark.parametrize("given", ["/etc/hosts", "../outside.md", ".git/config", "docs/missing.md", SPEC, "docs"])
 def test_s053_2_a_with_path_that_isnt_a_file_of_the_repo_is_refused(tmp_path: Path, given: str) -> None:
     repo_files(tmp_path, spec_text())
