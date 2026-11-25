@@ -299,7 +299,7 @@ def test_a_session_that_died_in_a_second_is_no_attempt_and_the_next_tick_launche
     assert not any(SECRET in line for line in lines)  # only the log's last line is ever shown
     record = json.loads((state_dir(checkout) / RECORD).read_text(encoding="utf-8"))
     assert record["session"] == str(SECOND)
-    assert record["dead"] == {"count": 1, "since": (NOW - dt.timedelta(minutes=5)).isoformat()}
+    assert "dead" not in record  # spec 089: an auth end counts no attempt toward DEAD_STREAK (S-089-6)
 
 
 def test_sessions_dying_one_after_another_read_as_one_run(checkout: Git) -> None:
