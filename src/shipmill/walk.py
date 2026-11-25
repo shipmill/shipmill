@@ -332,12 +332,16 @@ class Pull:
 class End(enum.StrEnum):
     """How a handed session ended, read from its stream-json log once it is gone (spec 089,
     D-100): ok, its last `result` has is_error false; limit, a usage limit stopped it; auth, its
-    credential was refused; error, anything else"""
+    credential was refused; error, anything else. Spec 095 (D-112) reads an ok one's failed tool
+    calls first: github_limit, GitHub's rate limit stopped them; disk, the disk was full. A denied
+    tool call is no end (D-113)"""
 
     OK = "ok"
     LIMIT = "limit"
     AUTH = "auth"
     ERROR = "error"
+    GITHUB_LIMIT = "github_limit"
+    DISK = "disk"
 
 
 # spec 089 (S-089-11): an item whose session ended error is handed again after these delays, one
@@ -396,7 +400,9 @@ HAND_KEYS = frozenset({"session", "at"})
 HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})
 PULL_KEYS = frozenset({"head", "rollup"})
 ENDS = ", ".join(e.value for e in End)
-CAUSED = frozenset({End.LIMIT, End.AUTH})  # ends that drop their hand, the wait the credential's pause (S-089-4)
+# ends that drop their hand and count no attempt: the wait is the credential's pause (S-089-4), the
+# host's (S-095-4)
+CAUSED = frozenset({End.LIMIT, End.AUTH, End.GITHUB_LIMIT, End.DISK})
 
 
 def hand_of(key: str, entry: object) -> Hand:
@@ -447,7 +453,8 @@ class Handed:
     subject's also `head` (its head SHA) and `rollup` (its head's check rollup state, or null
     with no checks) from the change check; `"idle": true` once a walk past retry_hours found
     its subject unchanged since `at` (absent otherwise); and `ended`, how its session ended (ok,
-    limit, auth, or error), once a tick found the session gone (absent while it runs, spec 089).
+    limit, auth, error, github_limit, or disk), once a tick found the session gone
+    (absent while it runs, spec 089, spec 095).
     It is a cache of the gate's own launches: deleted, every subject reads not taken and is
     handed once more"""
 
@@ -573,7 +580,8 @@ class Handed:
         )
 
     def settled(self, recorded: Iterable[str], died: Callable[[Hand], dt.datetime], retry: dt.timedelta) -> Handed:
-        """Spec 089: a hand whose session ended limit or auth drops, whichever session gate.json
+        """Spec 089: a hand whose session ended limit or auth drops, as one that ended github_limit
+        or disk does (S-095-2), whichever session gate.json
         names by then (S-089-4), and whichever tick recorded its end: one saved with it, as
         0.167.0's capped run of limit ends did, drops on the next (#1602). On the tick that
         records the ends of these keys, one that ended error is held for its backoff, the next

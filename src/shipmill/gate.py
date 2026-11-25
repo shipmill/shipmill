@@ -68,6 +68,7 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.github_auth import GH_MISSING_FIX, GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
+from shipmill.host_pause import HostSeams, host_paused, noted_host
 from shipmill.land_window import LandWindow
 from shipmill.notify import Notifier, NotifyFailed
 from shipmill.permission_notice import Seams, SweptPermissions, sweep_permissions
@@ -90,6 +91,7 @@ from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
 from shipmill.verify import Planner, Verified
 from shipmill.walk import (
+    CAUSED,
     CURSOR,
     CURSOR_OVERLAP,
     HANDED,
@@ -129,6 +131,7 @@ from shipmill.walk import subjects as subjects_of
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
+DENIED_RECORD = "denied.json"  # each tool a headless session was denied, notified once (spec 095)
 WAITING = "waiting.json"  # one entry per blocked gate session (spec 003)
 DECISIONS = "needs-decision.json"  # one entry per item that waits on a decision (spec 005)
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
@@ -455,6 +458,7 @@ class Decision:
     permissions: str | None = None  # what a swept tick's permission notice did (S-060-8); None: none ran
     verify: str | None = None  # the check of [agents] verify a launch ran (S-064-6); None: none ran
     verify_notice: str | None = None  # its one notification per failing fingerprint (S-064-8); None: none due
+    denied: tuple[str, ...] = ()  # what the tick did about each tool the last session was denied (S-095-7)
 
 
 def refused_suffix(refusals: Iterable[Refusal]) -> str:
@@ -1235,6 +1239,14 @@ def stalled(
     return replace(decision, reason=f"{decision.reason}; stopped it; {fix}"), first
 
 
+# what a headless session's log shows, as SESSION_DEAD names it (spec 089, spec 095)
+OUTSIDE_WHY = {
+    End.LIMIT: ", its log shows a usage limit",
+    End.GITHUB_LIMIT: ", its tool calls hit GitHub's rate limit",
+    End.DISK: ", its tool calls found no space left on device",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Dead:
     """A session that ended dead (#500); it doesn't count toward retry_hours. A headless one:
@@ -1267,7 +1279,7 @@ class Dead:
             within = "" if self.seconds is None else f", within {self.seconds} s of its launch"
             return f"session {self.session} ended {self.state} in claude agents{within}{streak}"
         why = ", its log shows an authentication failure" if self.auth else ""
-        why = ", its log shows a usage limit" if self.end is End.LIMIT else why
+        why = OUTSIDE_WHY.get(self.end, why) if self.end is not None else why
         said = f"its log's last line: {self.last_line!r}" if self.last_line else "its log is empty"
         lead = f"session {self.session} ended {self.seconds} s after its launch{why}"
         return f"{lead}{streak}; {said}"
@@ -1417,6 +1429,22 @@ def checked_event(event: Mapping[str, object]) -> Mapping[str, object]:
     status = event.get("api_error_status")
     if status is not None and (not isinstance(status, int) or isinstance(status, bool)):
         raise ValueError(f"a {kind} event's api_error_status must be an integer or null, got {status!r}")
+    if kind == "result" and "permission_denials" in event:
+        denials = event["permission_denials"]
+        if not isinstance(denials, list) or not all(
+            isinstance(d, dict) and isinstance(d.get("tool_name"), str) for d in denials
+        ):
+            raise ValueError(
+                f"a result's permission_denials must be a list of objects with a tool_name, got {denials!r}"
+            )
+    if kind == "user":
+        for block in content_blocks(event):
+            if block.get("type") != "tool_result":
+                continue
+            if "is_error" in block and not isinstance(block["is_error"], bool):
+                raise ValueError(f"a tool_result's is_error must be true or false, got {block['is_error']!r}")
+            if "content" in block and not isinstance(block["content"], str | list | type(None)):
+                raise ValueError(f"a tool_result's content must be text or a list, got {block['content']!r}")
     if kind == "rate_limit_event":
         info = event.get("rate_limit_info")
         if not isinstance(info, dict) or not isinstance(info.get("status"), str):
@@ -1440,7 +1468,9 @@ def session_end(state: Path, last: Launch | None, session: str) -> End:
     its process is gone, in this order: limit, when an event holds an api_error_status of 429
     or a rate_limit_event's status is rejected, whatever its result says and however long it
     ran; auth, an api_error_status of 401 or an authentication failure as stream_auth_failed
-    reads one (#822); ok, the last `result` event has is_error false; error, anything else: a
+    reads one (#822); ok, the last `result` event has is_error false and outside_end reads no
+    outside cause in its failed tool results, which otherwise names the end (spec 095); error,
+    anything else: a
     result with is_error true, no result at all however long it ran (DEAD_WITHIN decides
     nothing here), no log, a log not stream-json (save an authentication failure in its text,
     auth as ended_dead reads it), or the last launch, when a STALLED tick stopped it. A
@@ -1461,7 +1491,123 @@ def session_end(state: Path, last: Launch | None, session: str) -> End:
     if last is not None and last.session == session and last.stopped is not None:
         return End.ERROR
     results = [e for e in events if e["type"] == "result"]
-    return End.OK if results and results[-1]["is_error"] is False else End.ERROR
+    if not results or results[-1]["is_error"] is not False:
+        return End.ERROR
+    return outside_end(events) or End.OK
+
+
+# Spec 095 (S-095-1): what a failed tool result reads when an outside cause stopped the session
+GITHUB_LIMITED = re.compile(r"API rate limit (?:already )?exceeded|secondary rate limit", re.IGNORECASE)
+DISK_FULL = re.compile(r"No space left on device")
+DENIED = re.compile(r"Permission for this tool use was denied|Permission to use \S+ has been denied")
+NETWORK = re.compile(
+    r"Could not resolve host|Temporary failure in name resolution|Connection refused|Connection reset by peer"
+    r"|Network is unreachable|error connecting to|connection timed out|TLS handshake timeout",
+    re.IGNORECASE,
+)
+
+
+def content_blocks(event: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """A user or assistant event's message content blocks; none when its content is text"""
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def result_text(block: Mapping[str, object]) -> str:
+    """A tool_result's text: its content string, or the text of its content's items"""
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(i["text"]) for i in content if isinstance(i, dict) and isinstance(i.get("text"), str))
+    return ""
+
+
+def failed_results(events: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    """The tool_result blocks with is_error true in the user events of a log's tail"""
+    return [
+        b
+        for e in events
+        if e["type"] == "user"
+        for b in content_blocks(e)
+        if b.get("type") == "tool_result" and b.get("is_error") is True
+    ]
+
+
+def outside_end(events: Sequence[Mapping[str, object]]) -> End | None:
+    """Spec 095 (S-095-1): an outside cause read from the failed tool results of a
+    session whose result is ok, in this order: github_limit, a result reads GitHub's rate limit;
+    disk, `No space left on device`; error, a network failure. None for any other failure, a
+    denied permission too, so the session ends ok as spec 089 reads it"""
+    texts = [result_text(b) for b in failed_results(events)]
+    if any(GITHUB_LIMITED.search(t) for t in texts):
+        return End.GITHUB_LIMIT
+    if any(DISK_FULL.search(t) for t in texts):
+        return End.DISK
+    if any(NETWORK.search(t) for t in texts):
+        return End.ERROR
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class Denial:
+    """A tool call a headless session was denied: the tool, and its command (spec 095)"""
+
+    tool: str
+    command: str
+
+
+COMMAND_SHOWN = 120  # characters of a denied command's first line a notification shows (spec 095)
+
+
+def input_command(given: object) -> str:
+    """A tool call's command as a person reads it: its input's `command`, else the input's first
+    string value, else nothing; its first line only, cut at COMMAND_SHOWN characters, so a heredoc
+    or a token further on reaches no notification, output, or record"""
+    if not isinstance(given, dict):
+        return ""
+    command = given.get("command")
+    found = command if isinstance(command, str) else next((v for v in given.values() if isinstance(v, str)), "")
+    first = found.strip().split("\n", 1)[0].rstrip()
+    return first if len(first) <= COMMAND_SHOWN else first[: COMMAND_SHOWN - 1] + "…"
+
+
+def denials_of(events: Sequence[Mapping[str, object]]) -> list[Denial]:
+    """Spec 095 (S-095-7): the tool calls a session was denied, from its last result's
+    permission_denials, else from the failed tool results that read a denied permission, each
+    named by the tool_use it answers; one per tool, in the order met"""
+    results = [e for e in events if e["type"] == "result"]
+    listed = results[-1].get("permission_denials") if results else None
+    found: list[Denial] = []
+    if isinstance(listed, list) and listed:
+        found = [Denial(str(d["tool_name"]), input_command(d.get("tool_input"))) for d in listed]
+    else:
+        uses = {
+            str(b["id"]): b
+            for e in events
+            if e["type"] == "assistant"
+            for b in content_blocks(e)
+            if b.get("type") == "tool_use" and isinstance(b.get("id"), str)
+        }
+        for block in failed_results(events):
+            if DENIED.search(result_text(block)) is None:
+                continue
+            use = uses.get(str(block.get("tool_use_id")))
+            tool = str(use["name"]) if use is not None and isinstance(use.get("name"), str) else "a tool"
+            found.append(Denial(tool, "" if use is None else input_command(use.get("input"))))
+    unique: dict[str, Denial] = {}
+    for denial in found:
+        unique.setdefault(denial.tool, denial)
+    return list(unique.values())
+
+
+def session_denials(state: Path, session: str) -> list[Denial]:
+    """The tool calls a headless session was denied, read from its log's tail (spec 095)"""
+    log = session_log(state, session)
+    if not log.is_file() or not is_stream_json(log):
+        return []
+    return denials_of(log_events(log, session, tail_lines(log)))
 
 
 def log_events(log: Path, session: str, lines: Sequence[str]) -> list[Mapping[str, object]]:
@@ -2937,6 +3083,110 @@ def once(login: Callable[[], str] | None) -> LoginReader:
     return host
 
 
+@dataclass(frozen=True, slots=True)
+class Denied:
+    """A tool a headless session was denied, as denied.json records it (S-095-7): the command,
+    the session, when, and when its one notification went out, None before"""
+
+    command: str
+    session: str
+    at: dt.datetime
+    notified: dt.datetime | None = None
+
+    def record(self) -> dict[str, object]:
+        when = None if self.notified is None else self.notified.isoformat()
+        return {"command": self.command, "session": self.session, "at": self.at.isoformat(), "notified": when}
+
+
+def load_denied(path: Path) -> dict[str, Denied]:
+    """denied.json, refused unless every entry is exactly {command, session, at, notified}"""
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        found: dict[str, Denied] = {}
+        for tool, entry in data.items():
+            if not isinstance(entry, dict) or set(entry) != {"command", "session", "at", "notified"}:
+                raise ValueError(f"{tool}: expected exactly command, session, at, and notified")
+            if not isinstance(entry["command"], str) or not isinstance(entry["session"], str):
+                raise ValueError(f"{tool}: command and session must be strings")
+            notified = entry["notified"]
+            found[tool] = Denied(
+                entry["command"],
+                entry["session"],
+                _moment(entry["at"], f"{tool}.at"),
+                None if notified is None else _moment(notified, f"{tool}.notified"),
+            )
+        return found
+    except ValueError as exc:
+        raise malformed(path, exc) from None
+
+
+def denied_body(tool: str, denied: Denied) -> str:
+    called = f" ({denied.command})" if denied.command else ""
+    return (
+        f"session {denied.session} was denied {tool}{called}: allow it in the gate's allowlist or "
+        "[agents.sandbox], or leave it denied"
+    )
+
+
+def ended_session(git: Git, decision: Decision) -> str | None:
+    """The last session that ended, for denied_step: the dead one this tick read, else the last
+    that ended with a result as last-result.json records it (spec 048), else None"""
+    if decision.dead is not None:
+        return decision.dead.session
+    found = load_last_result(state_dir(git) / LAST_RESULT)
+    return None if found is None else found.session
+
+
+def denied_step(
+    state: Path,
+    session: str | None,
+    config: Callable[[], AgentsConfig],
+    notifier: Notifier,
+    repo: str,
+    now: dt.datetime,
+    dry_run: bool,
+) -> tuple[str, ...]:
+    """Spec 095 (S-095-7): session, the last headless session that ended with a result,
+    whatever its end, None without one; each tool it was denied is recorded once in
+    denied.json, with its command, the session, and when; with [agents] notify, a tool whose
+    notification hasn't gone out gets one, naming the session, the tool, and the command, with
+    or without app_id, since no GitHub mention carries it. A
+    recorded tool sends nothing again; a failed send is tried on the next tick, which reads the
+    same session's log. The denial changes nothing else: the session's end, its hand, and the
+    tick's launch are as without it. A dry run writes and sends nothing. What it did, one line
+    per tool it sent for or failed to; () when nothing was due"""
+    if session is None:
+        return ()
+    path = state / DENIED_RECORD
+    known = load_denied(path)
+    due = [d for d in session_denials(state, session) if d.tool not in known or known[d.tool].notified is None]
+    if not due:
+        return ()
+    notify = config().notify
+    lines = []
+    for denial in due:
+        entry = known.get(denial.tool) or Denied(denial.command, session, now)
+        if notify:
+            if dry_run:
+                lines.append(f"would notify: {denied_body(denial.tool, entry)}")
+                continue
+            try:
+                notifier.send(f"shipmill {repo}", denied_body(denial.tool, entry))
+            except NotifyFailed as exc:
+                lines.append(f"notify failed for denied {denial.tool}: {exc}")
+            else:
+                entry = replace(entry, notified=now)
+                lines.append(f"notified: {denied_body(denial.tool, entry)}")
+        known[denial.tool] = entry
+    if not dry_run:
+        write(path, {tool: d.record() for tool, d in sorted(known.items())})
+    return tuple(lines)
+
+
 def gate(
     git: Git,
     repo: str,
@@ -2972,6 +3222,7 @@ def gate(
     pauses: Path | None = None,
     usage: UsageProbe | None = None,
     sandbox: Sandboxer | None = None,
+    host_seams: HostSeams | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -3121,7 +3372,12 @@ def gate(
     session's env; None, the default, launches as before the spec. With it, every config read
     in headless mode also refuses the --claude-arg flags in SANDBOX_REFUSED, and a real headless
     LAUNCH builds the sandbox once, after the verify check and before any session is stopped,
-    so a failure stops none and starts none; an interactive launch never reads it"""
+    so a failure stops none and starts none; an interactive launch never reads it
+
+    host_seams, the host's pause (spec 095, HostSeams), is read after the credential's: a github_limit
+    or disk end writes it, and while it holds the tick reads PAUSED; None, as in tests that don't
+    exercise it, reads none. After the decision, the last session that ended with a result sends
+    one notification per tool it was denied, whatever its end (denied_step)"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -3164,6 +3420,11 @@ def gate(
             pauses=pauses,
             usage=usage,
             sandbox=sandbox,
+            host_seams=host_seams,
+        )
+        decision = replace(
+            decision,
+            denied=denied_step(state_dir(git), ended_session(git, decision), config, notifier, repo, now, dry_run),
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -3230,6 +3491,7 @@ def decided(
     pauses: Path | None = None,
     usage: UsageProbe | None = None,
     sandbox: Sandboxer | None = None,
+    host_seams: HostSeams | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -3295,6 +3557,16 @@ def decided(
         stopped_by = paused(pauses, current, mine, auth, token, agents, notifier, repo, now, dry_run, usage)
         if stopped_by is not None:
             return replace(stopped_by, mode=agents.mode, detached=detached, dead=dead, credential=kind), None, waiting
+    # spec 095: a github_limit or disk end pauses the host, and a paused host starts nothing, as above
+    if host_seams is not None:
+        died = None if last is None or dead is None else log_written(session_log(state, last.session), last)
+        noted_by = noted_host(
+            host_seams, None if dead is None else dead.end, None if last is None else last.session, died or now, dry_run
+        )
+        held_by = host_paused(host_seams, noted_by, git.root, now, dry_run)
+        if held_by is not None:
+            pause = Decision(Action.PAUSED, held_by.reason, ())
+            return replace(pause, mode=agents.mode, detached=detached, dead=dead, credential=kind), None, waiting
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and
     # its bot's needs-decision questions read as questions (D-21, #206)
     try:
@@ -3319,8 +3591,9 @@ def decided(
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
     retry = dt.timedelta(hours=agents.retry_hours)
     levels = Levels(agents.autonomy, on_hold)
-    # retry_hours holds the item again; a limit or auth end is no attempt, its pause the wait (S-089-6)
-    capped = dead is not None and dead.end not in CAUSES and dead.deaths.count >= DEAD_STREAK
+    # retry_hours holds the item again; a limit or auth end is no attempt, its pause the wait (S-089-6),
+    # nor is a github_limit, disk, or permission end (S-095-2)
+    capped = dead is not None and dead.end not in CAUSED and dead.deaths.count >= DEAD_STREAK
     source = as_source(findings(read))
     proposal = None if upgrades is None else partial(sweep_upgrades, upgrades, identity, repo, dry_run)
     # spec 060: the item goes to the users the maintainer role resolves to on this tick
@@ -3408,7 +3681,7 @@ def decided(
     pulls = ticked.changes.pulls
     # the run of dead sessions is this item's: another item starts its own (S-046-15)
     deaths = None if dead is None or last is None or item_key(item) != last.fingerprint else dead.deaths
-    if dead is not None and dead.end in CAUSES and deaths is not None:  # S-089-6: no attempt counted
+    if dead is not None and dead.end in CAUSED and deaths is not None:  # S-089-6, S-095-2: no attempt counted
         deaths = None if last is None else last.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
@@ -3517,6 +3790,7 @@ def tick_lines(
         lines.append(f"  {decision.auth_notice}")
     if decision.verify_notice is not None:
         lines.append(f"  {decision.verify_notice}")
+    lines.extend(f"  {line}" for line in decision.denied)  # S-095-7
     # a launch that didn't start names the dead session; SESSION_DEAD's reason does, and QUIET has no work for one
     if decision.dead is not None and decision.action not in (Action.SESSION_DEAD, Action.QUIET):
         lines.append(f"  {decision.dead.line()}")
