@@ -129,9 +129,14 @@ def counted(authored: Sequence[AuthoredIssue]) -> list[Incident]:
     return found
 
 
+def area_of(path: str) -> str:
+    """The path's parent directory, `.` for a file at the root"""
+    return str(PurePosixPath(path).parent)
+
+
 def areas_of(paths: Iterable[str]) -> frozenset[str]:
     """The parent directory of each path, `.` for a file at the root"""
-    return frozenset(str(PurePosixPath(p).parent) for p in paths)
+    return frozenset(area_of(p) for p in paths)
 
 
 class _Tree:
@@ -170,7 +175,11 @@ def read(git: Git, reads: Reads, label: str, clean_releases: CleanReleases) -> R
     """The record of every area a counted incident raised: each area by its newest failed
     release (version order), with the clean releases that touched it since"""
     needed = int(clean_releases)
-    incidents = counted(reads.authored_issues(label))
+    try:
+        listed = reads.authored_issues(label)
+    except ReleaseError as exc:  # S-083-6: named, never a partial record
+        raise ReleaseError(f"the issues labelled {label!r} can't be read: {exc}") from None
+    incidents = counted(listed)
     if not incidents:
         return Record(needed, ())
     tree = _Tree(git)
@@ -218,11 +227,14 @@ def _succeeded(
     found: dict[str, frozenset[Version]] = {}
     for env, since in after.items():
         hits: set[Version] = set()
-        for deployment in reads.deployments(env):
-            version = tree.released(deployment)
-            if version is None or version <= since or version in failed or version in hits:
-                continue
-            if any(s.state is DeploymentState.SUCCESS for s in reads.deployment_statuses(deployment.id)):
-                hits.add(version)
+        try:
+            for deployment in reads.deployments(env):
+                version = tree.released(deployment)
+                if version is None or version <= since or version in failed or version in hits:
+                    continue
+                if any(s.state is DeploymentState.SUCCESS for s in reads.deployment_statuses(deployment.id)):
+                    hits.add(version)
+        except ReleaseError as exc:  # S-083-6: named, never a partial record
+            raise ReleaseError(f"the deployments to {env} can't be read: {exc}") from None
         found[env] = frozenset(hits)
     return found

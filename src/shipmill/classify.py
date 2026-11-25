@@ -25,6 +25,10 @@ request's (--pr) by its files and their patches too, read through gh:
   the base names or with a job holding `environment:` at the base or the head, that no run a
   Proof: line of the pull request's body names ran at the head's content of the file; given
   as paths, each deploy workflow at the ref
+- area-record (spec 083): a changed path whose area (its parent directory) a failed release
+  raised; the production record is read only when the base sets area-record above act or
+  has [decisions.earned], so a repo that sets neither makes no new read, and a read that
+  fails stops it
 
 A path that puts direction, security, or protected in takes the level of the strictest of that
 zone's parts ([decisions.paths.<zone>] at the base, spec 057) whose glob matches it, else the
@@ -35,15 +39,15 @@ import fnmatch
 import re
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
-from shipmill import agent_marker, cli_command
+from shipmill import agent_marker, area_record, cli_command
 from shipmill.autonomy import AutonomyPolicy, EnvironmentName, Hold
 from shipmill.config import CONFIG_PATH, Table, loads
-from shipmill.decide import Candidate, Level, Part, Zone, candidates
+from shipmill.decide import EARNED_KEY, Candidate, Level, Part, Zone, candidates
 from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, Missing, PullChange, RunAttempt, RunJob, SpecIssue
 from shipmill.gitrepo import Git
@@ -213,12 +217,14 @@ def policy_at(git: Git, ref: str) -> Policy:
 @dataclass(frozen=True, slots=True)
 class Base:
     """What the base ref holds: the policy, every REVIEW.md's Protected areas, the decisions
-    log (None without one), and the text of each workflow file (spec 063)"""
+    log (None without one), and the text of each workflow file (spec 063); and the areas the
+    production record raises, by area (spec 083; none until with_record reads it)"""
 
     policy: Policy
     protected: Mapping[str, tuple[Protected, ...]]  # by the REVIEW.md listing them
     log: str | None
     workflows: Mapping[str, str] = field(default_factory=dict)  # by path
+    raised: Mapping[str, area_record.Area] = field(default_factory=dict)  # by area
 
     @classmethod
     def read(cls, git: Git, ref: str) -> Base:
@@ -247,6 +253,33 @@ class Base:
                 raise ReleaseError(f"can't read {name} at {ref}")
             workflows[name] = text
         return cls(policy, protected, log, workflows)
+
+    def record_reason(self) -> str | None:
+        """Why classify reads the production record (spec 083): the base sets area-record above
+        act, or has [decisions.earned]; None when it sets neither, so it makes no new read"""
+        decisions = self.policy.decisions
+        level = decisions.level(Zone.AREA_RECORD)
+        if level is not Level.ACT:
+            return f"the base sets [{DECISIONS_TABLE}] {Zone.AREA_RECORD.value} = {level.value!r}"
+        if decisions.earned is not None:
+            return f"the base has [{DECISIONS_TABLE}.{EARNED_KEY}]"
+        return None
+
+    def with_record(self, git: Git, reads: area_record.Reads) -> Base:
+        """The base with the areas the production record raises, read by the base's
+        [operate] incident_label and [decisions] clean_releases only when record_reason
+        holds; a read that fails stops it, naming what couldn't be read (S-083-6)"""
+        why = self.record_reason()
+        if why is None:
+            return self
+        label = self.policy.operate.incident_label
+        try:
+            record = area_record.read(git, reads, label, self.policy.decisions.clean_releases)
+        except ReleaseError as exc:
+            raise ReleaseError(
+                f"the production record can't be read, and {why}, so the change can't be classified: {exc}"
+            ) from None
+        return replace(self, raised={a.area: a for a in record.raised()})
 
     def level(self, zone: Zone) -> Level:
         return self.policy.decisions.level(zone)
@@ -339,6 +372,13 @@ def _by_path(found: _Found, path: str) -> None:
         found.add(Zone.SECURITY, f"{path} is under {GITHUB_DIR}", path)
     for area in found.base.covering(path):
         found.add(Zone.PROTECTED, f"{path} matches `{area.glob}` ({area.file}): {area.why}", path)
+    raised = found.base.raised.get(area_record.area_of(path))
+    if raised is not None:  # S-083-7
+        reason = (
+            f"{raised.area} is raised: {raised.tag.tag} failed in {raised.env} (#{raised.incident}),"
+            f" {len(raised.clean)} of {raised.needed} clean releases since"
+        )
+        found.add(Zone.AREA_RECORD, reason, path)
 
 
 def classify_paths(base: Base, paths: Iterable[RepoPath]) -> Classification:

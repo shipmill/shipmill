@@ -1340,7 +1340,8 @@ def main(
     doctor's landing row reads (spec 054), and merge_gate for the pr_gate.py a `shipmill gh` merge
     runs (spec 055), and history_reads for what `review history` reads of GitHub in a checkout
     (spec 073), and gh_feed for running `shipmill gh`'s gh with the stdin the leak check read
-    (spec 081), and record_reads for the issues and deployments `decide record` reads (spec 083),
+    (spec 081), and record_reads for the issues and deployments `decide record` reads, and
+    `decide classify` when the base's levels ask for the production record (spec 083),
     as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
     gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
@@ -1438,7 +1439,7 @@ def main(
     if args.command == "decide" and args.decide == "record":
         return _decide_record(root, args.json, record_reads or GhCli(root))
     if args.command == "decide":
-        return _decide(root, args, pulls or GhCli(root))
+        return _decide(root, args, pulls or GhCli(root), record_reads or GhCli(root))
     if args.command == "autonomy":
         return _autonomy(root, args.ref, args.json, github or GhCli(root))
     if args.command == "window":
@@ -4190,9 +4191,10 @@ def _user_logout(root: Path, args: argparse.Namespace, web: Web, environ: Mappin
     return 0
 
 
-def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
+def _decide(root: Path, args: argparse.Namespace, pulls: Pulls, reads: area_record.Reads) -> int:
     """Spec 030: `decide levels` from the working tree's config or --ref's; `decide classify`
-    by the levels at --ref, never the change's own"""
+    by the levels at --ref, never the change's own, with the production record when the
+    levels there ask for it (spec 083)"""
     git = Git(root)
     if args.decide == "levels":
         policy = Policy.load(config_path(root)) if args.ref is None else policy_at(git, args.ref)
@@ -4209,10 +4211,10 @@ def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
             for row in rows:
                 print(row.text())
         return 0
-    base = Base.read(git, args.ref)
+    if args.pr is not None and args.pr < 1:
+        raise ReleaseError(f"--pr is a pull request's number, got {args.pr}")
+    base = Base.read(git, args.ref).with_record(git, reads)
     if args.pr is not None:
-        if args.pr < 1:
-            raise ReleaseError(f"--pr is a pull request's number, got {args.pr}")
         found = classify_pull(base, pulls, args.pr)
     else:
         found = classify_paths(base, [RepoPath.given(p) for p in args.files])
