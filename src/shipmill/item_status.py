@@ -233,6 +233,19 @@ VERDICT_WAITS: dict[str, tuple[str, Who, str]] = {
 # S-094-4: the verdicts whose holder is not their who's
 VERDICT_HOLDER = {"postponed": Holder.POSTPONED, "upstream": Holder.ELSEWHERE}
 CHILDREN = "children "  # triage_state.py's note of a parent starts with its children's progress
+# #1611: an opportunity the maintainer accepted (labelled planned) is the spec gate's, not the maintainer's
+ACCEPTED_WAITS = Condition(
+    "triaged as opportunity and accepted: waits on triage's spec gate to give it a feature verdict",
+    Who.AGENT,
+    "triage's spec gate gives it a feature verdict and opens its spec",
+)
+SPEC_DUE = "SPEC_DUE"  # watch_state.py's row `ACCEPTED #N ...`: intake_state.py's ACCEPTED opportunities (spec 074)
+
+
+def accepted(facts: Facts) -> frozenset[int]:
+    """#1611: the opportunities intake_state.py reads ACCEPTED (open, labelled its --accepted-label,
+    planned, and not yet handed off), as the watch's SPEC_DUE row names them; no read of its own"""
+    return frozenset(int(n) for r in facts.rows if r.state == SPEC_DUE for n in OWN_NUMBER.findall(r.detail))
 
 
 def not_open(ref: Ref, repo: str) -> ReleaseError:
@@ -469,6 +482,8 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                     "triaged with nothing pending", Who.EVENT, "a new comment or label that moves it back to triage"
                 )
             ]
+        if issue.verdict == "opportunity" and issue.number in accepted(facts):
+            return [ACCEPTED_WAITS]
         reason, who, clears = VERDICT_WAITS[issue.verdict]
         return [
             Condition(f"triaged as {issue.verdict}: {reason}", who, clears, where=VERDICT_HOLDER.get(issue.verdict))
