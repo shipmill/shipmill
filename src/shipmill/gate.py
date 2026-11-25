@@ -1751,15 +1751,6 @@ def first_words(command: str) -> str:
     return f"{shown} …" if len(words) > FIRST_WORDS else shown
 
 
-def result_text(content: object) -> str:
-    """A tool result's text: its content as a string, or its text blocks joined"""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
-
-
 def sandbox_refused(log: Path, session: str) -> SandboxRefused | None:
     """S-087-14: a sandboxed session's refusals, read from its own stream-json log, the whole
     of it: each result of a Bash call (the only tool the sandbox confines) whose text holds the
@@ -1773,21 +1764,18 @@ def sandbox_refused(log: Path, session: str) -> SandboxRefused | None:
     with log.open(encoding="utf-8", errors="replace") as lines:
         for line in lines:
             event = stream_event(line)
-            message = None if event is None else event.get("message")
-            blocks = message.get("content") if isinstance(message, dict) else None
-            if event is None or not isinstance(blocks, list):
-                continue
-            for block in (b for b in blocks if isinstance(b, dict)):
+            kind = None if event is None else event["type"]
+            for block in [] if event is None else content_blocks(event):
                 called = block.get("id")
                 given = block.get("input")
-                if event["type"] == "assistant" and block.get("type") == "tool_use" and block.get("name") == "Bash":
+                if kind == "assistant" and block.get("type") == "tool_use" and block.get("name") == "Bash":
                     if isinstance(called, str) and isinstance(given, dict) and isinstance(given.get("command"), str):
                         commands[called] = given["command"]
                     continue
                 answered = block.get("tool_use_id")
-                if event["type"] != "user" or block.get("type") != "tool_result" or not isinstance(answered, str):
+                if kind != "user" or block.get("type") != "tool_result" or not isinstance(answered, str):
                     continue
-                found = violations(result_text(block.get("content"))) if answered in commands else ()
+                found = violations(result_text(block)) if answered in commands else ()
                 if found:
                     refused.append((commands[answered], found[0]))
     if not refused:
