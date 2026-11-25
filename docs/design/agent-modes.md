@@ -319,6 +319,49 @@ Verified on Claude Code 2.1:
   landed 1 of 11 PRs that way (#246). The gate sets it to `0` in the process environment
   of every headless launch (not argv, not `--settings`, so S-005-3's command line is
   unchanged), and a value already in the gate's own environment passes through
+- The sandbox (spec 087, S-087-1). macOS half verified on Claude Code 2.1.330 (#1524) on
+  2026-11-25; the Linux half is not run yet. The probe is `docs/design/probe-087/`: `probe.sh`
+  starts S-005-3's command line with `--settings` carrying the spec's `sandbox` and
+  `permissions.deny` (built by `settings.py`), `Edit(//<path>/**)` and `Write(//<path>/**)` for
+  each write-scope path, and `Bash(cat *)`, `Bash(curl *)` and `Bash(ssh *)` added to the
+  allowlist so its commands reach the sandbox (a probe-only list; #1531 replaces its write list
+  for the git dir). A canary in `~/.ssh` stands in for a key and is removed on exit. Run twice:
+  with no project settings file, and with a `.claude/settings.local.json` in the checkout that
+  adds `example.com` to `allowedDomains`
+  - `--settings` turns the sandbox on although `~/.claude/settings.json` sets
+    `sandbox.enabled = false`
+  - The canary was refused four ways. `cat` in Bash: refused by `permissions.deny` before the
+    sandbox, "Permission to use Bash with command cat ... has been denied". `Read`: "File is in
+    a directory that is denied by your permission settings". `Grep` on `~/.ssh`: "Permission to
+    read ... has been denied". `uv run python -c "open(...)"`: the sandbox refused it, the
+    program saw `PermissionError: [Errno 1] Operation not permitted`
+  - A write outside the scope from a Bash program, and into `<common dir>/hooks`, failed with
+    the same `Operation not permitted`
+  - `curl https://example.com` was refused by the proxy: `curl: (56) CONNECT tunnel failed,
+    response 403`, followed by `<sandbox_violations>` / `deny network-outbound example.com:443
+    (user denied)`; the tool result's meta carries `"remedy": {"kind": "sandbox_violation"}`.
+    `api.github.com` was reached
+  - `ssh -T git@github.com` (an allowed domain) failed: "Could not resolve hostname github.com"
+  - The session fetched, made a commit with `git commit-tree`, pushed it to a new branch and
+    deleted the branch, all as `shipmill-romamo[bot]` (author, committer and the push's actor)
+  - `uv run pytest -q tests/test_headless_docs.py` passed in the checkout
+  - The project settings file did not widen the sandbox: `example.com` was refused in both runs
+  - **Refusal text the tick reads.** A refused host: `<sandbox_violations>` in the tool result
+    and `remedy.kind = "sandbox_violation"` in its meta. A refused path: only the program's own
+    `Operation not permitted` (EPERM), with no violation block
+  - **Departures from spec 087, each a decision on #1524:**
+    - `gh` cannot start with `~/.config/gh/hosts.yml` denied: "failed to read configuration:
+      open .../hosts.yml: operation not permitted", even through the App's `gh` helper
+    - A bare `Edit` and `Write` in `~/.claude/settings.json` `permissions.allow` merge in, so
+      the Write tool wrote a file in `~` outside the write scope; S-087-13 checks only
+      `sandbox` and `permissions.additionalDirectories`
+    - A command could not reach a local port, at `127.0.0.1` or with `localhost` in
+      `allowedDomains`: "Failed to connect to 127.0.0.1 port ...". A declared tunnel needs
+      another way in
+    - Claude Code renames links it finds inside a `.git` folder after a sandboxed command
+      ("renamed one or more entries in a .git folder so that git outside the sandbox does not
+      follow them", as `.<name>.claude-sandbox-quarantine-<hex>`). The session's uv cache under
+      `<common dir>/shipmill/uv-cache` had 26 entries renamed, so it belongs outside the git dir
 
 ### State
 
