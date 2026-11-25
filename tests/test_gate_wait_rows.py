@@ -7,6 +7,8 @@ import dataclasses
 import datetime as dt
 import hashlib
 import json
+import plistlib
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -21,9 +23,9 @@ from shipmill.walk import HANDED, End, Hand, Handed, Head
 
 from .test_status_item import whos
 from .test_status_picture import REPO, facts
-from .test_watch_gate_idle import ws
+from .test_watch_gate_idle import Host, host, rows, ws
 
-__all__ = ["ws"]  # the fixture, imported for the tests below
+__all__ = ["host", "ws"]  # the fixtures, imported for the tests below
 
 UTC = dt.timezone.utc  # noqa: UP017 (the script runs under 3.10 too)
 NOW = dt.datetime(2026, 11, 25, 6, 0, tzinfo=UTC)
@@ -145,3 +147,34 @@ def test_s089_13_status_item_reads_the_pause_whatever_it_names(ws: ModuleType) -
     assert ws.item_row(ws.Row("GATE_PAUSED", "limit", "until ..."), 9)
     assert ws.item_row(ws.Row("GATE_RETRY", "PRS_OPEN #9", "after ..."), 9)
     assert not ws.item_row(ws.Row("GATE_RETRY", "PRS_OPEN #10", "after ..."), 9)
+
+
+def test_s089_13_an_unreadable_token_file_gives_no_row_not_a_crash(ws: ModuleType, tmp_path: Path) -> None:
+    # the gate refuses a file its user can't read (CLAUDE_AUTH) and starts no session with it,
+    # so no pause names it; the watch reads the rest of its report
+    token = token_at(tmp_path / "claude-token")
+    save_pause(tmp_path, "login", Pause(End.AUTH, "s1", NOW))
+    token.chmod(0o000)
+    try:
+        assert ws.paused_rows(tmp_path, token, 24, NOW) == []
+    finally:
+        token.chmod(0o600)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the gate's launchd job is a Mac's")
+def test_s089_13_the_watch_reads_the_pause_where_the_launchd_gate_writes_it(host: Host) -> None:
+    # launchd gives the gate's tick only its job's EnvironmentVariables, none of them
+    # XDG_STATE_HOME, so its pauses are under ~/.local/state whatever the person's shell sets
+    agents = host.tmp / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    job = {
+        "Label": "dev.shipmill.gate.o.r",
+        "ProgramArguments": ["uvx", "shipmill", "--repo", str(host.work), "gate", "o/r"],
+        "WorkingDirectory": str(host.work),
+        "EnvironmentVariables": {"PATH": "/usr/bin:/bin"},
+    }
+    (agents / "dev.shipmill.gate.o.r.plist").write_bytes(plistlib.dumps(job))
+    save_pause(host.tmp / ".local" / "state" / "shipmill" / "claude", "login", Pause(End.AUTH, "s1", NOW))
+    host.env["XDG_STATE_HOME"] = str(host.tmp / "shell-state")
+    paused = [r for r in rows(host.watch()) if r["state"] == "GATE_PAUSED"]
+    assert [(r["subject"], r["fix"]) for r in paused] == [("auth", "claude auth login")]

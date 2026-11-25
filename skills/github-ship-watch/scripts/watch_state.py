@@ -406,7 +406,8 @@ Agents (all reported, never an action by itself):
                   file, else ~/.config/shipmill/claude-token, else the login) is paused, so
                   no gate on the host starts a session with it. Read from
                   $XDG_STATE_HOME/shipmill/claude/<credential>.json (~/.local/state without
-                  XDG_STATE_HOME), the credential named by 16 hex digits of the token file's
+                  XDG_STATE_HOME; for a gate on launchd, as its job's EnvironmentVariables
+                  set it, not the shell), the credential named by 16 hex digits of the token file's
                   SHA-256, never the token. Subject the cause, limit or auth; detail `until
                   <YYYY-MM-DD HH:MM> UTC, or once /usage shows room: ...` for a limit (its
                   resetsAt, or retry_hours after it began), `until the token changes: ...` for
@@ -5081,12 +5082,18 @@ def token_file(args: list[str], home: Path) -> Path:
     return home / TOKEN_DEFAULT
 
 
-def credential_name(token: Path) -> str:
+def credential_name(token: Path) -> str | None:
     """shipmill's claude_pause.credential_id: 16 hex digits of the SHA-256 of the token file's
-    content, or login without the file; the token is read only to hash it, never shown"""
+    content, or login without the file; the token is read only to hash it, never shown. None
+    for a file the gate's user can't read: the gate refuses it (CLAUDE_AUTH) and starts no
+    session with it, so no pause names it"""
     if not token.is_file():
         return LOGIN_CREDENTIAL
-    return hashlib.sha256(token.read_bytes()).hexdigest()[:16]
+    try:
+        content = token.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(content).hexdigest()[:16]
 
 
 def pause_record(path: Path) -> dict[str, object] | None:
@@ -5132,6 +5139,8 @@ def paused_rows(pauses: Path, token: Path, retry: int, now: dt.datetime) -> list
     whose time has passed lifts on the gate's next tick: no row. The fix is the token's for
     auth, none for a limit. Reported, never an agent's"""
     credential = credential_name(token)
+    if credential is None:
+        return []
     found = pause_record(pauses / f"{credential}.json")
     if found is None or "lifted" in found:
         return []
@@ -5197,6 +5206,18 @@ def gate_idle_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     return [] if state is None else idle_rows(state / HANDED, now)
 
 
+def gate_environ(plist: dict[str, object] | None, environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the gate's tick reads XDG_STATE_HOME from: its launchd job's
+    EnvironmentVariables, since launchd hands a job none of a shell's, else this process's,
+    for a gate run by hand"""
+    if plist is None:
+        return dict(environ)
+    found = plist.get("EnvironmentVariables", {})
+    if not isinstance(found, dict):
+        raise Refused(f"error: the gate job {plist.get('Label')}: EnvironmentVariables must be a dict")
+    return {str(k): str(v) for k, v in found.items()}
+
+
 def gate_wait_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     """GATE_IDLE, then spec 089's GATE_PAUSED for the credential the gate's sessions use and
     GATE_RETRY for its hands in backoff, from the gate's folder as gate_idle_rows finds it"""
@@ -5209,7 +5230,10 @@ def gate_wait_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     args = plist.get("ProgramArguments") if plist else None
     job = [str(a) for a in args] if isinstance(args, list) else []
     paused = paused_rows(
-        pauses_folder(dict(os.environ), Path.home()), token_file(job, Path.home()), retry_hours(repo_dir), now
+        pauses_folder(gate_environ(plist, os.environ), Path.home()),
+        token_file(job, Path.home()),
+        retry_hours(repo_dir),
+        now,
     )
     return [*idle_rows(state / HANDED, now), *paused, *retry_rows(state / HANDED, state / "gate.json", now)]
 
