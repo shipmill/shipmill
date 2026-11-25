@@ -22,7 +22,7 @@ from typing import Any
 
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import AgentsConfig, Filler, Mode, app_id_of
+from shipmill.agents import MAINTAINER, AgentsConfig, Filler, Mode, app_id_of
 from shipmill.app import Identity, default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
 from shipmill.catch_up import Main as Main  # the gate's catch-up reads the branch the same way (#886)
@@ -506,6 +506,12 @@ def _checked(proc: subprocess.CompletedProcess[str], what: str) -> str:
     if proc.returncode != 0:
         raise ReleaseError(f"{what} failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
     return proc.stdout
+
+
+def maintainer_of(roles: Sequence[ResolvedRole]) -> tuple[Filler, ...]:
+    """S-094-4: who fills spec 036's maintainer role among the resolved roles, which
+    roles.resolve always gives first; none when the roles name no maintainer"""
+    return next((r.fillers for r in roles if r.name.value == MAINTAINER), ())
 
 
 def read_issues(repo: str, run: StateRunner, bot_login: str | None, roles: Sequence[ResolvedRole] = ()) -> list[Issue]:

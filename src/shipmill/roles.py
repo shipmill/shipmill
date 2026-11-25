@@ -99,14 +99,6 @@ def resolve(config: RolesConfig, login: LoginReader, gate: str = "") -> tuple[Re
     return (maintainer, *others)
 
 
-def maintainer(roles: Sequence[ResolvedRole]) -> ResolvedRole:
-    """The resolved maintainer role, which resolve always gives first"""
-    found = next((r for r in roles if r.name.value == MAINTAINER), None)
-    if found is None:
-        raise ReleaseError(f"the resolved roles name no {MAINTAINER}: {', '.join(str(r.name) for r in roles)}")
-    return found
-
-
 def text(roles: tuple[ResolvedRole, ...]) -> str:
     return "".join(f"{r.line()}\n" for r in roles)
 
