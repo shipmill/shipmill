@@ -1016,3 +1016,203 @@ def test_1479_the_fleet_section_documents_the_overview(fl: ModuleType) -> None:
     skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
     assert "`scripts/fleet.py overview --fleet <file>" in skill
     assert "--jobs" in skill
+
+
+# -- --order impact (spec 086): the queue by what each item holds back ---------------------------
+
+
+@dataclass
+class Walked(FakeGh):
+    """Also answers github-issue-triage's chains.py impact: its rows, or a failure"""
+
+    impact: list[dict[str, Any]] = field(default_factory=list)
+    walk_fails: str | None = None  # the walk's stderr when it exits 2
+    printed: str | None = None  # what the walk prints in place of its rows
+
+    def __call__(self, cmd: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        cmd = list(cmd)
+        if len(cmd) > 1 and cmd[1].endswith("chains.py"):
+            self.calls.append(cmd)
+            if self.walk_fails is not None:
+                return proc(2, err=self.walk_fails)
+            return proc(0, self.printed if self.printed is not None else json.dumps({"rows": self.impact}) + "\n")
+        return super().__call__(cmd, cwd)
+
+
+def impact_row(ref: str, held: int) -> dict[str, Any]:
+    return {"ref": ref, "held": held, "held_direct": 1, "waiting_for": "decision", "idle_days": 2, "milestones": []}
+
+
+def impact_fake(**kw: Any) -> Walked:
+    """o/r#1 the oldest and o/r#2 next, o/s#9 the newest; o/s#9 holds 3, o/r#2 holds 1, o/r#1 none"""
+    return Walked(
+        watch={"o/r": [watch_row("NEEDS_DECISION", "o/r", "#1 #2")], "o/s": [watch_row("NEEDS_DECISION", "o/s", "#9")]},
+        github={
+            "o/r": {1: asked(1, "Oldest", ago(days=3)), 2: asked(2, "Older", ago(days=2))},
+            "o/s": {9: asked(9, "Newest", ago(hours=5))},
+        },
+        impact=[impact_row("o/s#9", 3), impact_row("O/R#2", 1), impact_row("o/r#50", 7)],  # #50 is no row of the queue
+        **kw,
+    )
+
+
+def chains_calls(fl: ModuleType, fake: FakeGh) -> list[list[str]]:
+    return [c for c in fake.calls if len(c) > 1 and c[1] == str(fl.WS.CHAINS)]
+
+
+def test_s086_13_order_impact_sorts_by_holds_then_oldest_and_prints_holds(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = impact_fake()
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, "--order", "impact")
+    assert code == 1
+    assert out.splitlines() == [
+        "o/s QUESTION      #9     answer the needs-decision question: Newest holds 3 (5h)",
+        "o/r QUESTION      #2     answer the needs-decision question: Older holds 1 (2d 0h)",
+        "o/r QUESTION      #1     answer the needs-decision question: Oldest holds 0 (3d 0h)",
+    ]
+    walks = chains_calls(fl, fake)
+    assert walks == [
+        [sys.executable, str(fl.WS.CHAINS), "impact", "--json", "--trusted-only", "--bot-login", BOT]
+        + ["--repo", "o/r", "--repo", "o/s"]
+    ]
+    assert fake.calls[-1] == walks[0]  # after the repos' reads
+
+
+def test_s086_13_a_tie_in_holds_keeps_the_oldest_first(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = impact_fake()
+    fake.impact = [impact_row("o/r#1", 2), impact_row("o/r#2", 2)]
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--order", "impact")
+    assert code == 1
+    assert [line.split()[2] for line in out.splitlines()] == ["#1", "#2", "#9"]
+    assert "--bot-login" not in chains_calls(fl, fake)[0]
+
+
+def test_s086_13_json_gains_holds_and_order(fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = impact_fake()
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, "--order", "impact", "--json")
+    assert code == 1
+    found = json.loads(out)
+    assert found["order"] == "impact" and "impact_error" not in found
+    assert [(i["repo"], i["number"], i["holds"]) for i in found["items"]] == [
+        ("o/s", 9, 3),
+        ("o/r", 2, 1),
+        ("o/r", 1, 0),
+    ]
+
+
+@pytest.mark.parametrize("order", [(), ("--order", "age")])
+@pytest.mark.parametrize("as_json", [(), ("--json",)])
+def test_s086_13_without_order_impact_the_queue_and_its_commands_are_spec_069s(
+    fl: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    order: tuple[str, ...],
+    as_json: tuple[str, ...],
+) -> None:
+    plain = impact_fake()
+    expected = run_queue(fl, tmp_path, capsys, plain, "--bot-login", BOT, *as_json)
+    fake = impact_fake()
+    assert run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, *as_json, *order) == expected
+    assert chains_calls(fl, fake) == []
+    assert [c[:3] for c in fake.calls] == [c[:3] for c in plain.calls]
+    if as_json:
+        found = json.loads(expected[1])
+        assert set(found) == {"login", "items", "errors"} and all("holds" not in i for i in found["items"])
+    else:
+        assert "holds" not in expected[1]
+
+
+def test_s086_13_a_failed_walk_prints_impact_error_keeps_the_oldest_first_and_exits_2(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = impact_fake(walk_fails="error: reading the open issues of o/s: HTTP 502\nsecond line")
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, "--order", "impact")
+    assert code == 2
+    assert out.splitlines() == [
+        "o/r QUESTION      #1     answer the needs-decision question: Oldest (3d 0h)",
+        "o/r QUESTION      #2     answer the needs-decision question: Older (2d 0h)",
+        "o/s QUESTION      #9     answer the needs-decision question: Newest (5h)",
+        "IMPACT_ERROR chains.py impact: error: reading the open issues of o/s: HTTP 502",
+    ]
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, "--order", "impact", "--json")
+    found = json.loads(out)
+    assert code == 2 and found["order"] == "age"
+    assert found["impact_error"] == "error: reading the open issues of o/s: HTTP 502"
+    assert [i["number"] for i in found["items"]] == [1, 2, 9] and all("holds" not in i for i in found["items"])
+
+
+@pytest.mark.parametrize(
+    "printed",
+    [
+        "Traceback (most recent call last)\n",
+        '{"rows": {}}\n',
+        json.dumps({"rows": [{"ref": "not a ref", "held": 1}]}),
+        json.dumps({"rows": [{"ref": "o/r#1", "held": 0}]}),
+        json.dumps({"rows": [{"ref": "o/r#1", "held": True}]}),
+    ],
+)
+def test_s086_13_a_walk_that_prints_no_rows_is_an_impact_error(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], printed: str
+) -> None:
+    fake = impact_fake(printed=printed)
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, "--order", "impact")
+    assert code == 2
+    lines = out.splitlines()
+    assert [line.split()[2] for line in lines[:3]] == ["#1", "#2", "#9"]
+    assert lines[3].startswith("IMPACT_ERROR chains.py impact: chains.py impact printed ")
+
+
+def test_s086_13_the_walk_runs_when_a_repo_failed_and_keeps_its_repo_error(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = impact_fake(failing={"o/r": ("clone", "error: HTTP 502")})
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT, "--order", "impact")
+    assert code == 2
+    assert out.splitlines() == [
+        "o/s QUESTION      #9     answer the needs-decision question: Newest holds 3 (5h)",
+        "o/r REPO_ERROR gh repo clone: error: HTTP 502",
+    ]
+    assert len(chains_calls(fl, fake)) == 1
+
+
+def test_s086_13_chains_py_takes_the_walk_the_queue_runs(fl: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    """The arguments impact_command gives are chains.py impact's own: run over a fleet with no
+    open issue, it reads each repo's open issues and prints {"rows": []}"""
+    sys.path.insert(0, str(fl.WS.CHAINS.parent))  # chains imports triage_state, as when run from its folder
+    try:
+        spec = importlib.util.spec_from_file_location("queue_chains", fl.WS.CHAINS)
+        assert spec is not None and spec.loader is not None
+        chains = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = chains
+        spec.loader.exec_module(chains)
+    finally:
+        sys.path.remove(str(fl.WS.CHAINS.parent))
+    asked_for: list[dict[str, Any]] = []
+
+    def run(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        asked_for.append(dict(variables))
+        empty = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}
+        return {"data": {"repository": {"issues": empty}}}
+
+    cmd = fl.impact_command([fl.Entry("o/r", None), fl.Entry("o/s", None)], BOT)
+    assert cmd[1] == str(fl.WS.CHAINS)
+    assert chains.main(cmd[2:], run=run, now=NOW) == 0
+    assert json.loads(capsys.readouterr().out) == {"rows": []}
+    assert [(v["owner"], v["name"]) for v in asked_for] == [("o", "r"), ("o", "s")]
+    assert fl.impact_counts(json.dumps({"rows": [impact_row("O/R#2", 4)]})) == {("o/r", 2): 4}
+
+
+def test_s086_14_the_skills_document_order_impact_and_the_chain_views() -> None:
+    # proves: S-086-14
+    skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+    fleet = re.search(r"^## Fleet\n(.*?)^## ", skill, re.MULTILINE | re.DOTALL)
+    assert fleet is not None
+    assert "--order impact" in fleet.group(1) and "IMPACT_ERROR" in fleet.group(1)
+    triage = (SCRIPTS.parents[1] / "github-issue-triage" / "SKILL.md").read_text(encoding="utf-8")
+    chains = re.search(r"^## Chains\n(.*?)^## ", triage, re.MULTILINE | re.DOTALL)
+    assert chains is not None
+    for view in ("chains.py impact", "chains.py stalled", "chains.py path"):
+        assert view in chains.group(1), view

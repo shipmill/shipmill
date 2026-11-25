@@ -1,6 +1,6 @@
 # S-086: See which stuck or blocked work holds the most back
 
-status: approved
+status: built
 serves: G-1, G-4
 
 ## Problem
@@ -192,3 +192,18 @@ order, and the run exits 2. `skills/github-ship-watch/SKILL.md`'s Fleet section 
 - shipmill/shipmill#1533: S-086-13, S-086-14
 
 ## Verification
+
+- S-086-1: ran `tests/test_chain_impact.py`'s `test_s086_1_*` against `chains.py show --json` on a fake forge, held 2 and held_direct 1 for a direct and a transitive waiter, another repo's waiter counted, an item's own cycle counting nothing, milestones sorted and once each, all pass
+- S-086-2: ran `test_s086_2_untrusted_unreadable_and_closed_issues_add_nothing`, UNTRUSTED, UNREADABLE, and closed waiters leave every held and held_direct unchanged, passes
+- S-086-3: ran `test_s086_3_*`, each of the ten waiting_for values read for an issue set up for it in order, and idle_days from the newer of the issue's and its open closing pull request's updatedAt, all pass
+- S-086-4: ran `test_s086_4_*` (rows, order, both shapes, exit 0, `--repo` past the first page of 100) and `chains.py impact --repo shipmill/shipmill --trusted-only` against GitHub, which read the repo's open issues and exited 0 with no row, all pass
+- S-086-5: ran `test_s086_5_*`, heads idle 7 days or more and with `--days 3` those idle 3 or more, never an `items` or `cycle` item, exit 1 with a row, 0 without, 2 for `--days 0`, all pass
+- S-086-6: ran `test_s086_6_*`, the milestone's open issues and what they wait on recursively and once, `decision` then `maintainer` first, an unknown title exits 2 naming it, an empty milestone prints `milestone T: nothing open` and exits 0, all pass
+- S-086-7: ran `test_s086_7_the_views_make_only_reads_through_gh` for impact, stalled, and path, every gh call a GraphQL query or a REST GET, no mutation, passes
+- S-086-8: ran `tests/test_chain_stalled.py`'s `test_s086_8_*`, one report-only CHAIN_STALLED row with the documented detail and fix from the one `chains.py show` run, none under `--tier` or `--sweep`, and `shipmill status`'s `stalled chains:` line (`src/shipmill/status.py`) with an unchanged verdict, all pass
+- S-086-9: ran `tests/test_chain_impact_order.py`'s `test_s086_9_*`, `--tier 6` ISSUES rows carry `impact` most held first, and a failed walk gives CHAIN_UNREADABLE with empty lists while the rows print, all pass
+- S-086-10: ran `test_s086_10_*`, the fingerprint and item_key unchanged by `impact`, and each malformed field fails the read, all pass
+- S-086-11: ran `test_s086_11_*`, a tier 6 row holding 3 before an earlier kind holding 1 before one holding none, S-046-12's order with empty impact, expedite still first, tiers 1 to 3 before tier 4, all pass
+- S-086-12: ran `test_s086_12_*` and read `src/shipmill/gate.py`'s `first by impact` reason and the prompt's `start with it.` line, both from the parsed digits, and a LAUNCH without impact reads as before, all pass
+- S-086-13: ran `tests/test_fleet_queue.py`'s `test_s086_13_*` (holds then oldest first, `holds K` on each line, `holds` and `order` in `--json`, one `chains.py impact` naming every fleet repo after the repos' reads, the same output and commands without `--order` or with `--order age`, IMPACT_ERROR with the oldest-first order and exit 2 on a failed or malformed walk) with every spec 069 test unchanged, and `fleet.py queue --order impact --json` over a fleet of shipmill/shipmill against GitHub, which printed `"order": "impact"`, all pass
+- S-086-14: read `skills/github-ship-watch/SKILL.md`'s Fleet section (`--order impact`, IMPACT_ERROR) and `skills/github-issue-triage/SKILL.md`'s Chains section (`chains.py impact`, `stalled`, `path`), and ran `test_s086_14_the_skills_document_order_impact_and_the_chain_views`, passes

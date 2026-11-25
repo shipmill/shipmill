@@ -366,6 +366,8 @@ In a session, `/loop 1h` the same report.
 
 An item an outsider opened is in no row; without `--bot-login`, an item the App opened reads as an outsider's. `--json` prints one object: `login`, `items` (each with `repo`, `kind`, `number`, `url`, `asked`, `title`, `since`, `waited_minutes`) in the table's order, and `errors`. A repo whose read fails gets one REPO_ERROR line after the queue, naming the step and the error's first line. Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's read failed, and 2 on a malformed fleet file.
 
+`--order impact` puts first what holds back the most work (spec 086): after the repos' reads it runs one github-issue-triage `chains.py impact --json --trusted-only` (with the `--bot-login`) with a `--repo` for every repo of the fleet file, so an item's count takes in its waiters across the fleet. Each row gains `holds`, how many open issues wait on its item, directly or through others (0 when nothing does), and the rows sort by `holds`, most first, then oldest first. Each line puts `holds K` before the wait, and `--json`'s items gain `holds` and its object `"order": "impact"`. A walk that fails keeps the oldest-first order, prints one `IMPACT_ERROR` line with the error's first line after the queue (in `--json`, `"order": "age"` and `impact_error`), and exits 2. Without it (`--order age`, the default) the queue and the commands it runs are the ones above.
+
 The queue is an option the user schedules, never a default. `/schedule` a routine whose prompt is:
 
 ```text

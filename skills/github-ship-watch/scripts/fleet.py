@@ -2,7 +2,7 @@
 """Report many repos' issue-to-release pipelines at once: ship-watch's states across a fleet.
 
 Usage: fleet.py report --fleet FILE [--metrics] [--json]
-       fleet.py queue --fleet FILE [--login LOGIN] [--bot-login LOGIN] [--json]
+       fleet.py queue --fleet FILE [--login LOGIN] [--bot-login LOGIN] [--order age|impact] [--json]
        fleet.py overview --fleet FILE [--login LOGIN] [--bot-login LOGIN] [--jobs N] [--json]
 
 A fleet file lists the repos, in TOML:
@@ -110,6 +110,17 @@ the queue, naming the step and the error's first line; a repo is never read with
 Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's read
 failed, and 2 on a malformed fleet file. Reads only.
 
+  --order age|impact  age (the default) is the order above, with no other read. impact
+              (spec 086) runs, after the repos' reads, one github-issue-triage
+              chains.py impact --json --trusted-only (with the --bot-login) with a --repo for
+              every repo of the fleet file, so counts run across the fleet's repos. Each row
+              gains holds, how many open issues wait on its item (its row's held; 0 when the
+              walk lists none), and the rows sort by holds, most first, then in the order
+              above. Each line puts "holds K" before the wait; --json's items gain "holds"
+              and its object "order": "impact". A walk that fails, or prints what isn't its
+              rows, keeps the order above, prints one IMPACT_ERROR line with the error's first
+              line after the queue (--json: "order": "age" and "impact_error"), and exits 2
+
 overview (#1479) prints what report (without --metrics) and queue print, each repo read once:
 one clone, on which report's watch and queue's reads run as those commands run them. The
 queue's watch still runs on its own, since --trusted-only and the --bot-login change how the
@@ -133,7 +144,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Protocol, TypeVar
@@ -579,12 +590,13 @@ class Item:
     url: str
     title: str
     since: dt.datetime
+    holds: int | None = None  # --order impact's count of open issues waiting on it (spec 086); None without
 
     def waited(self, now: dt.datetime) -> int:
         return max(0, int((now - self.since).total_seconds() // 60))
 
     def json(self, now: dt.datetime) -> dict[str, Any]:
-        return {
+        found: dict[str, Any] = {
             "repo": self.repo,
             "kind": self.kind,
             "number": self.number,
@@ -594,6 +606,7 @@ class Item:
             "since": self.since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),  # noqa: UP017 (3.10)
             "waited_minutes": self.waited(now),
         }
+        return found if self.holds is None else {**found, "holds": self.holds}
 
 
 @dataclass(frozen=True)
@@ -1078,7 +1091,7 @@ def queue_lines(items: list[Item], errors: list[RepoError], now: dt.datetime) ->
     width = max([len(i.repo) for i in items] + [len(e.repo) for e in errors], default=0)
     lines = [
         f"{i.repo:<{width}} {i.kind:<{KIND_WIDTH}} {'#' + str(i.number):<6} {ASKED[i.kind]}: {i.title}"
-        f" ({waited_text(i.waited(now))})"
+        f"{'' if i.holds is None else f' holds {i.holds}'} ({waited_text(i.waited(now))})"
         for i in items
     ]
     if not items:
@@ -1109,18 +1122,81 @@ def queue_code(items: list[Item], errors: list[RepoError]) -> int:
     return 1 if items else 0
 
 
+# -- --order impact (spec 086): the queue by what each item holds back ------------------------
+
+AGE = "age"
+IMPACT = "impact"
+IMPACT_ERROR = "IMPACT_ERROR"
+
+
+def impact_command(entries: Sequence[Entry], bot_login: str | None) -> list[str]:
+    """One chains.py impact over every open issue of every fleet repo, so an item's count takes
+    in its waiters across the fleet; with the watch's trust (--trusted-only and the --bot-login,
+    D-16), so an outsider's Depends on line adds nothing"""
+    cmd = [sys.executable, str(WS.CHAINS), "impact", "--json", "--trusted-only"]
+    cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    return cmd + [arg for e in entries for arg in ("--repo", e.repo)]
+
+
+def impact_counts(text: str) -> dict[tuple[str, int], int]:
+    """chains.py impact --json's rows, each item (its repo in lower case, its number) with its
+    held; ValueError naming what it printed when that isn't {"rows": [...]} of such rows"""
+    try:
+        found = json.loads(text)
+    except json.JSONDecodeError:
+        raise ValueError(f"chains.py impact printed {text[:200]!r}, not JSON") from None
+    if not isinstance(found, dict) or not isinstance(found.get("rows"), list):
+        raise ValueError(f'chains.py impact printed {text[:200]!r}, not {{"rows": [...]}}')
+    counts: dict[tuple[str, int], int] = {}
+    for row in found["rows"]:
+        ref = WS.CHAIN_REF.match(str(row.get("ref"))) if isinstance(row, dict) else None
+        held = row.get("held") if isinstance(row, dict) else None
+        if ref is None or not isinstance(held, int) or isinstance(held, bool) or held < 1:
+            raise ValueError(f"chains.py impact printed {json.dumps(row)[:200]}, not a row with its ref and held")
+        counts[ref["repo"].lower(), int(str(row["ref"]).rsplit("#", 1)[1])] = held
+    return counts
+
+
+def by_impact(items: list[Item], counts: dict[tuple[str, int], int]) -> list[Item]:
+    """The rows, each with its holds (0 for an item the walk lists no row for), most first;
+    a tie keeps the order they came in (oldest first)"""
+    held = [replace(i, holds=counts.get((i.repo.lower(), i.number), 0)) for i in items]
+    return sorted(held, key=lambda i: -(i.holds or 0))
+
+
+def impacted(items: list[Item], entries: Sequence[Entry], runner: Runner, bot_login: str | None) -> list[Item] | str:
+    """The rows by impact, or the failed walk's first line, which keeps them oldest first"""
+    proc = runner(impact_command(entries, bot_login))
+    if proc.returncode != 0:
+        return first_line(proc, "chains.py impact")
+    try:
+        return by_impact(items, impact_counts(proc.stdout))
+    except ValueError as malformed:
+        return str(malformed)
+
+
 def queue(args: argparse.Namespace, runner: Runner, clock: Callable[[], dt.datetime]) -> int:
-    """fleet.py queue: every repo's rows in one list, oldest first; reads only"""
+    """fleet.py queue: every repo's rows in one list, oldest first, or with --order impact by
+    what each holds back; reads only"""
     entries = load(args.fleet)
     login = reader(args.login, runner)
     with tempfile.TemporaryDirectory(prefix="fleet-") as workdir:
         ordered, errors = gathered([queue_repo(e, runner, Path(workdir), args.bot_login, login) for e in entries])
+    failed: str | None = None
+    if args.order == IMPACT:
+        found = impacted(ordered, entries, runner, args.bot_login)
+        ordered, failed = (ordered, found) if isinstance(found, str) else (found, None)
     now = clock()
     if args.json:
-        print(json.dumps(queue_json(login, ordered, errors, now), indent=2, sort_keys=True))
+        shown = queue_json(login, ordered, errors, now)
+        if args.order == IMPACT:
+            shown = {**shown, "order": AGE if failed is not None else IMPACT}
+            shown = shown if failed is None else {**shown, "impact_error": failed}
+        print(json.dumps(shown, indent=2, sort_keys=True))
     else:
-        print("\n".join(queue_lines(ordered, errors, now)))
-    return queue_code(ordered, errors)
+        lines = queue_lines(ordered, errors, now)
+        print("\n".join(lines + ([f"{IMPACT_ERROR} chains.py impact: {failed}"] if failed is not None else [])))
+    return 2 if failed is not None else queue_code(ordered, errors)
 
 
 # -- the overview (#1479): the report and the queue in one pass, one clone per repo -------------
@@ -1201,6 +1277,12 @@ def arguments() -> argparse.ArgumentParser:
     que.add_argument("--fleet", required=True, type=Path, help="the fleet file")
     que.add_argument("--login", help="the reader (default: the authenticated gh user)")
     que.add_argument("--bot-login", help="the gate's App, <slug>[bot], whose items are trusted (D-16)")
+    que.add_argument(
+        "--order",
+        choices=(AGE, IMPACT),
+        default=AGE,
+        help="age: oldest first (default); impact: most open issues held first, then oldest (spec 086)",
+    )
     que.add_argument("--json", action="store_true", help="one JSON object instead of a list")
     ove = commands.add_parser("overview", help="the report and the queue in one pass, each repo read once")
     ove.add_argument("--fleet", required=True, type=Path, help="the fleet file")
