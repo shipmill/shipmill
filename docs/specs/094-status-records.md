@@ -14,25 +14,43 @@ launchd plists, and breaks on the next release: the `stalled chains` line of spe
 (shipmill/shipmill#1620). `waits on nobody` also lumps together an item assigned to a person,
 one that waits on another repo, and a postponed one, which call for different follow-ups.
 
-The maintainer accepted it on 2026-11-25, with its spec and build to follow at once.
+Such tooling also costs GitHub reads: on 2026-11-25 a caller that ran `status --item` once per
+issue across 24 gates spent the maintainer login's GraphQL hour and tripped GitHub's secondary
+limit, which starved the gates of reads for about 45 minutes.
+
+The maintainer accepted it on 2026-11-25, with its spec and build to follow at once, and asked
+for the records in a command of their own: shipmill gives a gated repo's status through narrow
+read-only commands, each answering one question with `--json`, as `factory`, `autonomy`,
+`window`, and `milestones` do, rather than more modes on `status`.
 
 ## Behaviour
 
-### One record per open item
+### `shipmill queue`
 
-`shipmill status --summary --json` (`src/shipmill/status_summary.py`) adds `items`: one record
-per open issue and pull request, ascending by number:
+`shipmill queue [owner/name] [--json] [--fleet] [--repo PATH]` (`src/shipmill/queue.py`)
+answers one question: who holds each open issue and pull request of the repo, why, and what
+clears it. It reads only and writes nothing on GitHub or on disk. The repo defaults to the
+checkout's origin, as `status` does.
+
+`--json` prints one object:
 
 ```json
-{"number": 1604, "kind": "issue", "holder": "elsewhere", "via": null, "accept": null,
- "why": "waits on other/repo#12 (open)", "clears": "other/repo#12 closing or merging",
- "waits_on": ["other/repo#12"], "conditions": [{"reason": "...", "who": "event", "clears": "...", "holder": "elsewhere"}]}
+{"schema": 1, "repo": "owner/name", "totals": {"issues": 87, "pulls": 6},
+ "split": {"maintainer": {"issues": [1604], "pulls": [1598]}, "agent": {...}, "attention": {...},
+           "people": {...}, "elsewhere": {...}, "postponed": {...}, "nobody": {...}},
+ "items": [{"number": 1604, "kind": "issue", "holder": "elsewhere", "via": null, "accept": null,
+            "why": "waits on other/repo#12 (open)", "clears": "other/repo#12 closing or merging",
+            "waits_on": ["other/repo#12"],
+            "conditions": [{"reason": "...", "who": "event", "clears": "...", "holder": "elsewhere"}]}]}
 ```
+
+`split` names each holder's issues and pull requests, ascending; `items` holds one record per
+open issue and pull request, ascending by number:
 
 - **`conditions`:** the conditions `status --item` gives the item (spec 088,
   `src/shipmill/item_status.py`), each with its own `holder`, read by the same code
-- **`holder`:** the item's line, as spec 091 places it (its own conditions, then the items it
-  counts with), from the holders below
+- **`holder`:** the item's line, placed as spec 091 places it (its own conditions, then the
+  items it counts with), from the holders below
 - **`via`:** `null` when the item's own conditions place it; else the number of the open item
   of this repo it counts with (its pull request, or the item it waits on, S-091-7) whose line
   it took
@@ -46,71 +64,91 @@ per open issue and pull request, ascending by number:
 - **`accept`:** `"opportunity"` or `"plan"` for an issue triaged as such, which the maintainer
   accepts or declines; else `null`
 
-`status --item N --json` adds the same `holder`, `via`, `accept`, `why`, `clears`, and
-`waits_on`, and the same `holder` on each condition, built by the same code as the summary's
-record, so the two agree for every item. To place an item that counts with another, `--item`
-reads the conditions of the open items of this repo it counts with, as the summary does.
+The text prints the repo with its totals, then each holder's label, in the order of the table
+below, with its items under it, one line each: `#N <kind>: <why> (clears: <clears>)`.
 
 ### Finer holders
 
-Spec 091's `waits on nobody` splits into four. Each condition has a holder, from its `who`
-unless a rule below names another:
+Each condition has a holder, from its `who` unless a rule below names another:
 
-| Holder | Condition |
-|---|---|
-| `attention` | the gate's record holds it (GATE_RETRY, GATE_PAUSED, GATE_IDLE), as in spec 091 |
-| `maintainer` | `who` is `maintainer`, save labelled blocked |
-| `agent` | `who` is `agent` |
-| `people` | `who` is `person`: an assignee, the reporter's answer, a draft's author |
-| `elsewhere` | a BLOCKED wait on an item of another repo, an upstream report (UPSTREAM, or triaged upstream), labelled blocked (it waits on an outside event, which the maintainer marks by removing the label) |
-| `postponed` | POSTPONED, triaged postponed, or a parent whose note starts `children K/N closed`, a plan moving through its children |
-| `nobody` | any other `event`: a pending check, a closed land window, a veto window, a wait on an item of this repo |
+| Holder | Label | Condition |
+|---|---|---|
+| `maintainer` | waits on you | `who` is `maintainer`, save labelled blocked |
+| `agent` | agent takes it | `who` is `agent` |
+| `attention` | needs attention | the gate's record holds it (GATE_RETRY, GATE_PAUSED, GATE_IDLE), as in spec 091 |
+| `people` | waits on people | `who` is `person`: an assignee, the reporter's answer, a draft's author |
+| `elsewhere` | waits elsewhere | a BLOCKED wait on an item of another repo, an upstream report (UPSTREAM, or triaged upstream), labelled blocked (it waits on an outside event, which the maintainer marks by removing the label) |
+| `postponed` | postponed | POSTPONED, triaged postponed, or any wait of a parent whose note starts `children K/N closed`, a plan moving through its children |
+| `nobody` | waits on nobody | any other `event`: a pending check, a closed land window, a veto window, a wait on an item of this repo |
 
 An item's line is the first in the order `attention`, `maintainer`, `agent`, `people`,
 `elsewhere`, `postponed`, `nobody` among its conditions' holders, and with spec 091's links,
 among its own line and those of the items it counts with. A parent moving through its children
 counts by its own conditions alone, not with its children: they are listed on their own lines.
-The `split` object gains the keys `people`, `elsewhere`, and `postponed`; the text adds the
-lines `waits on people`, `waits elsewhere`, and `postponed` before `waits on nobody`.
+
+### One read of the repo's facts
+
+`queue` builds every record from one read of the repo's facts: watch_state.py's rows,
+triage_state.py's states, the open pull requests, and the open pull requests' checks, review
+decision, and labels in one `gh pr list` beside them. It makes no read per item: no
+`gh pr view`, no `status --item` of its own. `status --summary` reads the pull requests' checks
+the same way.
+
+### `status --item` and `status --summary`
+
+`status --item N --json` (spec 088) adds `"schema": 1` as its first key, the same `holder`,
+`via`, `accept`, `why`, `clears`, and `waits_on` as `queue`'s record of N, built by the same
+code, and the same `holder` on each condition. To place an item that counts with another, it
+reads the rows and the conditions of the open items of this repo it counts with, as `queue`
+does, so the two agree for every item.
+
+`status --summary` keeps spec 091's lines and JSON keys, with no `schema` and no `items`. Its
+split comes from the same records as `queue`'s, with `people`, `elsewhere`, and `postponed`
+counted on its `waits on nobody` line; a parent moving through its children counts there too.
 
 ### A schema version
 
-The JSON of `status --summary --json` and `status --item --json` carries `"schema": 1` as its
-first key. A change that removes or renames a key, or changes a value's meaning, raises it; a
-new key leaves it.
+The JSON of `queue --json`, of `queue --fleet --json`, and of `status --item --json` carries
+`"schema": 1` as its first key. A change that removes or renames a key, or changes a value's
+meaning, raises it; a new key leaves it.
 
 ### The fleet form
 
-`shipmill status --summary --host [--json]` reads every gate job on this host
-(`src/shipmill/launchd.py`'s `gate_repos`, the plists `shipmill launchd` writes) and summarizes
-each one's repo from its job's `WorkingDirectory`, the gate's checkout, in plist order. With
-`--json` it prints one object, `{"schema": 1, "repos": [...]}`, each entry the repo's
-`status --summary --json` object. A repo whose summary fails is the entry
+`shipmill queue --fleet [--json]` reads every gate job on this host (`src/shipmill/launchd.py`'s
+`gate_repos`, the plists `shipmill launchd` writes) and gives each one's repo from its job's
+`WorkingDirectory`, the gate's checkout, in plist order. With `--json` it prints one object,
+`{"schema": 1, "repos": [...]}`, each entry the repo's `queue --json` object. It reads one
+repo at a time, never several at once. A repo whose read fails is the entry
 `{"schema": 1, "repo": "owner/name", "error": "<its error's first line>"}` (in the text, the
-line `owner/name: unread: <error>`), and the others still print (D-55). A host with no gate job
-prints `{"schema": 1, "repos": []}`, or `no gate job on this host` in the text. It exits 0 when
-every repo was summarized, 2 when one failed. `--host` without `--summary`, or with a repo
-named, exits 2 naming the flags.
+line `owner/name: unread: <error>`), and the others still print (D-55). Once a repo's read
+fails on GitHub's rate limit, it reads no further repo: each remaining one is an entry whose
+error says it was not read because GitHub's rate limit was reached, so a fleet read never
+spends the budget the gates read with. A host with no gate job prints
+`{"schema": 1, "repos": []}`, or `no gate job on this host` in the text. It exits 0 when every
+repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming the flags.
 
 ## Acceptance criteria
 
-- S-094-1: `status --summary --json` lists every open issue and pull request once in `items`, ascending, each with `number`, `kind`, `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and `conditions`, and the record's `holder` is the line `split` puts it on
+- S-094-1: `queue --json` prints one object with `schema`, `repo`, `totals`, `split` (all seven holders), and `items`, one record per open issue and pull request, ascending, each with `number`, `kind`, `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and `conditions`, and the record's `holder` is the line `split` puts it on
 - S-094-2: an item placed by its own conditions has `via` null and the `why` and `clears` of its first condition with that holder; an issue that counts with an open item of the repo names it in `via` and carries that item's `why` and `clears`
 - S-094-3: `waits_on` names the not-closed targets of a BLOCKED note, of this repo or another, and the open pull requests of an IN_PROGRESS note, as `owner/name#N`
-- S-094-4: a condition from an assignee or the reporter is `people`; a wait on another repo's item, an upstream report, or labelled blocked is `elsewhere`; POSTPONED, triaged postponed, or a parent moving through its children is `postponed`; any other event is `nobody`
+- S-094-4: a condition from an assignee or the reporter is `people`; a wait on another repo's item, an upstream report, or labelled blocked is `elsewhere`; POSTPONED, triaged postponed, or any wait of a parent moving through its children is `postponed`; any other event is `nobody`
 - S-094-5: an item's line is the first in the order attention, maintainer, agent, people, elsewhere, postponed, nobody; a parent moving through its children counts by its own conditions alone
 - S-094-6: an issue triaged as an opportunity or a plan has `accept` naming it and holder `maintainer`; any other item has `accept` null
-- S-094-7: the text summary prints `waits on people`, `waits elsewhere`, and `postponed` before `waits on nobody`, and `split` carries all seven holders
-- S-094-8: `status --item N --json` carries the same `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and conditions as the summary's record of N, including an issue that counts with its pull request
-- S-094-9: the JSON of `status --summary --json` and `status --item --json` carries `"schema": 1`
-- S-094-10: `status --summary --host --json` prints `{"schema": 1, "repos": [...]}` with one summary object per gate job on the host, in plist order, each read from its job's WorkingDirectory; no gate job prints an empty list
-- S-094-11: a repo of the fleet whose summary fails is an entry with `repo` and `error`, the others still print, and the command exits 2; `--host` without `--summary` or with a repo named exits 2
+- S-094-7: the text of `queue` prints the repo with its totals, then each holder's label in the table's order with one line per item, `#N <kind>: <why> (clears: <clears>)`
+- S-094-8: `status --item N --json` carries the same `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and conditions as `queue`'s record of N, including an issue that counts with its pull request whose rows name only that pull request
+- S-094-9: the JSON of `queue --json`, `queue --fleet --json`, and `status --item --json` carries `"schema": 1` as its first key
+- S-094-10: `queue` reads the open pull requests' checks, review decision, and labels in one `gh pr list`, and runs no `gh pr view` and no command that writes, whatever the number of open items
+- S-094-11: `queue --fleet --json` prints `{"schema": 1, "repos": [...]}` with one `queue --json` object per gate job on the host, in plist order, each read from its job's WorkingDirectory, one repo at a time; no gate job prints an empty list
+- S-094-12: a repo of the fleet whose read fails is an entry with `repo` and `error`, the others still print, and the command exits 2; once a read fails on GitHub's rate limit, no further repo is read and each remaining entry says so; `--fleet` with a repo named exits 2
+- S-094-13: `status --summary` keeps spec 091's lines and JSON keys, and counts the people, elsewhere, and postponed items of `queue` on its waits on nobody line
 
 ## Out of scope
 
 - Anything about the maintainer beyond the gated repos: their own priorities, trackers, repos without a gate (shipmill/shipmill#1620)
 - Gates on other hosts: the fleet form reads this host's launchd jobs only
 - A new item state in `triage_state.py`: the holders read the states and notes it gives today
+- Releases (branch sync, the release bot, tags, publish), chains (progress, stalled chains), the agents' sessions in `factory` (live, dead, idle hand-offs), and one shared snapshot of facts the commands read: a later spec each
 
 ## Decisions relied on
 
@@ -121,7 +159,7 @@ named, exits 2 naming the flags.
 
 ## Issues
 
-- shipmill/shipmill#1620: S-094-1, S-094-2, S-094-3, S-094-4, S-094-5, S-094-6, S-094-7, S-094-8, S-094-9, S-094-10, S-094-11
+- shipmill/shipmill#1620: S-094-1, S-094-2, S-094-3, S-094-4, S-094-5, S-094-6, S-094-7, S-094-8, S-094-9, S-094-10, S-094-11, S-094-12, S-094-13
 
 ## Verification
 
