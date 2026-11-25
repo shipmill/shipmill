@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.173.1] - 2026-11-25
+
+### Fixed
+
+- product-intake's `intake_state.py` no longer reads an issue labelled `postponed`, `human`, or `role:<name>` as NEW_FEEDBACK, whatever its comments say, matching how `triage_state.py` reads it (POSTPONED, or a person's item), so github-ship-watch's FEEDBACK_DUE stops launching intake on it (#1628)
+
 ## [0.173.0] - 2026-11-25
 
 ### Added
@@ -3104,7 +3110,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.173.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.173.1...HEAD
+[0.173.1]: https://github.com/shipmill/shipmill/compare/v0.173.0...v0.173.1
 [0.173.0]: https://github.com/shipmill/shipmill/compare/v0.172.0...v0.173.0
 [0.172.0]: https://github.com/shipmill/shipmill/compare/v0.171.0...v0.172.0
 [0.171.0]: https://github.com/shipmill/shipmill/compare/v0.170.0...v0.171.0
