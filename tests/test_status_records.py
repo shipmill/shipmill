@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill.agents import Login, Team
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.item_links import ItemRef
@@ -122,6 +123,67 @@ def test_s094_3_waits_on_names_the_open_targets() -> None:
 )
 def test_s094_4_each_condition_has_its_finer_holder(issue: Issue, holder: Holder) -> None:
     assert records(facts(issues=[issue]))[5].holder is holder
+
+
+MAINTAINER = (Login("octocat"), Team.parse("@acme/core"))
+
+
+@pytest.mark.parametrize(
+    ("assignees", "teams", "holder"),
+    [
+        (("octocat",), (), Holder.MAINTAINER),
+        (("amy", "OctoCat"), (), Holder.MAINTAINER),  # theirs too, logins compared case-blind
+        ((), ("@ACME/core",), Holder.MAINTAINER),
+        (("amy",), (), Holder.PEOPLE),
+        (("amy",), ("@acme/legal",), Holder.PEOPLE),
+    ],
+)
+def test_s094_4_an_item_assigned_to_the_maintainer_waits_on_them(
+    assignees: tuple[str, ...], teams: tuple[str, ...], holder: Holder
+) -> None:
+    issue = Issue(5, "WITH_PERSON", assignees=assignees, teams=teams)
+    got = records(facts(issues=[issue], maintainer=MAINTAINER))[5]
+    assert got.holder is holder
+    assert got.why.startswith("assigned to you: ") is (holder is Holder.MAINTAINER)
+    assert [c.who for c in got.conditions] == [Who.MAINTAINER if holder is Holder.MAINTAINER else Who.PERSON]
+
+
+class PersonFake(SummaryFake):
+    """SummaryFake's picture, plus a person's item #2 assigned to the host's login, the
+    maintainer with no [agents.roles], and #3 assigned to someone else"""
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[1].endswith("triage_state.py"):
+            self.seen.append(cmd)
+            lines = [
+                {"number": 2, "state": "WITH_PERSON", "note": "with @octocat", "assignees": ["octocat"]},
+                {"number": 3, "state": "WITH_PERSON", "note": "with @amy", "assignees": ["amy"]},
+            ]
+            return subprocess.CompletedProcess(cmd, 0, "".join(json.dumps(line) + "\n" for line in lines), "")
+        if cmd[:2] == ["gh", "api"] and cmd[2] in ("repos/acme/web/issues/2", "repos/acme/web/issues/3"):
+            self.seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "open\n", "")
+        return super().__call__(cmd)
+
+
+# proves: S-094-8, S-094-13
+def test_s094_4_queue_summary_and_item_put_the_maintainers_item_on_waits_on_you(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    main(["--repo", str(root), "queue", "--json"], state=PersonFake(), login=host)
+    found = json.loads(capsys.readouterr().out)
+    queued = {i["number"]: i for i in found["items"]}
+    assert queued[2]["holder"] == "maintainer"
+    assert queued[2]["why"] == "assigned to you: a person's item: waits on @octocat"
+    assert queued[3]["holder"] == "people"
+    assert found["split"]["maintainer"]["issues"] == [2] and found["split"]["people"]["issues"] == [3]
+    main(["--repo", str(root), "status", "--item", "2", "--json"], state=PersonFake(), login=host)
+    item = json.loads(capsys.readouterr().out)
+    assert {k: item[k] for k in queued[2] if k != "number"} == {k: v for k, v in queued[2].items() if k != "number"}
+    main(["--repo", str(root), "status", "--summary", "--json"], state=PersonFake(), login=host)
+    summary = json.loads(capsys.readouterr().out)
+    assert 2 in summary["split"]["maintainer"]["issues"] and 3 in summary["split"]["nobody"]["issues"]
 
 
 def test_s094_4_a_wait_on_an_item_of_this_repo_is_nobody_and_counts_with_it() -> None:
@@ -393,6 +455,12 @@ def test_s094_13_the_summary_keeps_its_four_lines_and_folds_the_finer_holders() 
     found = facts(issues=issues)
     assert {records(found)[n].holder for n in (1, 2, 3)} == {Holder.PEOPLE, Holder.ELSEWHERE, Holder.POSTPONED}
     assert split(found, lambda _: NONE, None).issues == {SummaryHolder.NOBODY: (1, 2, 3)}
+
+
+def test_s094_13_the_summary_counts_the_maintainers_assigned_item_as_waiting_on_you() -> None:
+    issues = [Issue(1, "WITH_PERSON", assignees=("octocat",)), Issue(2, "WITH_PERSON", assignees=("amy",))]
+    found = facts(issues=issues, maintainer=MAINTAINER)
+    assert split(found, lambda _: NONE, None).issues == {SummaryHolder.MAINTAINER: (1,), SummaryHolder.NOBODY: (2,)}
 
 
 class ChainFake(SummaryFake):

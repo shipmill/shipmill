@@ -88,13 +88,23 @@ Each condition has a holder, from its `who` unless a rule below names another:
 
 | Holder | Label | Condition |
 |---|---|---|
-| `maintainer` | waits on you | `who` is `maintainer`, save labelled blocked |
+| `maintainer` | waits on you | `who` is `maintainer`, save labelled blocked; a person's item assigned to the maintainer |
 | `agent` | agent takes it | `who` is `agent` |
 | `attention` | needs attention | the gate's record holds it (GATE_RETRY, GATE_PAUSED, GATE_IDLE), as in spec 091 |
-| `people` | waits on people | `who` is `person`: an assignee, the reporter's answer, a draft's author |
+| `people` | waits on people | `who` is `person`: an assignee other than the maintainer, the reporter's answer, a draft's author |
 | `elsewhere` | waits elsewhere | a BLOCKED wait on an item of another repo, an upstream report (UPSTREAM, or triaged upstream), labelled blocked (it waits on an outside event, which the maintainer marks by removing the label) |
 | `postponed` | postponed | POSTPONED, triaged postponed, or any wait of a parent whose note starts `children K/N closed`, a plan moving through its children |
 | `nobody` | waits on nobody | any other `event`: a pending check, a closed land window, a veto window, a wait on an item of this repo |
+
+A person's item waiting on its assignees (WITH_PERSON) whose assignees or teams include the
+maintainer is the maintainer's: its condition's `who` is `maintainer` and its reason reads
+`assigned to you: a person's item: waits on @a @b`, since the step waits on them whoever else
+it waits on. One assigned only to others stays `people`. The maintainer is spec 036's
+`maintainer` role, as `roles.resolve` gives it to every command here: the users and teams
+`[agents.roles] maintainer` lists, else the gate's `SHIPMILL_MAINTAINER` in a gate session,
+else the host's `gh` login. Both the role and the host's login are thus covered by the one
+definition the hand-offs already assign by, and a role listing other people than the host's
+login is read as the maintainer's choice of who "you" is (shipmill/shipmill#1641).
 
 An item's line is the first in the order `attention`, `maintainer`, `agent`, `people`,
 `elsewhere`, `postponed`, `nobody` among its conditions' holders, and with spec 091's links,
@@ -126,7 +136,8 @@ with `blocks_error` (S-088-14).
 
 `status --summary` keeps spec 091's lines and JSON keys, with no `schema` and no `items`. Its
 split comes from the same records as `queue`'s, with `people`, `elsewhere`, and `postponed`
-counted on its `waits on nobody` line; a parent moving through its children counts there too.
+counted on its `waits on nobody` line and a person's item assigned to the maintainer on its
+`waits on you` line; a parent moving through its children counts there too.
 This supersedes spec 091 in two cases: a labelled-blocked issue, whose condition is the
 maintainer's (S-091-6), now waits on an outside event and counts as `waits on nobody`, and a
 parent moving through its children no longer counts with them (S-091-7).
@@ -157,7 +168,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-1: `queue --json` prints one object with `schema`, `repo`, `totals`, `split` (all seven holders), and `items`, one record per open issue and pull request, ascending, each with `number`, `kind`, `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and `conditions`, and the record's `holder` is the line `split` puts it on
 - S-094-2: an item placed by its own conditions has `via` null and the `why` and `clears` of its first condition with that holder; an issue that counts with an open item of the repo names it in `via` and carries that item's `why` and `clears`
 - S-094-3: `waits_on` names the not-closed targets of a BLOCKED note, of this repo or another, and the open pull requests of an IN_PROGRESS note, as `owner/name#N`
-- S-094-4: a condition from an assignee or the reporter is `people`; a wait on another repo's item, an upstream report, or labelled blocked is `elsewhere`; POSTPONED, triaged postponed, or any wait of a parent moving through its children is `postponed`; any other event is `nobody`
+- S-094-4: a condition from an assignee or the reporter is `people`, save a person's item whose assignees or teams include one of spec 036's resolved `maintainer` role, which is `maintainer` with the reason `assigned to you: ...`; a wait on another repo's item, an upstream report, or labelled blocked is `elsewhere`; POSTPONED, triaged postponed, or any wait of a parent moving through its children is `postponed`; any other event is `nobody`
 - S-094-5: an item's line is the first in the order attention, maintainer, agent, people, elsewhere, postponed, nobody; a parent moving through its children counts by its own conditions alone
 - S-094-6: an issue triaged as an opportunity or a plan has `accept` naming it and holder `maintainer`; any other item has `accept` null
 - S-094-7: the text of `queue` prints the repo with its totals, then each holder's label in the table's order with one line per item, `#N <kind>: <why> (clears: <clears>)`
@@ -166,7 +177,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-10: `queue` reads the open pull requests' checks, review decision, and labels in one `gh pr list`, and runs no `gh pr view` and no command that writes, whatever the number of open items
 - S-094-11: `queue --fleet --json` prints `{"schema": 1, "repos": [...]}` with one `queue --json` object per gate job on the host, in plist order, each read from its job's WorkingDirectory, one repo at a time; no gate job prints an empty list
 - S-094-12: a repo of the fleet whose read fails is an entry with `repo` and `error`, the others still print, and the command exits 2; once a read fails on GitHub's rate limit, no further repo is read and each remaining entry says so; `--fleet` with a repo named exits 2
-- S-094-13: `status --summary` keeps spec 091's lines and JSON keys, and counts the people, elsewhere, and postponed items of `queue` on its waits on nobody line
+- S-094-13: `status --summary` keeps spec 091's lines and JSON keys, and counts the people, elsewhere, and postponed items of `queue` on its waits on nobody line and a person's item assigned to the maintainer on its waits on you line
 - S-094-14: each `queue --json` record carries `blocks`, one `{ref, bucket, waits_on}` per open issue of the repo that waits on the item, as `status --item --json`'s `blocks` reads it, and `[]` when none does, and `parent`, its open sub-issue parent as `owner/name#N` or `null`, read from the facts with no read per item; the schema stays 1
 - S-094-15: `queue --fleet --json` lists in an item's `blocks` the open issues of every repo it read that wait on the item, and reads no repo more than once
 - S-094-16: `status --item N --json` carries the same `parent` as `queue`'s record of N, and the same `blocks` when its walk reads and finds no hold outside the repo; a walk that fails leaves its `blocks` empty with `blocks_error`, as spec 088 says
@@ -195,7 +206,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-1: `shipmill queue --json` on shipmill/shipmill printed `schema`, `repo`, `totals`, `split` with the seven holders, and 85 records for 79 issues and 6 pull requests, ascending, each with the nine keys and on its split line
 - S-094-2: the same run's #1531 read `via` 1524 with #1524's why and clears, and #1516 `via` 1622, its spec pull request's question; #322 read its own `postponed` condition with `via` null
 - S-094-3: #1531's `waits_on` was `["shipmill/shipmill#1524", "shipmill/shipmill#1528"]`, the open items its BLOCKED note names
-- S-094-4: #338 (labelled blocked) read `elsewhere` and the postponed issues `postponed`; no issue there was a person's, so `people` and the rest of the table are each a case of `test_s094_4_each_condition_has_its_finer_holder`
+- S-094-4: #338 (labelled blocked) read `elsewhere` and the postponed issues `postponed`; no issue there was a person's, so `people` and the rest of the table are each a case of `test_s094_4_each_condition_has_its_finer_holder`; an item assigned to the maintainer reads `maintainer` in `test_s094_4_an_item_assigned_to_the_maintainer_waits_on_them`, and in `queue`, `status --item`, and `status --summary` alike in `test_s094_4_queue_summary_and_item_put_the_maintainers_item_on_waits_on_you` (shipmill/shipmill#1641)
 - S-094-5: the run placed 63 items with the maintainer, 11 with the agent, 1 elsewhere, and 10 postponed, each once; a parent moving through its children read `postponed` in its test
 - S-094-6: the run marked 50 issues `accept: "opportunity"` and 4 `accept: "plan"`, each held by the maintainer
 - S-094-7: `shipmill queue` printed the repo with its totals, then each holder's label with its items as `#N <kind>: <why> (clears: <clears>)`
@@ -207,4 +218,4 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-14: `shipmill queue --json` on shipmill/shipmill on 2026-11-25 printed `blocks` and `parent` on all 80 records with `"schema": 1`: #1616 listed #1610, #1589, and #1439, nearest first, #1534 had `parent` `shipmill/shipmill#1439` and #1439 itself `blocks: []` and `parent: null`; `test_s094_14_queue_prints_blocks_and_parent_with_no_read_per_item` asserts no item's own read and no walk
 - S-094-15: `test_s094_15_the_fleet_lists_another_repos_waiters` reads two gate jobs, lists acme/api#2 in acme/web#4's `blocks`, and runs triage_state.py once per repo
 - S-094-16: `status --item N --json` for #1616, #1534, and #1439 in that run matched `queue`'s `parent` and `blocks` of N, and every other key of its record
-- S-094-13: `shipmill status --summary` on shipmill/shipmill printed spec 091's four lines, its JSON with spec 091's keys, with #338 and the postponed issues on waits on nobody
+- S-094-13: `shipmill status --summary` on shipmill/shipmill printed spec 091's four lines, its JSON with spec 091's keys, with #338 and the postponed issues on waits on nobody; an item assigned to the maintainer counts on waits on you in `test_s094_13_the_summary_counts_the_maintainers_assigned_item_as_waiting_on_you`

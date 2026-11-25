@@ -401,6 +401,13 @@ WAIT = re.compile(r"(?P<ref>[\w.-]+/[\w.-]+#\d+):(?P<state>\w+)")
 WINDOW = re.compile(r"veto window of (?P<pr>#\d+) until (?P<until>\S+)")
 
 
+def assigned_to_maintainer(facts: Facts, issue: Issue) -> bool:
+    """S-094-4: one of the issue's assignees or teams fills spec 036's maintainer role, compared
+    case-blind as the role's logins and teams are"""
+    mine = {f.key for f in facts.maintainer}
+    return any(who.lower() in mine for who in (*issue.assignees, *issue.teams))
+
+
 def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
     """S-088-6, S-088-8: the issue's triage_state.py state and its note"""
     state, note = issue.state, issue.note
@@ -447,6 +454,14 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
         return [Condition("postponed", Who.EVENT, when, where=Holder.POSTPONED)]
     if state == "WITH_PERSON":
         people = " ".join([*(f"@{p}" for p in issue.assignees), *issue.teams])
+        if assigned_to_maintainer(facts, issue):  # S-094-4: it waits on them, whoever else it waits on
+            return [
+                Condition(
+                    f"assigned to you: a person's item: waits on {people}",
+                    Who.MAINTAINER,
+                    "do the step and close it, with its other assignees",
+                )
+            ]
         return [Condition(f"a person's item: waits on {people}", Who.PERSON, "its assignees do the step and close it")]
     if state in ("IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD"):
         opened = [int(n) for n in re.findall(r"(?<![\w/])#(\d+):(?:open|draft)\b", note)]
