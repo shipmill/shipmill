@@ -105,6 +105,9 @@ does, so the two agree for every item.
 `status --summary` keeps spec 091's lines and JSON keys, with no `schema` and no `items`. Its
 split comes from the same records as `queue`'s, with `people`, `elsewhere`, and `postponed`
 counted on its `waits on nobody` line; a parent moving through its children counts there too.
+This supersedes spec 091 in two cases: a labelled-blocked issue, whose condition is the
+maintainer's (S-091-6), now waits on an outside event and counts as `waits on nobody`, and a
+parent moving through its children no longer counts with them (S-091-7).
 
 ### A schema version
 
