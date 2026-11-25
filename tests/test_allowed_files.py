@@ -127,6 +127,41 @@ def test_s085_1_a_counting_comment_without_a_files_line_declares_no_allowance(tm
     ready(gated(tmp_path, ("src/a.py", CI), {12: thread(verdict("src/a.py"), newer)}))
 
 
+def proposed_plan(lead: str = "<!-- shipmill:needs-decision -->\n<!-- shipmill:zone fix -->\n") -> dict[str, Any]:
+    """The App's `Proposed plan:` under fix = "propose", as autonomy.md writes it: the marker and the
+    zone line first, then the plan, its `Files:` line, and the ask to reply `apply`"""
+    body = (
+        f"{lead}Proposed plan: read the flag before the merge.\n\n"
+        "- Serves: quality bar\n- Files: `src/a.py`\n- Order: the test first\n- Proof: a new test\n\n"
+        "@romamo Reply `apply` to build this plan, or reply with your own.\n"
+    )
+    return allowing(body, when=at(8))
+
+
+def test_s085_1_a_proposed_plan_under_its_markers_gives_the_allowance(tmp_path: Path) -> None:
+    """#1594: the leading `<!-- shipmill:... -->` lines are skipped, so the answered plan's `Files:` counts;
+    the `apply` reply takes no recommended option, so it lifts nothing"""
+    applied = comment("apply", at(9))
+    assert outside("src/b.py") in held(gated(tmp_path, ("src/b.py",), {12: thread(proposed_plan(), applied)}))
+
+
+@pytest.mark.parametrize(
+    "lead",
+    [
+        pytest.param("<!-- a note -->\n", id="an html comment that isn't shipmill's"),
+        pytest.param("Note:\n<!-- shipmill:zone fix -->\n", id="a marker after text"),
+    ],
+)
+def test_s085_1_only_leading_shipmill_markers_are_skipped(tmp_path: Path, lead: str) -> None:
+    ready(gated(tmp_path, ("src/b.py",), {12: thread(proposed_plan(lead), comment("apply", at(9)))}))
+
+
+def test_s085_13_a_proposed_plan_under_its_markers_edited_after_the_pr_opened_holds_it(tmp_path: Path) -> None:
+    edited = {**proposed_plan(), "lastEditedAt": at(11)}
+    lines = held(gated(tmp_path, ("src/a.py",), {12: thread(edited, comment("apply", at(9)))}))
+    assert "  files: the allowance on #12 changed after this pull request opened" in lines
+
+
 def test_s085_1_a_maintainers_counting_comment_counts(tmp_path: Path) -> None:
     for association in ("OWNER", "MEMBER", "COLLABORATOR"):
         mine = verdict("src/a.py", login="romamo", association=association)
