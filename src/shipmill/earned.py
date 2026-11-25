@@ -287,8 +287,10 @@ def _earn(detected: Detected, decisions: DecisionPolicy) -> Detected:
     to = bound if floor is None or not bound.below(floor) else floor
     paths = tuple(_lowered(p, to) for p in detected.paths)
     before = Level.strictest(p.level for p in detected.paths)
-    # a rule that put the zone in without a path holds the zone's own level: it doesn't earn
+    # a rule that put the zone in without a path holds the zone's own level: it doesn't earn;
+    # nor does a floor a rule holds the zone at, such as a widening of [agents.sandbox] (D-110)
     held = [detected.level] if before.below(detected.level) else []
+    held += [] if detected.floor is None else [detected.floor]
     level = Level.strictest([*(p.level for p in paths), *held])
     if level is detected.level:
         return detected

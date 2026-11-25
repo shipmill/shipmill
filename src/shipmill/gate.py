@@ -2377,23 +2377,28 @@ class TickRecord:
 
 
 REFUSAL_KEYS = {"key", "spec", "off", "fix"}
+REFUSAL_WHY = "why"  # a malformed key's fault (spec 087); a removed key's entry has none
 REFUSAL_KEY = re.compile(r"(\[[^\]\s]+\]) (\S+)")  # [agents] plugin_update
 
 
 def _refused(value: object) -> tuple[Refusal, ...]:
-    """tick.json's refused: a list of {key, spec, off, fix}, as Refusal.record writes each;
-    an entry of the catalogue reads as that entry, one a later shipmill refuses as written"""
+    """tick.json's refused: a list of {key, spec, off, fix}, a malformed key's with its why, as
+    Refusal.record writes each; an entry of the catalogue reads as that entry, one a later
+    shipmill refuses as written"""
     if not isinstance(value, list):
         raise ValueError("refused must be a list of refusals")
     found = []
     for entry in value:
-        if not isinstance(entry, dict) or set(entry) != REFUSAL_KEYS:
-            raise ValueError(f"refused: expected exactly {', '.join(sorted(REFUSAL_KEYS))}")
+        if not isinstance(entry, dict) or set(entry) - {REFUSAL_WHY} != REFUSAL_KEYS:
+            raise ValueError(f"refused: expected exactly {', '.join(sorted(REFUSAL_KEYS))}, and optionally why")
         key = REFUSAL_KEY.fullmatch(_text(entry["key"], "refused.key"))
         if key is None:
             raise ValueError(f"refused.key must read [table] key, got {entry['key']!r}")
         spec, off, fix = (_text(entry[k], f"refused.{k}") for k in ("spec", "off", "fix"))
-        written = Refusal(key.group(1), key.group(2), spec, off, fix)
+        why = _text(entry[REFUSAL_WHY], "refused.why") if REFUSAL_WHY in entry else ""
+        if REFUSAL_WHY in entry and not why:
+            raise ValueError("refused.why must not be empty")
+        written = Refusal(key.group(1), key.group(2), spec, off, fix, why=why)
         same = (r for r in CATALOGUE if r.record() == written.record())
         found.append(next(same, written))
     return tuple(found)

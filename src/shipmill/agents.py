@@ -16,6 +16,7 @@ from shipmill.app import is_plain_repo
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import CONFIG_PATH, Table, config_path, loads_unchecked, read, read_unchecked
 from shipmill.errors import ReleaseError
+from shipmill.sandbox import SandboxConfig
 
 _MAX_HOURS = 7 * 24  # a week
 _PRUNE_HOURS = 6  # the gate's prune runs this often by default (spec 045, D-56)
@@ -348,7 +349,10 @@ class AgentsConfig:
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
-    # the catalogued keys the table set, dropped before it was read (spec 052, D-64)
+    # [agents.sandbox]: what a sandboxed headless session may reach beyond the default (spec 087)
+    sandbox: SandboxConfig = SandboxConfig()
+    # the catalogued keys the table set, dropped before it was read (spec 052, D-64), then the
+    # malformed [agents.sandbox] keys, dropped so the session runs narrower (spec 087)
     refused: tuple[catalogue.Refusal, ...] = ()
 
     @classmethod
@@ -376,6 +380,10 @@ class AgentsConfig:
             "author",
             "verify",
             "merge",
+            "sandbox",
+        )
+        sandbox, malformed = (
+            SandboxConfig.parse(table.raw["sandbox"], table.where) if "sandbox" in table.raw else (SandboxConfig(), ())
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
@@ -422,7 +430,8 @@ class AgentsConfig:
             author=author_of(table, app_id),
             verify=verify_of(table),
             merge=merge_method_of(table),
-            refused=refusals,
+            sandbox=sandbox,
+            refused=(*refusals, *malformed),
         )
 
     @property
