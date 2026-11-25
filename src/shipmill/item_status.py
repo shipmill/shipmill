@@ -41,6 +41,8 @@ URL = re.compile(
 # a #N of this repo in a row's subject or detail, never one of owner/repo#N
 OWN_NUMBER = re.compile(r"(?<![\w/#])#(\d+)\b")
 GATE_IDLE = "GATE_IDLE"  # watch_state.py's row for an item handed to a session that wrote nothing on it
+GATE_RETRY = "GATE_RETRY"  # spec 089: its row for an item whose session ended error, held by the backoff
+GATE_PAUSED = "GATE_PAUSED"  # spec 089: its row for the credential's pause, which holds every launch
 FAILED = frozenset({"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"})
 PENDING = frozenset({"PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"})
 
@@ -301,9 +303,14 @@ def repo_conditions(facts: Facts, stage: str | None) -> list[Condition]:
 def gate_conditions(facts: Facts, number: int, kind: Kind, stage: str | None) -> list[Condition]:
     """S-088-9: the gate's work is the rows it starts a session on (their agent mark), and the
     open pull requests unless land is observe (gate.decide); an item it handed to a session that
-    wrote nothing on it waits for a change (GATE_IDLE)"""
+    wrote nothing on it waits for a change (GATE_IDLE); one whose session ended error waits for
+    its backoff (GATE_RETRY), and while the sessions' credential is paused the gate takes up
+    nothing (GATE_PAUSED), each said instead of "the gate takes it up on a coming tick" (S-089-13)"""
     if facts.gate.agents is None or any(r.state == "HOLD" for r in facts.rows):
         return []
+    retry = [r for r in facts.rows if r.state == GATE_RETRY and names(r, number)]
+    if retry:
+        return [Condition(f"the gate hands it again {retry[0].detail}", Who.AGENT, "the backoff's end")]
     idle = [r for r in facts.rows if r.state == GATE_IDLE and names(r, number)]
     if idle:
         return [
@@ -322,6 +329,13 @@ def gate_conditions(facts: Facts, number: int, kind: Kind, stage: str | None) ->
     ]
     if not work or stage is None or _level(facts, stage).effective is not Autonomy.ACT:
         return []
+    paused = next((r for r in facts.rows if r.state == GATE_PAUSED), None)
+    if paused is not None:  # spec 089: the credential's pause holds every launch
+        cause = "a usage limit" if paused.subject == "limit" else "a refused credential"
+        until = paused.detail.partition(": ")[0]  # `until <when>`, its time holding no ": "
+        limit = paused.subject == "limit"
+        who, clears = (Who.EVENT, "the limit's reset") if limit else (Who.MAINTAINER, paused.fix or "a new token")
+        return [Condition(f"the gate starts no session {until}, paused by {cause}", who, clears)]
     return [Condition("the gate takes it up on a coming tick, in its tier order", Who.AGENT, "the next gate tick")]
 
 
