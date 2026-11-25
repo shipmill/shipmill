@@ -79,7 +79,9 @@ host are untouched, and `ClaudeCli.launch` (interactive mode) is unchanged.
   `~/.docker/config.json`, `~/.kube`, `~/.aws`, `~/.azure`, `~/.config/gcloud`,
   `~/.password-store`, `~/Library/Keychains`
 - `~/.config/gh/hosts.yml`: the host's own GitHub login; a session writes as the App through its
-  helper (spec 004)
+  helper (spec 004). `gh` can't start with that file denied (the probe, #1524), so the
+  session's `env` sets `GH_CONFIG_DIR` to `<state dir>/gh-config`, a folder of the session's own
+  that the gate creates empty before the launch, and `gh` never reads `~/.config/gh`
 - Every entry of `~/.config/shipmill` other than the App key the session's `SHIPMILL_APP_KEY`
   names: other Apps' keys and the Claude token file (spec 035). The key the session writes with
   stays readable, since its helpers mint the App's token inside the sandbox; the token is limited
@@ -101,16 +103,20 @@ denies each by its path, so an entry added later is denied on the next launch.
 - `<main working tree>/.claude/worktrees`, where Claude Code places a subagent's isolated
   worktree when the gate's checkout is a linked worktree
 - the git common dir, which a linked worktree's commits, refs and worktree records need
-- the session's own uv cache, `<state dir>/uv-cache`, which the session's `env` names as
-  `UV_CACHE_DIR`; the person's uv cache stays readable but not writable, so nothing the session
-  builds reaches the person's own unsandboxed `uv run`
+- the session's own uv cache, `~/.cache/shipmill/<owner>-<repo>/uv`, which the session's `env`
+  names as `UV_CACHE_DIR`; the person's uv cache stays readable but not writable, so nothing the
+  session builds reaches the person's own unsandboxed `uv run`. It lives outside the git dir:
+  after a sandboxed command Claude Code renames the links it finds in a `.git` folder
+  (`.<name>.claude-sandbox-quarantine-<hex>`), and the probe's cache under the common dir lost
+  26 entries that way (#1524)
 
 `denyWrite`, inside that scope:
 
 - `<common dir>/config` and `<common dir>/hooks`: either would make the person's own git run the
   session's code
 - the gate's state directory (`<common dir>/shipmill`), except the token caches the session's
-  helpers write and its uv cache: the gate reads its records unsandboxed, and writes the helpers
+  helpers write and `gh-config` (inside the common dir, so already in the write scope): the gate
+  reads its records unsandboxed, and writes the helpers
 - `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` of the gate's checkout
   and of the main working tree: each changes what the next session may do, and an MCP server runs
   outside the sandbox
@@ -165,6 +171,12 @@ fails to open within 30 seconds is a failed feature, not a failed tick (D-64): t
 without it and the tick's line names the tunnel and ssh's last stderr line. The sandbox lets
 commands reach `127.0.0.1` on each declared `local` port.
 
+The probe found no way in: a sandboxed command couldn't reach `127.0.0.1:<port>`, nor `localhost`
+listed in `allowedDomains` (#1524). So tunnels wait for a follow-up probe that finds the setting
+that opens one local port to a sandboxed command; S-087-10's build issue depends on it, and every
+other build issue of this spec builds without tunnels. Until then `[agents.sandbox] tunnels` is
+parsed and checked (S-087-9) but opens nothing.
+
 Today a host reaches the same tunnel by allowlisting `ssh -N -L ...` with `--claude-arg`; that
 keeps working only outside the sandbox, and the sandboxed session needs the tunnel declared.
 
@@ -185,7 +197,10 @@ and needs its own `D-n`, added with the build issue that builds it.
 - **Settings files**: before a sandboxed launch the gate reads `.claude/settings.json` and
   `.claude/settings.local.json` of its checkout and the user's `~/.claude/settings.json`; a
   `sandbox` key or a `permissions.additionalDirectories` key in any of them would merge into the
-  session's sandbox, so the tick launches nothing and fails with
+  session's sandbox, and so would a `permissions.allow` entry for `Edit` or `Write` that reaches
+  beyond the write scope (a bare `Edit` or `Write`, or a path rule outside it): the probe saw a
+  bare `Write` in `~/.claude/settings.json` merge in and the Write tool write a file in `~`
+  (#1524). For any of these the tick launches nothing and fails with
   `<file> sets <key>, which would widen a headless session's sandbox`, its fix naming
   `[agents.sandbox]`. A person who sandboxes their own sessions moves those keys to a project's
   settings outside the gate's checkout, or to the gate's `[agents.sandbox]`
@@ -264,15 +279,15 @@ confined.
 - S-087-2: a sandboxed headless launch passes one `--settings` JSON holding the session's `env` and `sandbox.enabled: true`, `sandbox.allowUnsandboxedCommands: false`, `sandbox.failIfUnavailable: true`, and no `sandbox.excludedCommands`; an interactive launch's command line is unchanged, and no launch writes a settings file
 - S-087-3: the settings' `sandbox.filesystem.denyRead` and `permissions.deny` `Read(...)` and `Edit(...)` each name every path of "What a session can't read", existing or not, minus each `[agents.sandbox] read` entry
 - S-087-4: with `SHIPMILL_APP_KEY` naming `~/.config/shipmill/app-<id>.pem`, every other entry of `~/.config/shipmill` is denied and that key is not; every folder of `~/.claude/projects` other than the session's own is denied, and `~/.claude/plugins` is not; an entry created after one launch is denied at the next
-- S-087-5: `sandbox.filesystem.allowWrite` is exactly the gate's checkout, the main working tree's `.claude/worktrees`, the git common dir, `<state dir>/uv-cache`, and each `[agents.sandbox] write` entry; the session's `env` sets `UV_CACHE_DIR` to `<state dir>/uv-cache`
-- S-087-6: `sandbox.filesystem.denyWrite` names `<common dir>/config`, `<common dir>/hooks`, the state directory's entries other than the token caches and `uv-cache`, and `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` of the gate's checkout and of the main working tree
+- S-087-5: `sandbox.filesystem.allowWrite` is exactly the gate's checkout, the main working tree's `.claude/worktrees`, the git common dir, `~/.cache/shipmill/<owner>-<repo>/uv`, and each `[agents.sandbox] write` entry; the session's `env` sets `UV_CACHE_DIR` to `~/.cache/shipmill/<owner>-<repo>/uv` and `GH_CONFIG_DIR` to `<state dir>/gh-config`, which exists before the launch, and `~/.config/gh/hosts.yml` stays denied
+- S-087-6: `sandbox.filesystem.denyWrite` names `<common dir>/config`, `<common dir>/hooks`, the state directory's entries other than the token caches and `gh-config`, and `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` of the gate's checkout and of the main working tree
 - S-087-7: in a sandboxed launch `--allowedTools` names Edit and Write only as `Edit(//<path>/**)` and `Write(//<path>/**)` rules for the write-scope paths and the session's own project memory folder, with the Bash entries of `HEADLESS_TOOLS` unchanged
 - S-087-8: `sandbox.network.allowedDomains` is exactly `github.com`, `*.github.com`, `*.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`, `astral.sh`, `*.astral.sh`, and each `[agents.sandbox] domains` entry, read from the config on `origin/<default>`
 - S-087-9: `AgentsConfig.parse` reads `[agents.sandbox]` `domains`, `read`, `write` and `tunnels` as Behaviour says, and a malformed key (a domain with a scheme, port or path; a relative path or one with `..`; a tunnel with a missing, extra or invalid field, or a repeated `local`) is dropped with its refusal named by doctor, the tick and stderr, while the config loads and the session starts without that key
 - S-087-10: with a declared tunnel, the gate runs `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L 127.0.0.1:<local>:<remote> <ssh>` before it starts the session, records its pid and start time in `gate.json`, allows `127.0.0.1:<local>` in the sandbox, and stops it on the first tick that finds the session ended; a tunnel that fails within 30 seconds leaves the session starting without it and the tick's line naming the tunnel and ssh's last stderr line
 - S-087-11: `shipmill decide classify --pr N` reports `security` at `ask` for a pull request that adds a `domains`, `read`, `write` or `tunnels` entry under `[agents.sandbox]`, also when `[decisions] security = "notify"`, and follows `[decisions] security` for one that only removes entries
 - S-087-12: with the sandbox on, a `--claude-arg` of `--settings` or `--add-dir`, alone or as `--flag=value`, exits 2 naming the flag and stops and starts no session; `--allowedTools` and `--disallowedTools` pass
-- S-087-13: before a sandboxed launch, a `sandbox` or `permissions.additionalDirectories` key in the checkout's `.claude/settings.json` or `.claude/settings.local.json` or in `~/.claude/settings.json` fails the tick with `<file> sets <key>, which would widen a headless session's sandbox` and a fix naming `[agents.sandbox]`, and starts no session
+- S-087-13: before a sandboxed launch, a `sandbox` or `permissions.additionalDirectories` key, or a `permissions.allow` entry for `Edit` or `Write` that is bare or names a path outside the write scope, in the checkout's `.claude/settings.json` or `.claude/settings.local.json` or in `~/.claude/settings.json` fails the tick with `<file> sets <key>, which would widen a headless session's sandbox` and a fix naming `[agents.sandbox]`, and starts no session
 - S-087-14: on the first tick after a sandboxed session ended, a log holding a tool result with the recorded refusal text adds `sandbox refused <n>: <first words> (<path or host>)` and the `[agents.sandbox]` fix to the tick's line and `tick.json`, and changes no decision; a log with none adds nothing
 - S-087-15: `needs-decision.md`'s "A denied tool call is a decision" tells a sandbox refusal from a denial, a hook refusal and a not-found, and its option is an `[agents.sandbox]` entry, never `--claude-arg`
 - S-087-16: with the sandbox on, the `[agents] verify` check runs each command through `srt` with the session's filesystem and network rules; a command the sandbox refused reads `refused by sandbox` naming the path or host, with doctor's fix an `[agents.sandbox]` entry; the sandbox's rules are part of the check's fingerprint; without `srt` on the gate's PATH each command reads `not checked: srt is not on the gate's PATH`
@@ -305,13 +320,15 @@ confined.
 - D-63: the default changes in a release after the opt-in, with the flag deprecated before it is refused
 - D-64: a malformed escape key or a failed tunnel costs only itself; the session runs narrower, never wider
 - D-82: the hook's `uv run` rule is unchanged
+- D-105: `GH_CONFIG_DIR`, the uv cache outside the git dir, the `permissions.allow` check, and tunnels after a follow-up probe, from the macOS probe
 
 ## Issues
 
 - shipmill/shipmill#1524: S-087-1
 - shipmill/shipmill#1528: S-087-9, S-087-11
 - shipmill/shipmill#1531: S-087-2, S-087-3, S-087-4, S-087-5, S-087-6, S-087-7, S-087-8, S-087-12, S-087-19
-- shipmill/shipmill#1534: S-087-10, S-087-13, S-087-17, S-087-18
+- shipmill/shipmill#1534: S-087-13, S-087-17, S-087-18
+- shipmill/shipmill#1589: S-087-10
 - shipmill/shipmill#1535: S-087-14, S-087-15, S-087-16
 - shipmill/shipmill#1536: S-087-20, S-087-21
 

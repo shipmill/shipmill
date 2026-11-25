@@ -877,3 +877,11 @@ entry that supersedes it, never by editing an old one.
 - Why: On an item naming a CVE, triage read the advisory as unfindable, posted a decided keeping the affected feature on, and a later session closed the safe fix for contradicting it until the maintainer vetoed it (#1483); a security default on a published vulnerability is a one-way door for users, and spec 030's zones don't detect it. Decided by `@romamo` on #1483 (option 1, relayed 2026-11-24)
 - Applies to: src/shipmill/app_gh.py, docs/specs/030-decision-policy.md, shipmill:decided
 - Enforced by: the app_gh tests (with the implementing PR)
+
+## D-105: Spec 087 follows what the macOS probe showed Claude Code's sandbox can do
+
+- Decided: 2026-11-25, in shipmill/shipmill#1524
+- Rule: A sandboxed headless session's env sets GH_CONFIG_DIR to <state dir>/gh-config, created empty before the launch, and ~/.config/gh/hosts.yml stays denied; its uv cache is ~/.cache/shipmill/<owner>-<repo>/uv, outside the git dir, in allowWrite; before a sandboxed launch a permissions.allow entry for Edit or Write that is bare or names a path outside the write scope, in the checkout's or the user's settings, fails the tick as a sandbox key does (S-087-13); tunnels (S-087-10) wait for a follow-up probe that finds the setting opening one local port (#1588), and the rest of spec 087 builds without them
+- Why: The probe on Claude Code 2.1.330 (#1585) showed gh can't start with hosts.yml denied, a bare Edit or Write in user settings merges in and writes outside the scope, a sandboxed command reaches no local port, and Claude Code renames links inside a .git folder after a sandboxed command, which broke a uv cache under the common dir. Decided by `@romamo` on #1524 (option 1, accept all four)
+- Applies to: docs/specs/087-headless-sandbox.md, src/shipmill/sandbox.py, src/shipmill/gate.py, [agents.sandbox] tunnels
+- Enforced by: tests of spec 087 (test_s087_*), with the implementing PRs
