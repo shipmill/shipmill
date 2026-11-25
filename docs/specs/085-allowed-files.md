@@ -165,6 +165,7 @@ gate's NEEDS_DECISION line and its `files:` lines. No flag of `shipmill gh` or o
 - D-89: the newest trusted answer is the one read
 - D-93: a relayed answer is read by the relay grammar
 - D-106: a counting comment edited after the pull request opened holds it
+- D-109: an answer given before an agent's pull request opened never widens its files
 
 ## Issues
 

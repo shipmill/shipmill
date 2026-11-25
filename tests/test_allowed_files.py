@@ -28,6 +28,7 @@ from .test_pr_gate import (
     pr,
     push,
     ready_line,
+    relay,
     review,
     run_gate,
     thread,
@@ -432,6 +433,38 @@ def test_s085_14_an_issue_answer_to_a_question_naming_the_judged_head_lifts_the_
     data = headed(body="Fixes #12", files=("src/b.py",))
     proc = answered(tmp_path, data, thread(), issue)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s085_14_an_issue_answer_before_the_pr_opened_to_a_question_naming_the_judged_head_lifts_it(
+    tmp_path: Path,
+) -> None:
+    """D-109: the head the question names, not when the answer came, decides the files: line"""
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(8, 30)), comment("1", at(9)))
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    proc = answered(tmp_path, data, thread(), issue)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s085_14_a_relayed_issue_answer_before_the_pr_opened_lifts_no_files_line(tmp_path: Path) -> None:
+    relayed = relay("Decision by @romamo", "1", at(9))
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(8, 30), head=None), relayed)
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [outside("src/b.py")]
+
+
+def test_s085_14_an_outsiders_answer_naming_the_judged_head_lifts_no_files_line(tmp_path: Path) -> None:
+    outsider = comment("1", at(12), login="mallory", association="NONE")
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(11)), outsider)
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [outside("src/b.py")]
+
+
+def test_s085_14_an_issue_answer_after_the_pr_opened_to_a_question_naming_no_head_lifts_nothing(
+    tmp_path: Path,
+) -> None:
+    issue = thread(verdict("src/a.py", when=at(8)), asked(at(11), head=None), comment("1", at(12)))
+    data = headed(body="Fixes #12", files=("src/b.py",))
+    assert held(answered(tmp_path, data, thread(), issue)) == [f"  needs-decision: {gate.NO_HEAD}", outside("src/b.py")]
 
 
 # S-085-10
