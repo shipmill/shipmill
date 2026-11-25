@@ -295,7 +295,7 @@ What to do, from this issue:
 
 {When it is labelled role:maintainer or human:} To work it in an interactive session, run this in the repo's checkout:
 
-`claude "/shipmill:github-issue-resolve {owner}/{repo}#{n}"`
+`claude "/shipmill:github-issue-resolve {owner/repo}#{N}"`
 
 Reply `done` here when it's finished, or close the issue.
 ```

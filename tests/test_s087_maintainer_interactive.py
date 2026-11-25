@@ -15,7 +15,7 @@ from .test_triage_human import SCRIPT, classify, handoff, person, said
 ROOT = Path(__file__).resolve().parents[1]
 COMMENTS = ROOT / "skills" / "github-issue-triage" / "references" / "comments.md"
 SPEC = ROOT / "docs" / "specs" / "087-headless-sandbox.md"
-COMMAND = 'claude "/shipmill:github-issue-resolve {owner}/{repo}#{n}"'
+COMMAND = 'claude "/shipmill:github-issue-resolve {owner/repo}#{N}"'
 # A person's states: each is a comment, an assignment, or a close by a triage session, or no action
 PERSON_STATES = frozenset(
     {"ASSIGN_DUE", "NO_ASSIGNEE", "HANDOFF_DUE", "WITH_PERSON", "VERIFY_DUE", "BLOCKED", "STALE_HANDOFF"}
