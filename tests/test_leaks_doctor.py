@@ -267,6 +267,14 @@ def test_s081_17_leaks_md_documents_the_file_the_detectors_and_both_refusals() -
     assert "(leaks.md)" in INSTALL_DOC.read_text(encoding="utf-8")
 
 
+def test_s081_19_leaks_md_documents_the_private_repo_detector_and_the_missing_file_refusal() -> None:
+    """D-102: the page the refusal and doctor's row point to says what they enforce"""
+    text = LEAKS_DOC.read_text(encoding="utf-8")
+    assert "`private-repo`" in text
+    assert "private-file:" in text and "an empty one is enough" in text
+    assert "With no file, no term is checked" not in text
+
+
 def test_s081_17_leaks_md_names_only_acme_and_example_hosts() -> None:
     text = LEAKS_DOC.read_text(encoding="utf-8")
     terms = listed_terms(text)

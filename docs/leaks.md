@@ -27,8 +27,20 @@ secret_files = ["~/work/acme-rocket/.env"]
 - `secret_files`: dotenv files (`~` is your home) whose values are secrets, read beside the
   checkout's own `.env` files
 
-Both keys are optional. With no file, no term is checked, and the secrets come from the
-checkout alone. A file shipmill can't read as this (an unknown key, a wrong type, a term
+Both keys are optional, and an empty file is a valid one. In a checkout whose
+`.github/shipmill.toml` has `[agents]`, the file must exist: while it is missing, every
+`shipmill gh` write to a public repo is refused with exit 2, so a new machine running agents
+doesn't leak by default (D-102):
+
+```
+shipmill gh: refused, nothing was sent (acme/widgets is public)
+  private-file: ~/.config/shipmill/private.toml is missing, and this checkout's .github/shipmill.toml has [agents]
+Create it, an empty one is enough: `mkdir -p ~/.config/shipmill && touch ~/.config/shipmill/private.toml`; then list your
+private names under terms, as docs/leaks.md describes
+```
+
+In a checkout without `[agents]`, a missing file means no term is checked, and the secrets
+come from the checkout alone. A file shipmill can't read as this (an unknown key, a wrong type, a term
 under 3 characters, a file that isn't TOML, or a `secret_files` path it can't read) stops
 every check that reads it: each agent write and push is refused, with exit 2 naming the file
 and the problem, until you fix it. An unknown key is named by its line, never its text, since
@@ -39,13 +51,14 @@ would publish the very names it hides. The file's path is fixed: no environment 
 flag, config key, or marker in a text names another file or turns a check off, so a session
 can't switch the check off for itself.
 
-## The four detectors
+## The detectors
 
 | Detector | Finds | Where it applies | On a finding |
 |---|---|---|---|
 | `term` | A term from the private file | A write to a public repo | Refused |
 | `secret-value` | The exact value of a secret from your machine | Any repo | Refused |
 | `secret-format` | A known token format | Any repo | Refused |
+| `private-repo` | An `owner/name` reference to a private repo | A `shipmill gh` write to a public repo | Refused |
 | `high-entropy` | A long random-looking string | Any repo | A warning; the write goes on |
 
 - **`term`.** A repo counts as public unless GitHub says it is `private` or `internal`: a
@@ -64,6 +77,11 @@ can't switch the check off for itself.
   characters (`https://x-access-token:${TOKEN}@github.com` passes). With `gitleaks` 8.19 or
   newer on your PATH, the text also goes through its default rules, and a `gitleaks:allow`
   comment or a repo's `.gitleaks.toml` lets nothing through
+- **`private-repo`.** Each `owner/name` reference in the text, a `github.com/<owner>/<name>`
+  URL or a bare pair standing alone (not a path, a branch such as `fix/123-x`, an npm scope,
+  or another host's URL), is read once with the token the write uses; one GitHub reports
+  `private` or `internal` is a finding. One that token can't read counts as no private repo,
+  and the write's own repo isn't read twice. This needs no private file
 - **`high-entropy`.** A run of 32 or more characters that looks random (not a commit SHA or
   a checksum, and not in a lock file) prints a `shipmill leaks: warning:` line on stderr and
   changes nothing else
@@ -126,7 +144,8 @@ PASS leaks: scanner: built-in formats and gitleaks 8.21.2
 ```
 
 - `terms` gives how many terms the file lists, never the terms. With none it reads `off`,
-  a WARN when the repo is public or its visibility can't be read
+  a WARN when the repo is public or its visibility can't be read; with no file it also names
+  the `touch` step, since `shipmill gh` refuses public writes from the checkout until it exists
 - `secrets` names each secret file read and how many values it gave, never a name or a
   value
 - `scanner` names gitleaks' version, or says it isn't on PATH and the built-in formats
