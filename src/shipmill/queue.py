@@ -6,9 +6,10 @@ It only reads."""
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
-from shipmill.item_status import CHILDREN, WAIT, Condition, Holder, Kind, PullDetail, Ref, explain
+from shipmill.item_links import Holds, ItemRef, Waiter, local_holds, merged, waiters
+from shipmill.item_status import CHILDREN, WAIT, Condition, Holder, Kind, PullDetail, Ref, bucket, explain
 from shipmill.land_window import LandWindow
 from shipmill.status import CLOSED_STATES, Facts, Issue
 
@@ -110,10 +111,16 @@ def placed[H](
     return found
 
 
+def blocking(repo: str, number: int, holds: Holds, buckets: Mapping[int, str]) -> tuple[Waiter, ...]:
+    """S-094-14: the open issues that wait on the item, by the code --item's blocks come from
+    (S-088-14): each of the repo with its bucket, any other with its walk state's line"""
+    return waiters(ItemRef(repo, number), holds, buckets.get)
+
+
 @dataclass(frozen=True, slots=True)
 class Item:
     """S-094-1: one open item's record: its line, the link it took it from, what it waits on,
-    and the condition that places it"""
+    what waits on it, its umbrella, and the condition that places it"""
 
     number: int
     kind: Kind
@@ -124,9 +131,12 @@ class Item:
     clears: str
     waits_on: tuple[str, ...]
     conditions: tuple[Condition, ...]
+    blocks: tuple[Waiter, ...] = ()
+    parent: str | None = None
 
     def placing(self) -> dict[str, object]:
-        """S-094-8: the keys --item adds to its explanation, the same as the summary's"""
+        """S-094-8, S-094-16: the keys --item adds to its explanation, the same as the
+        summary's; its blocks come from its own walk (S-088-14)"""
         return {
             "holder": self.holder.value,
             "via": self.via,
@@ -134,6 +144,7 @@ class Item:
             "why": self.why,
             "clears": self.clears,
             "waits_on": list(self.waits_on),
+            "parent": self.parent,
         }
 
     def record(self) -> dict[str, object]:
@@ -141,8 +152,17 @@ class Item:
             "number": self.number,
             "kind": self.kind.value,
             **self.placing(),
+            "blocks": [w.record() for w in self.blocks],
             "conditions": [c.record() for c in self.conditions],
         }
+
+
+def local_links(facts: Facts) -> tuple[Holds, dict[int, str]]:
+    """S-094-14: the repo's BLOCKED open issues with what each waits on, from the notes the
+    facts already hold, and the bucket of each, as --item reads them (S-088-14)"""
+    opened = [i for i in facts.issues if i.state not in CLOSED_STATES and not i.closed]
+    holds = local_holds(facts.repo, [(i.number, i.state, i.note) for i in opened])
+    return holds, {ref.number: bucket(facts, ref.number, Kind.ISSUE) for ref, _, _ in holds.values()}
 
 
 def items(
@@ -150,6 +170,7 @@ def items(
     read_detail: Callable[[int], PullDetail],
     window: LandWindow | None,
     start: Sequence[int] | None = None,
+    held: tuple[Holds, Mapping[int, str]] | None = None,
 ) -> dict[int, Item]:
     """S-094-1, S-094-2, S-094-8: the records of the open items from start (every open item
     when None) and of the open items of the repo they count with, by number; --item and the
@@ -174,6 +195,7 @@ def items(
             return deciding(via)
         return next(c for c in conditions[n] if c.holder is holder)
 
+    holds, buckets = local_links(facts) if held is None else held
     found = {}
     for n in sorted(conditions):
         holder, via = lines[n]
@@ -190,6 +212,8 @@ def items(
             decided.clears,
             () if issue is None else waits_on(facts.repo, issue),
             conditions[n],
+            blocking(facts.repo, n, holds, buckets),
+            None if issue is None else issue.parent,
         )
     return found
 
@@ -210,6 +234,15 @@ class Queue:
     issues: int
     pulls: int
     items: tuple[Item, ...]
+    holds: Holds = field(default_factory=dict)  # S-094-15: its BLOCKED issues' holds, for the fleet
+    buckets: Mapping[int, str] = field(default_factory=dict)  # and their buckets
+
+    def linked(self, fleet: Holds) -> Queue:
+        """S-094-15: its records with what waits on each across the fleet's repos, its own
+        holds and the other repos' together"""
+        held = merged(self.holds, fleet)
+        found = tuple(replace(i, blocks=blocking(self.repo, i.number, held, self.buckets)) for i in self.items)
+        return replace(self, items=found)
 
     def record(self) -> dict[str, object]:
         split = split_of({i.number: i for i in self.items})
@@ -238,7 +271,15 @@ def counted(count: int, what: str) -> str:
 
 def queue(facts: Facts, read_detail: Callable[[int], PullDetail], window: LandWindow | None) -> Queue:
     issues = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
-    return Queue(facts.repo, issues, len(facts.pulls), tuple(items(facts, read_detail, window).values()))
+    holds, buckets = local_links(facts)
+    found = tuple(items(facts, read_detail, window, held=(holds, buckets)).values())
+    return Queue(facts.repo, issues, len(facts.pulls), found, holds, buckets)
+
+
+def fleet_linked(queues: Sequence[Queue]) -> list[Queue]:
+    """S-094-15: each repo's queue with the waiters of every repo the fleet read"""
+    fleet = merged(*(q.holds for q in queues))
+    return [q.linked(fleet) for q in queues]
 
 
 def rate_limited(error: str) -> bool:

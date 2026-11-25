@@ -40,7 +40,7 @@ checkout's origin, as `status` does.
            "people": {...}, "elsewhere": {...}, "postponed": {...}, "nobody": {...}},
  "items": [{"number": 1604, "kind": "issue", "holder": "elsewhere", "via": null, "accept": null,
             "why": "waits on other/repo#12 (open)", "clears": "other/repo#12 closing or merging",
-            "waits_on": ["other/repo#12"],
+            "waits_on": ["other/repo#12"], "parent": null, "blocks": [],
             "conditions": [{"reason": "...", "who": "event", "clears": "...", "holder": "elsewhere"}]}]}
 ```
 
@@ -63,6 +63,21 @@ open issue and pull request, ascending by number:
   with none
 - **`accept`:** `"opportunity"` or `"plan"` for an issue triaged as such, which the maintainer
   accepts or declines; else `null`
+- **`parent`:** its umbrella, the open issue it is a sub-issue of, in any repo, as
+  `owner/name#N`; `null` for an issue with no open parent and for a pull request. It comes
+  from the `parent` field triage_state.py's first query already reads (spec 022), which its
+  `--json` line carries for an issue whose parent is open (shipmill/shipmill#1639)
+- **`blocks`:** the open issues that wait on it, the reverse of `waits_on`, in the shape
+  `status --item --json` gives its own `blocks` (spec 088, S-088-14) and by the same code:
+  one `{"ref": "owner/name#N", "bucket": ..., "waits_on": [...]}` per issue a path of open
+  holds leads from to the item, nearest first, the `bucket` of an issue of this repo its line
+  in the picture and of another repo's its walk state's (`parked`); `[]` when nothing waits on
+  it. The holds are the BLOCKED notes of the facts already read, so a `Depends on` line, a
+  native `blockedBy`, and a parent's wait on its children all count; with `--fleet`, those of
+  every repo the fleet read, so an issue of another gated repo on the host that waits on the
+  item is listed too. A string list under the same key would change the meaning of the
+  `blocks` `status --item --json` already prints, which raises the schema (S-094-9); each
+  entry's `ref` is the `owner/name#N`
 
 The text prints the repo with its totals, then each holder's label, in the order of the table
 below, with its items under it, one line each: `#N <kind>: <why> (clears: <clears>)`.
@@ -101,6 +116,13 @@ the same way.
 code, and the same `holder` on each condition. To place an item that counts with another, it
 reads the rows and the conditions of the open items of this repo it counts with, as `queue`
 does, so the two agree for every item.
+
+It carries `queue`'s `parent` too. Its `blocks` stays spec 088's: this repo's BLOCKED notes,
+which `queue` reads, together with `chains.py show`'s walk from the item, which also finds a
+native `blockedBy` from a repo `queue` didn't read. So it equals `queue`'s `blocks` when the
+walk reads and finds no hold outside the repo; with one, it lists that waiter too, or names
+the item's other holds in an entry's `waits_on`, and a walk that fails leaves `blocks` empty
+with `blocks_error` (S-088-14).
 
 `status --summary` keeps spec 091's lines and JSON keys, with no `schema` and no `items`. Its
 split comes from the same records as `queue`'s, with `people`, `elsewhere`, and `postponed`
@@ -145,6 +167,9 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-11: `queue --fleet --json` prints `{"schema": 1, "repos": [...]}` with one `queue --json` object per gate job on the host, in plist order, each read from its job's WorkingDirectory, one repo at a time; no gate job prints an empty list
 - S-094-12: a repo of the fleet whose read fails is an entry with `repo` and `error`, the others still print, and the command exits 2; once a read fails on GitHub's rate limit, no further repo is read and each remaining entry says so; `--fleet` with a repo named exits 2
 - S-094-13: `status --summary` keeps spec 091's lines and JSON keys, and counts the people, elsewhere, and postponed items of `queue` on its waits on nobody line
+- S-094-14: each `queue --json` record carries `blocks`, one `{ref, bucket, waits_on}` per open issue of the repo that waits on the item, as `status --item --json`'s `blocks` reads it, and `[]` when none does, and `parent`, its open sub-issue parent as `owner/name#N` or `null`, read from the facts with no read per item; the schema stays 1
+- S-094-15: `queue --fleet --json` lists in an item's `blocks` the open issues of every repo it read that wait on the item, and reads no repo more than once
+- S-094-16: `status --item N --json` carries the same `parent` as `queue`'s record of N, and the same `blocks` when its walk reads and finds no hold outside the repo; a walk that fails leaves its `blocks` empty with `blocks_error`, as spec 088 says
 
 ## Out of scope
 
@@ -163,6 +188,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 ## Issues
 
 - shipmill/shipmill#1620: S-094-1, S-094-2, S-094-3, S-094-4, S-094-5, S-094-6, S-094-7, S-094-8, S-094-9, S-094-10, S-094-11, S-094-12, S-094-13
+- shipmill/shipmill#1639: S-094-14, S-094-15, S-094-16
 
 ## Verification
 
@@ -178,4 +204,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-10: the run's reads were one `gh pr list` with the checks, reviews, and labels of every pull request beside the open pull request list, and no `gh pr view`, as `test_s094_10_one_read_of_the_facts_and_no_read_per_item` asserts of the commands run
 - S-094-11: `queue --fleet --json` with a home holding one gate job printed `{"schema": 1, "repos": [...]}` with that job's repo, read from its WorkingDirectory; a home with none printed an empty list in its test, and the order of several in `test_s094_11_the_fleet_form_reads_every_gate_job`
 - S-094-12: in that run the repo's read failed (gh had no login under the test home) and was its entry with `repo` and `error`, exit 2; the stop on GitHub's rate limit, in a `gh` read and in watch_state.py, is proven by its two tests, and `--fleet` with a repo exits 2 in its test
+- S-094-14: `shipmill queue --json` on shipmill/shipmill on 2026-11-25 printed `blocks` and `parent` on all 80 records with `"schema": 1`: #1616 listed #1610, #1589, and #1439, nearest first, #1534 had `parent` `shipmill/shipmill#1439` and #1439 itself `blocks: []` and `parent: null`; `test_s094_14_queue_prints_blocks_and_parent_with_no_read_per_item` asserts no item's own read and no walk
+- S-094-15: `test_s094_15_the_fleet_lists_another_repos_waiters` reads two gate jobs, lists acme/api#2 in acme/web#4's `blocks`, and runs triage_state.py once per repo
+- S-094-16: `status --item N --json` for #1616, #1534, and #1439 in that run matched `queue`'s `parent` and `blocks` of N, and every other key of its record
 - S-094-13: `shipmill status --summary` on shipmill/shipmill printed spec 091's four lines, its JSON with spec 091's keys, with #338 and the postponed issues on waits on nobody
