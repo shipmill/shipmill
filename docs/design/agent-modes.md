@@ -320,7 +320,9 @@ Verified on Claude Code 2.1:
   of every headless launch (not argv, not `--settings`, so S-005-3's command line is
   unchanged), and a value already in the gate's own environment passes through
 - The sandbox (spec 087, S-087-1). macOS half verified on Claude Code 2.1.330 (#1524) on
-  2026-11-25; the Linux half is not run yet. The probe is `docs/design/probe-087/`: `probe.sh`
+  2026-11-25; Linux half verified on Claude Code 2.1.332 (#1586) on 2026-11-25, recorded in its
+  own point at the end, which names where Linux differs. The points before it are the macOS
+  run's. The probe is `docs/design/probe-087/`: `probe.sh`
   starts S-005-3's command line with `--settings` carrying the spec's `sandbox` and
   `permissions.deny` (built by `settings.py`), `Edit(//<path>/**)` and `Write(//<path>/**)` for
   each write-scope path, and `Bash(cat *)`, `Bash(curl *)` and `Bash(ssh *)` added to the
@@ -362,6 +364,38 @@ Verified on Claude Code 2.1:
       ("renamed one or more entries in a .git folder so that git outside the sandbox does not
       follow them", as `.<name>.claude-sandbox-quarantine-<hex>`). The session's uv cache under
       `<common dir>/shipmill/uv-cache` had 26 entries renamed, so it belongs outside the git dir
+  - **Linux half.** Claude Code 2.1.332 on Ubuntu 24.04 (arm64), run on 2026-11-25 from `main`
+    at c28b2930 (#1586), in a Docker Desktop container started with seccomp, apparmor and
+    systempaths unconfined so bwrap can make its namespaces; `bwrap --ro-bind / / --unshare-user
+    true` exits 0 there with no sysctl. Both runs, plain and with the widening
+    `.claude/settings.local.json`, came back alike, and the canary count after them was 0:
+    - The canary was refused four ways, `cat`, `Read` and `Grep` by the permission rules with the
+      macOS texts. `uv run python -c "open(...)"` was refused by the sandbox, but the program saw
+      `FileNotFoundError: [Errno 2] No such file or directory` (macOS: `Operation not
+      permitted`)
+    - A write outside the scope from a Bash program, and into `<common dir>/hooks`, failed with
+      `OSError: [Errno 30] Read-only file system` (macOS: `Operation not permitted`)
+    - `curl https://example.com` was refused by the proxy with the same `<sandbox_violations>` /
+      `deny network-outbound example.com:443 (user denied)` as on macOS; `api.github.com` was
+      reached; `ssh -T git@github.com` failed: "Could not resolve hostname github.com: Temporary
+      failure in name resolution"
+    - A local port, at `127.0.0.1` and at `localhost`, was refused: `curl: (7) Failed to connect
+      to 127.0.0.1 port 18765 after 0 ms: Couldn't connect to server`
+    - The session fetched, pushed a branch and deleted it as the App. Each `git` command warned
+      `unable to access '<checkout>/.gitmodules': Permission denied` and went on
+    - `gh api` ran and printed `shipmill-romamo[bot]` (macOS: refused, `gh` could not read
+      `~/.config/gh/hosts.yml`). The cause is not probed, and the `GH_CONFIG_DIR` of D-105 stands,
+      since macOS needs it
+    - `uv run pytest -q tests/test_headless_docs.py` passed in the checkout (4 passed)
+    - The Write tool outside the write scope was refused ("It requires approval, and this session
+      has no approval surface"), on a host with no user `permissions.allow`; macOS allowed it
+      through a user `Write` allow. The Edit tool inside the scope was allowed
+    - The project settings file did not widen the sandbox: `example.com` was refused in the widen
+      run too
+    - **Refusal text the tick reads on Linux.** A refused host: `<sandbox_violations>` /
+      `deny network-outbound example.com:443 (user denied)` in the tool result, as on macOS. A
+      refused path: only the program's own error, `No such file or directory` (ENOENT) for a
+      read and `Read-only file system` (EROFS) for a write, with no violation block
 - One local port in the sandbox (spec 087's tunnels, S-087-10). macOS verified on Claude Code
   2.1.330 (#1588) on 2026-11-25 with `probe.sh <out> port` and `probe.sh <out> binding`: the
   spec's settings without the bare `localhost`, a file served on `127.0.0.1:18765` (the named
