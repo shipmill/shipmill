@@ -228,6 +228,15 @@ On hold: {why, e.g. #PR goes below the spec's default of 5 rotated files}, decid
 
 Put the same line on the held PR.
 
+**Name the item it waits on for the gate** (spec 089). When a session leaves an issue or a pull request it was handed unchanged because it waits on another item (an answer on another issue, a pull request to land, an upstream report), its hold comment on that subject starts with a marker line naming the item, then the hold sentence:
+
+```markdown
+<!-- shipmill:waits-on {owner/repo}#{N} -->
+On hold: waits on {owner/repo}#{N}, {what it waits for there}.
+```
+
+The marker is the comment's first line, the item written as `owner/repo#N` even in the same repo, its owner as GitHub spells it (`gh repo view <owner/repo> --json nameWithOwner`), and the comment is posted through `shipmill gh` as the App, since the gate reads only its `--bot-login`'s marker. The gate otherwise marks a subject nobody wrote on idle and leaves it until the subject itself changes; with the marker, it hands the subject again once the named item is updated. A later hold on the same subject posts a new marker: the newest one counts.
+
 When the line holds an issue on an issue, link the two first with `chains.py link <owner/repo#held> --blocked-by <owner/repo#N>` ([Chains](../SKILL.md#chains)), as the Upstream report does: it writes the blocked-by relation and the body's `Depends on` line (`text only:` where the forge refuses the relation), so the hold shows in GitHub's dependency view and to tools outside the gate, and the line stays as its reason. When it exits 2 with `closes a cycle:`, the issue would wait on itself, as a part held on its own parent does (#772): post no hold line either, which would deadlock it the same way, and name that issue as context in a sentence with no hold phrase. A hold that names a pull request, or a hold on a pull request, stays the line alone: GitHub has no blocked-by relation on a pull request. In a component, `chains.py link` refuses another repo's item (S-038-11): wait on a local stand-in instead ([Upstream report](#upstream-report)).
 
 ## A cycle
