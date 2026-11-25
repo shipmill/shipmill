@@ -166,14 +166,16 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 
 ## Verification
 
-- S-094-1: `shipmill status --summary --json` on shipmill/shipmill gave 84 records for 78 issues and 6 pull requests, ascending, each with the nine keys and on its split line
-- S-094-2: the same run's #1516 read `via` 1622, its spec pull request's needs-decision question, with that item's why and clears; #322 read its own `postponed` condition
-- S-094-3: #1516's `waits_on` was `["shipmill/shipmill#1622"]`, the open item its BLOCKED note names
-- S-094-4: #338 (labelled blocked) read `elsewhere`, the postponed issues `postponed`; the table's other rows are each a case of `test_s094_4_each_condition_has_its_finer_holder`
-- S-094-5: the run split 62 to the maintainer, 4 to the agent, 1 elsewhere, 17 postponed, each item once; a parent with children read `postponed` in its test
-- S-094-6: the run marked 53 issues triaged as opportunities `accept: "opportunity"`, each held by the maintainer
-- S-094-7: `shipmill status --summary` printed the seven lines, waits on people, waits elsewhere, and postponed before waits on nobody
-- S-094-8: `status --item N --json` for #1516, #338, #322, and #1626 matched the summary's record of N key for key, with `"schema": 1`
-- S-094-9: both JSON outputs started with `"schema": 1`
-- S-094-10: `shipmill status --summary --host --json` on the maintainer's host printed `{"schema": 1, "repos": [...]}` with one entry per gate job on the host, in plist order, each read from its job's checkout
-- S-094-11: in the same run the repos whose reads hit GitHub's rate limit were entries with `repo` and `error`, the others still printed, and the command exited 2; `--host` without `--summary` or with a repo exited 2 in its test
+- S-094-1: `shipmill queue --json` on shipmill/shipmill printed `schema`, `repo`, `totals`, `split` with the seven holders, and 85 records for 79 issues and 6 pull requests, ascending, each with the nine keys and on its split line
+- S-094-2: the same run's #1531 read `via` 1524 with #1524's why and clears, and #1516 `via` 1622, its spec pull request's question; #322 read its own `postponed` condition with `via` null
+- S-094-3: #1531's `waits_on` was `["shipmill/shipmill#1524", "shipmill/shipmill#1528"]`, the open items its BLOCKED note names
+- S-094-4: #338 (labelled blocked) read `elsewhere` and the postponed issues `postponed`; no issue there was a person's, so `people` and the rest of the table are each a case of `test_s094_4_each_condition_has_its_finer_holder`
+- S-094-5: the run placed 63 items with the maintainer, 11 with the agent, 1 elsewhere, and 10 postponed, each once; a parent moving through its children read `postponed` in its test
+- S-094-6: the run marked 50 issues `accept: "opportunity"` and 4 `accept: "plan"`, each held by the maintainer
+- S-094-7: `shipmill queue` printed the repo with its totals, then each holder's label with its items as `#N <kind>: <why> (clears: <clears>)`
+- S-094-8: `status --item N --json` for #1531 (linked), #338, and #322 matched `queue`'s record of N key for key
+- S-094-9: `queue --json`, `queue --fleet --json`, and `status --item --json` each printed `"schema": 1` as their first key
+- S-094-10: the run's reads were one `gh pr list` with the checks, reviews, and labels of every pull request beside the open pull request list, and no `gh pr view`, as `test_s094_10_one_read_of_the_facts_and_no_read_per_item` asserts of the commands run
+- S-094-11: `queue --fleet --json` with a home holding one gate job printed `{"schema": 1, "repos": [...]}` with that job's repo, read from its WorkingDirectory; a home with none printed an empty list in its test, and the order of several in `test_s094_11_the_fleet_form_reads_every_gate_job`
+- S-094-12: in that run the repo's read failed (gh had no login under the test home) and was its entry with `repo` and `error`, exit 2; the stop on GitHub's rate limit, in a `gh` read and in watch_state.py, is proven by its two tests, and `--fleet` with a repo exits 2 in its test
+- S-094-13: `shipmill status --summary` on shipmill/shipmill printed spec 091's four lines, its JSON with spec 091's keys, with #338 and the postponed issues on waits on nobody

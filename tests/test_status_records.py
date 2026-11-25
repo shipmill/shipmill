@@ -51,6 +51,7 @@ def run_queue(root: Path, capsys: pytest.CaptureFixture[str], *args: str) -> tup
     return code, capsys.readouterr().out, fake
 
 
+# proves: S-094-9
 def test_s094_1_every_open_item_has_one_record_on_its_split_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -190,6 +191,7 @@ def test_s094_10_one_read_of_the_facts_and_no_read_per_item(tmp_path: Path, caps
     assert not any(Path(c[0]).name == "shipmill" or c[1:2] == ["gh"] for c in fake.seen)  # no shipmill gh
 
 
+# proves: S-094-9
 def test_s094_8_item_json_agrees_with_the_queues_record(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = configured(repo_with_release(tmp_path / "repo"))
     main(["--repo", str(root), "queue", "--json"], state=LinkedFake(), login=host)
