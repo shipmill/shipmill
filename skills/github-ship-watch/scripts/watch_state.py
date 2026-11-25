@@ -6373,10 +6373,17 @@ def tier_impact(
     """A tier 4 or 6 read's rows with each ISSUES row's impact (spec 086), from one chains.py
     show over the repo's open issues (starts); a walk that fails adds its CHAIN_UNREADABLE row
     and leaves every impact empty, so the tier keeps its order. With no ISSUES row naming an
-    issue nothing more is read, and the ISSUES rows read an empty impact"""
+    issue nothing more is read, and the ISSUES rows read an empty impact. Starts it can't read
+    (tier 4's 1000+ open issues) are a failed walk too, its fix naming the rows' own issues"""
     if not any(r.state == "ISSUES" and issue_numbers(r) for r in rows):
         return with_impact(rows, {})
-    read = chain_read(args.repo, starts(), args.bot_login, execute)
+    try:
+        listed = starts()
+    except Refused as refused:
+        named = sorted({n for r in rows if r.state == "ISSUES" for n in issue_numbers(r) or ()})
+        unread = chain_unreadable_row(args.repo, [f"{args.repo}#{n}" for n in named], str(refused))
+        return [*with_impact(rows, {}), unread]
+    read = chain_read(args.repo, listed, args.bot_login, execute)
     unreadable = [r for r in read.rows if r.state == "CHAIN_UNREADABLE"]
     return [*with_impact(rows, read.held), *unreadable]
 

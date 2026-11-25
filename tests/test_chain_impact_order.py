@@ -123,6 +123,25 @@ def test_s086_9_tier_4_reads_the_open_issues_as_its_starts(ws: ModuleType) -> No
         ws.open_starts("o/r", lambda cmd: json.dumps([{"number": n} for n in range(1, 1001)]))
 
 
+def test_s086_9_tier_4_starts_it_cant_read_are_chain_unreadable_and_the_rows_still_print(ws: ModuleType) -> None:
+    # a repo of 1000+ open issues: tier 4 keeps its rows and order, never the watch's exit 2
+    def too_many() -> list[str]:
+        found: list[str] = ws.open_starts("o/r", lambda cmd: json.dumps([{"number": n} for n in range(1, 1001)]))
+        return found
+
+    def never(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("a walk ran without its starts")
+
+    rows = [ws.Row("ISSUES", "o/r", "DECIDED #6 #2", FIX)]
+    found = ws.tier_impact(args(), rows, too_many, never)
+    assert [(r.state, r.subject, r.detail) for r in found] == [
+        ("ISSUES", "o/r", "DECIDED #6 #2"),
+        ("CHAIN_UNREADABLE", "o/r", "error: o/r has 1000+ open issues"),
+    ]
+    assert found[0].json()["impact"] == [] and found[1].json()["agent"] is False
+    assert found[1].fix.endswith("show --trusted-only o/r#2 o/r#6")
+
+
 def test_s086_9_only_an_issues_row_has_impact(ws: ModuleType) -> None:
     with pytest.raises(ValueError, match="only an ISSUES row has impact"):
         ws.Row("VETOED", "o/r", "#3", "x", impact=())
