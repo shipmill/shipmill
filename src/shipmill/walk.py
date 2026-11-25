@@ -472,9 +472,11 @@ class Handed:
         return any(not h.within(now, retry) and not h.idle for h in self.hands.values())
 
     def kept(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
-        """The hands within retry, and the idle ones, which stay past it (spec 061), and the ones
-        whose session ended error, which carry their run to the hand that replaces them (S-089-11)"""
-        return Handed({k: h for k, h in self.hands.items() if h.within(now, retry) or h.idle or h.ended is End.ERROR})
+        """After a walk that read every tier and handed nothing: the hands within retry, and the
+        idle ones, which stay past it (spec 061). A hand whose session ended error drops past its
+        hold too: the walk met its key and didn't hand it, so it is no item's now (a pull request
+        under observe), and kept, its expiry would make every tick walk (S-089-11)"""
+        return Handed({k: h for k, h in self.hands.items() if h.within(now, retry) or h.idle})
 
     def stopped(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
         """After a walk that stopped at an item: as kept, and every subject's hand, since the

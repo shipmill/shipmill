@@ -12,6 +12,7 @@ from types import ModuleType
 import pytest
 
 from shipmill.agents import Mode
+from shipmill.autonomy import Autonomy
 from shipmill.findings import Finding
 from shipmill.gate import RECORD, Action, Decision, Launch, Process, save_launch, session_log, state_dir
 from shipmill.gitrepo import Git
@@ -93,6 +94,21 @@ def test_s089_11_an_error_hand_never_turns_idle(checkout: Git) -> None:
     decision = tick(checkout, source, NOW, cfg(Mode.HEADLESS), FakeClaude())
     assert decision.action is Action.LAUNCH  # past its hold, unchanged, and still handed again, never idle
     assert handed(checkout)["PRS_OPEN #3"]["errors"] == 4
+
+
+def test_s089_11_an_error_hand_past_its_hold_that_no_walk_hands_walks_once_not_every_tick(checkout: Git) -> None:
+    head = Head("a" * 40, "SUCCESS")
+    row = Finding("PRS_OPEN", REPO, "#3", False, ((3, "a" * 40),), "land")  # under observe: a row, no item
+    gone = NOW - dt.timedelta(hours=30)
+    hand = Hand("s0", gone, head, ended=End.ERROR, errors=1, until=gone + dt.timedelta(minutes=15))
+    Handed({"PRS_OPEN #3": hand}).save(state_dir(checkout) / HANDED)
+    source = Source({3: [row]}, pulls={3: Pull(head, gone - dt.timedelta(hours=1))}, signature="same")
+    walks = []
+    for minutes in (0, 10, 20):
+        at = NOW + dt.timedelta(minutes=minutes)
+        decision = tick(checkout, source, at, cfg(Mode.HEADLESS, land=Autonomy.OBSERVE), FakeClaude())
+        walks.append(decision.walk is not None and decision.walk.change)
+    assert walks == [True, False, False]  # its expiry is one change, not one per tick
 
 
 def test_s089_11_an_ok_end_resets_the_run(checkout: Git) -> None:
