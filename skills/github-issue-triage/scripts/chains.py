@@ -908,11 +908,14 @@ def unlink(
     if changed:
         edit(target, body)
         lines += [f"removed from {target}: {line}" for line in changed]
+    removed = bool(lines)  # the relation or a line went: only then is there a hold to take up
     if refused is not None:
         lines.append(f"text only: {refused}")
-    if lines:
+    if removed:
         comment(target, UNLINKED_NOTE.format(other=other))
-    print("\n".join(lines) if lines else "not linked")
+    else:
+        lines.append("not linked")
+    print("\n".join(lines))
     return 0
 
 

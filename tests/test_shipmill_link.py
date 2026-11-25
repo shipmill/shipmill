@@ -208,6 +208,20 @@ def test_s041_19_unlinks_comment_takes_the_hold_up_so_triage_asks_no_link_again(
     assert unlinked(ts, after, HOLDS)[0] == "BLOCKED"
 
 
+def test_s041_19_a_refused_relation_with_nothing_to_remove_posts_nothing(
+    ch: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The third review's case: a forge without issue dependencies, and no line naming it"""
+    forge = Forge(ch)
+    forge.refuse_read = "Issue dependencies are not enabled"
+    forge.add("o/r#7", "Build it.")
+    forge.add("o/r#12")
+    for _ in range(2):
+        assert unlink(ch, forge, "o/r#7", "--blocked-by", "o/r#12") == 0
+        assert capsys.readouterr().out.splitlines() == ["text only: Issue dependencies are not enabled", "not linked"]
+    assert forge.writes() == [] and forge.comments == []
+
+
 def test_s041_19_a_malformed_line_naming_it_is_refused_before_any_write(
     ch: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
