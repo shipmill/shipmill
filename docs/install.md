@@ -251,6 +251,12 @@ $CR plan --lane stable --dry-run
 
 `doctor` must pass every line. It checks:
 
+- A `checkout` row, after the policy and its `refused` rows: whether HEAD contains `origin/<default branch>`
+  as last fetched (read from the local `origin/HEAD`, with no fetch). The workflows,
+  `.github/shipmill.toml`, and `pyproject.toml` are read from the working tree, so a WARN
+  names the branch or a detached HEAD and how many commits it is behind, with the fix:
+  `git switch <default> && git pull`, or run doctor from a worktree of `origin/<default>`.
+  An unset `origin/HEAD` is a WARN too, fixed by `git remote set-head origin --auto`
 - A CHANGELOG with an Unreleased section, in keep-a-changelog or dash style
 - A stable `vX.Y.Z` tag to count from
 - A CI workflow that runs on `workflow_call` with a `ref` input and checks that ref out
