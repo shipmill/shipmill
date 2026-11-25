@@ -88,6 +88,15 @@ For each open issue:
                    reference it names, and its note is "line <n>: <the line>" for
                    each, then the holds. Read right after UNFILLED, before CYCLE,
                    SPEC_REFUSED, BLOCKED, UNBLOCKED, and HANDOFF_DUE: rewrite the line
+  HOLD_UNLINKED    once triaged (or a person's item), a comment with the agent marker, or
+                   by the --bot-login (its newest such comment, neither a status comment nor
+                   a question; in a component, of the repo itself), names a hold on an issue
+                   still open (GitHub gave it
+                   as an issue: never a pull request, S-017-9) that no Depends on line and
+                   no native relation records (spec 041, #1645): it still
+                   holds on it, and its note is "unlinked <owner/repo#M>" for each, then
+                   the holds. Read right after MALFORMED_DEPENDS, before CYCLE: run
+                   `shipmill link #N --blocked-by <owner/repo#M>`
   CYCLE            once triaged (or a person's item), it is on a cycle of the repo's open
                    issues (spec 041): each holds the next through its Depends on lines (a
                    malformed one's included), blockedBy, or sub-issues, as read here, so
@@ -233,8 +242,8 @@ it reads:
                    a reopen and a new close of the parent re-arm it. Read before
                    OFF_MILESTONE and every state below, and an action
 After that and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
-UNFILLED, MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
-hold closed, one of:
+UNFILLED, MALFORMED_DEPENDS, HOLD_UNLINKED, CYCLE, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue
+would, else, with every hold closed, one of:
   NO_ASSIGNEE      without --role flags, a person's item with no assignee: read again
                    with the flags `shipmill roles --flags` prints. With them, never read
   ASSIGN_DUE       with --role flags, a person's item with no assignee whose roles
@@ -365,7 +374,8 @@ BLOCKED. Without --home, or with --home naming the repo itself, no `shipmill gh`
 uvx, or a broken plugin.json, when a read is due exits 2.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
-MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, RELAY_REFUSED, VETOED, SUSPECT_CLOSE,
+MALFORMED_DEPENDS, HOLD_UNLINKED, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, RELAY_REFUSED, VETOED,
+SUSPECT_CLOSE,
 HANDOFF_DUE, STALE_HANDOFF,
 VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, OFF_MILESTONE, or AGENT_DRAFT (never for NEEDS_DECISION,
 UNTRUSTED, UPSTREAM, UPSTREAM_UNOWNED, WITH_PERSON, or AGENT_DRAFT_HELD),
@@ -392,7 +402,7 @@ import re
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Container, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
@@ -891,6 +901,7 @@ ACTION = {
     "UNBLOCKED",
     "UNFILLED",
     "MALFORMED_DEPENDS",
+    "HOLD_UNLINKED",
     "CYCLE",
     "SPEC_REFUSED",
     "REVISIT",
@@ -1612,6 +1623,47 @@ def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, s
     return {r: i for r, i in refs.items() if fold(r) != own}
 
 
+def unlinked_holds(
+    issue: dict[str, Any],
+    repo: tuple[str, str],
+    bot_login: str | None,
+    body: Sequence[Ref],
+    native: Mapping[Ref, Any],
+    states: Mapping[Ref, str],
+    issues: Container[Ref],
+    home: str | None = None,
+) -> list[Ref]:
+    """Spec 041 (#1645): the issues the agent's newest word on the issue (its newest comment with
+    the agent marker, or by the --bot-login, that is neither a status comment nor a
+    needs-decision question) names as a hold (hold_refs) that are still open and that neither a
+    Depends on line of the body nor a native relation records, sorted. Only the newest counts,
+    so a hold a later comment or an unlink took up, or a question's options, never ask for the
+    link again. Only an item read as an issue (issues) counts: a pull request takes no link from
+    an issue (S-017-9), so a hold on one, such as a spec pull request's, stays its comment. In a
+    component (home names another repo), only an issue of the repo itself, the only link
+    chains.py writes there (S-038-11). A person's comment is theirs to word: never unlinked"""
+    agents = [
+        c
+        for c in issue["comments"]["nodes"]
+        if (by_agent(c["body"]) or (bot_login is not None and same_login(login(c.get("author")), bot_login)))
+        and first_line(c["body"]) not in (STATUS_MARKER, DECISION_MARKER)
+    ]
+    if not agents:
+        return []
+    recorded = {fold(r) for r in (*body, *native)}
+    named = hold_refs({"number": issue["number"], "comments": {"nodes": agents[-1:]}}, repo)
+    component = home is not None and home.lower() != "/".join(repo).lower()
+    own = (repo[0].lower(), repo[1].lower())
+    return sorted(
+        r
+        for r in named
+        if r in issues
+        and fold(r) not in recorded
+        and states.get(r) not in (*CLOSED_STATES, "CLOSED_UNMERGED")
+        and not (component and fold(r)[:2] != own)
+    )
+
+
 def depends_lines(body: str) -> list[tuple[int, str, str, bool]]:
     """Each "Depends on" line of a body outside a ``` or ~~~ fence (spec 041): its number
     counted from 1, the line, the text its references are read from, and whether it is
@@ -1662,13 +1714,31 @@ def upstream_states(
 ) -> tuple[dict[tuple[str, str, int], str], dict[tuple[str, str, int], str]]:
     """Each upstream issue's or pull request's state as ref_state reads it, and, for one
     that closed, when it closed: a person's hand-off counts only after its newest hold closed"""
+    states, closes, _ = upstream_reads(refs)
+    return states, closes
+
+
+def upstream_reads(refs: set[Ref]) -> tuple[dict[Ref, str], dict[Ref, str], frozenset[Ref]]:
+    """upstream_states' answer, and which of the refs GitHub gave as issues (issue_refs)"""
     if not refs:
-        return {}, {}
+        return {}, {}, frozenset()
     ordered = sorted(refs)
     proc = subprocess.run(
         ["gh", "api", "graphql", "-f", f"query={states_query(ordered)}"], capture_output=True, text=True, check=False
     )
-    return read_states(json.loads(proc.stdout or "{}").get("data") or {}, ordered)
+    data = json.loads(proc.stdout or "{}").get("data") or {}
+    states, closes = read_states(data, ordered)
+    return states, closes, issue_refs(data, ordered)
+
+
+def issue_refs(data: dict[str, Any], ordered: list[Ref]) -> frozenset[Ref]:
+    """states_query's refs GitHub answered as issues: the holds `shipmill link` can record
+    (#1645); a pull request, or one it gave no node for, is none"""
+    return frozenset(
+        ref
+        for i, ref in enumerate(ordered)
+        if ((data.get(f"r{i}") or {}).get("issueOrPullRequest") or {}).get("__typename") == "Issue"
+    )
 
 
 def states_query(ordered: list[Ref]) -> str:
@@ -2348,8 +2418,10 @@ def classify_open(
     home: str | None = None,
     revisits: Revisits | None = None,
     window: str | None = None,
+    issues: Container[Ref] = frozenset(),
 ) -> tuple[str, str]:
-    """An open issue's state once gated found none; ``closes`` says when each closed hold
+    """An open issue's state once gated found none; ``issues`` are the holds read as issues,
+    the only ones HOLD_UNLINKED names (#1645); ``closes`` says when each closed hold
     closed, which a person's item (labelled human or role:<name>) reads its hand-off against,
     and before which any other issue's newest triage comment takes a hold up (#1493).
     Without ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS).
@@ -2479,6 +2551,12 @@ def classify_open(
         # Which of its references are holds is unclear, so nothing starts on it: a session
         # rewrites the line (spec 041). CYCLE is read right after this, before SPEC_REFUSED
         return "MALFORMED_DEPENDS", " | ".join([*malformed, shown] if shown else malformed)
+    unlinked = unlinked_holds(issue, repo, bot_login, body, native, states, issues, home) if held else []
+    if unlinked:
+        # A hold is recorded only as a link (#1645): an agent wrote one as prose, so a session
+        # runs `shipmill link` for it. It still holds meanwhile, so nothing starts early
+        said = " ".join(f"unlinked {o}/{n}#{k}" for o, n, k in unlinked)
+        return "HOLD_UNLINKED", " | ".join([said, shown] if shown else [said])
     if cycle is not None:
         # Nothing on the loop can start, so a session asks which link is wrong; when another
         # item on it already waits on a question or a line fix, that one breaks the loop (spec 041)
@@ -3249,7 +3327,7 @@ def main() -> int:
         description=__doc__.splitlines()[0],
         epilog=(
             "States: NEW NEEDS_PR IN_PROGRESS AGENT_DRAFT AGENT_DRAFT_HELD DONE_NOT_CLOSED BLOCKED UNFILLED "
-            "MALFORMED_DEPENDS CYCLE SPEC_REFUSED "
+            "MALFORMED_DEPENDS HOLD_UNLINKED CYCLE SPEC_REFUSED "
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED RELAY_REFUSED VETOED UNTRUSTED UPSTREAM "
             "UPSTREAM_UNOWNED OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
@@ -3342,7 +3420,7 @@ def main() -> int:
     # The forge's relations came with their states: ask only for the others
     holds = {r: h for issue in data["open"]["nodes"] for r, h in native_holds(issue).items()}
     native = {r: s for r, (_, s, _) in holds.items()}
-    upstream, closes = upstream_states(refs - set(native))
+    upstream, closes, read_issues = upstream_reads(refs - set(native))
     # A component reads again, with the read token, the holds on other repos' items plain gh
     # couldn't (spec 065); without --home, or in the home, no `shipmill gh` runs
     unread = product_reads(upstream, (owner, name), args.home)
@@ -3385,6 +3463,7 @@ def main() -> int:
             home=args.home,
             revisits=revisits,
             window=windows.get(issue["number"]),
+            issues=read_issues | frozenset(native),
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before
@@ -3458,6 +3537,7 @@ def main() -> int:
         "UNBLOCKED",
         "UNFILLED",
         "MALFORMED_DEPENDS",
+        "HOLD_UNLINKED",
         "CYCLE",
         "SPEC_REFUSED",
         "REVISIT",

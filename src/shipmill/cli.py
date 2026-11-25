@@ -181,6 +181,7 @@ from shipmill import (
     item_links,
     item_status,
     land_window,
+    link,
     merge_checks,
     plugin_clean,
     product,
@@ -850,6 +851,21 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--host", action="store_true", help="read this host's gate jobs' repos too, with --repo or --fleet")
     p.add_argument("--json", action="store_true", help="print the report as one JSON object")
 
+    for verb, about in (
+        ("link", "record a hold between issues and pull requests: a native relation and a Depends on line (spec 041)"),
+        ("unlink", "remove a hold link recorded, both its forms (spec 041)"),
+    ):
+        p = sub.add_parser(verb, help=about)
+        p.add_argument(
+            "item", metavar="REF", help="#N or owner/repo#N: the issue or pull request that waits, or the parent"
+        )
+        how = p.add_mutually_exclusive_group(required=True)
+        how.add_argument("--blocked-by", metavar="REF", help="the issue it waits on")
+        how.add_argument("--child", metavar="REF", help="the issue under it as a sub-issue")
+        if verb == "link":
+            p.add_argument("--product", action="store_true", help="the coordinator's routing of a child (spec 038)")
+            p.add_argument("--no-text", action="store_true", help="the native relation alone, no Depends on line")
+
     p = sub.add_parser("roles", help="print who receives each step an agent can't do, [agents.roles] (spec 036)")
     shown = p.add_mutually_exclusive_group()
     shown.add_argument("--json", action="store_true", help="print the roles as one JSON object")
@@ -1351,6 +1367,7 @@ def main(
     history_reads: Callable[[Path], review_history.Reads] | None = None,
     gh_feed: GhFeed | None = None,
     record_reads: area_record.Reads | None = None,
+    chains: link.ChainsRunner | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1372,6 +1389,7 @@ def main(
     (spec 073), and gh_feed for running `shipmill gh`'s gh with the stdin the leak check read
     (spec 081), and record_reads for the issues and deployments `decide record` reads, and
     `decide classify` when the base's levels ask for the production record (spec 083),
+    and chains for the chains.py `link` and `unlink` run (spec 041),
     as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
     gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
@@ -1426,6 +1444,17 @@ def main(
         if args.leaks == "check":
             return _leaks_check(root, args, env, gh_capture or capture_gh, private_home, stdin or sys.stdin)
         return _leaks_push(root, args, env, gh_capture or capture_gh, private_home)
+    if args.command in ("link", "unlink"):  # chains.py reads the checkout's config for its writes
+        origin = _origin_repo(root)
+        request = link.LinkRequest(
+            args.command == "unlink",
+            link.LinkRef.parse(args.item, origin),
+            link.LinkRef.parse(args.child if args.child is not None else args.blocked_by, origin),
+            args.child is not None,
+            getattr(args, "product", False),
+            getattr(args, "no_text", False),
+        )
+        return link.run_link(request, root, chains or link.run_chains)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
         return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)

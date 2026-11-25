@@ -15,7 +15,7 @@ from shipmill.autonomy import HOLD_LABEL, Autonomy, Source, StageKind, StageLeve
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner
-from shipmill.item_links import ItemRef, Links, Reach, local_holds, merged, waiters
+from shipmill.item_links import Holds, ItemRef, Links, Reach, local_holds, merged, waiters
 from shipmill.land_window import LandWindow
 from shipmill.status import (
     CLOSED_STATES,
@@ -299,7 +299,8 @@ def bucket(facts: Facts, number: int, kind: Kind) -> str:
         return "to land"
     if number in merge:
         return "to merge"
-    if any(n == number for n, _ in parked(facts.rows).people):
+    held = parked(facts.rows)
+    if any(n == number for n, _ in (*held.people, *held.waits)):
         return "parked"
     if any(p.number == number and p.draft for p in facts.pulls):
         return "drafts"
@@ -506,9 +507,36 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
     return []
 
 
+def pull_waits(facts: Facts, number: int) -> tuple[str, ...]:
+    """S-041-22: the items still open that the pull request's Depends on lines name, as
+    watch_state.py's PRS_PARKED row lists them (WAITS_ON), owner/name#N"""
+    return next((on for n, on in parked(facts.rows).waits if n == number), ())
+
+
+def pull_holds(facts: Facts) -> Holds:
+    """S-041-22: the repo's pull requests held by their Depends on lines, each with the items
+    it waits on, as the BLOCKED issues' holds are read (local_holds), so what waits on an item
+    names them too"""
+    found: Holds = {}
+    for p in facts.pulls:
+        on = pull_waits(facts, p.number)
+        if on:
+            ref = ItemRef(facts.repo, p.number)
+            found[ref.key] = (ref, "BLOCKED", tuple(ItemRef.parse(r) for r in on))
+    return found
+
+
 def pull_conditions(facts: Facts, pull: Pull, detail: PullDetail, window: LandWindow | None) -> list[Condition]:
     """S-088-10: what holds the pull request's merge"""
-    found = []
+    found = [
+        Condition(  # S-041-22: as a BLOCKED issue's hold, held elsewhere for another repo's item
+            f"waits on {ref} (open)",
+            Who.EVENT,
+            f"{ref} closing or merging",
+            where=None if ref.rpartition("#")[0].casefold() == facts.repo.casefold() else Holder.ELSEWHERE,
+        )
+        for ref in pull_waits(facts, pull.number)
+    ]
     if pull.draft:
         if any(r.state == "AGENT_DRAFT" and names(r, pull.number) for r in facts.rows):
             found.append(
@@ -610,10 +638,13 @@ def _links(facts: Facts, item: ItemRef, reach: Reach) -> Links:
     with the picture's bucket"""
     opened = {i.number for i in facts.issues if i.state not in CLOSED_STATES and not i.closed}
     notes = [(i.number, i.state, i.note) for i in facts.issues if i.number in opened]
-    holds = merged(reach.chain or {}, local_holds(facts.repo, notes))
+    pulls = pull_holds(facts)
+    holds = merged(reach.chain or {}, local_holds(facts.repo, notes), pulls)
 
     def local(number: int) -> str | None:
-        return bucket(facts, number, Kind.ISSUE) if number in opened else None
+        if number in opened:
+            return bucket(facts, number, Kind.ISSUE)
+        return bucket(facts, number, Kind.PULL) if (facts.repo.casefold(), number) in pulls else None
 
     blocks = () if reach.chain_error is not None else waiters(item, holds, local)
     return Links(item, reach.read.step, blocks, reach.chain_error, reach.read.closes)

@@ -146,6 +146,83 @@ no CHAIN_CYCLE row: its triage reads CYCLE and a session asks. A malformed refer
 `src/shipmill/status.py` count CHAIN_CYCLE with the chain rows (`CHAIN_ROWS`) and
 CYCLE and MALFORMED_DEPENDS with the triage actions.
 
+### One command for every link (#1645)
+
+Amended by shipmill/shipmill#1645. A hold written only as prose went unseen: a session
+found that its open pull request waited on an upstream report, wrote "On hold: waits on
+<repo>#116" in a comment, and the gate handed the pull request to land fourteen minutes
+later, since no `Depends on` is defined for a pull request and nothing reads a pull
+request's comment as a hold. `chains.py link` was a skill's script, which a session outside
+triage didn't reach for. So a hold is recorded only as a link, by one command, and every
+reader reads the same links.
+
+**`shipmill link <ref> --blocked-by <ref>`**, `shipmill link <ref> --child <ref>`, and
+**`shipmill unlink`** with the same flags, where `<ref>` is `#N` (the checkout's origin repo)
+or `owner/repo#N`. A malformed reference, or `#N` in a checkout with no GitHub origin, exits
+2 naming it before anything runs. The command runs github-issue-triage's `chains.py link`
+(or `unlink`) from the checkout with both references made whole, passing `--product` and
+`--no-text` on, and passes its output and exit code on: chains.py stays the one
+implementation of a link's two forms, its cycle refusal, the product's routing (spec 038),
+and whom its writes post as (D-14), so a link written either way is the same link.
+
+**A pull request that waits.** GitHub's native blocked-by relation is for issues only, so a
+pull request's link is a strict `Depends on` line in its body, the line spec 041 defines for
+an issue. `link <pull request> --blocked-by <ref>` writes that line, appended as an issue's
+is, through the same REST edit of `repos/<owner>/<repo>/issues/<n>` (which edits a pull
+request's body too), and no relation; a line already holding on the ref prints `already
+linked` and writes nothing. `--no-text` on a pull request exits 2: its line is its only
+form. A pull request is still refused, naming it, as the item a link waits on and on either
+side of `--child` (S-017-9).
+
+**`unlink`** removes both forms: the native relation when the forge records it (GraphQL
+`removeBlockedBy`, or `removeSubIssue` for `--child`; a refusal prints `text only: <error>`
+and the line still goes), and the ref from every strict Depends on line of the body that
+holds on it. A line naming it alone is dropped with its line break; one naming others keeps
+them, in their own spelling, with its note; the rest of the body is kept byte for byte. A
+malformed line naming the ref exits 2 before any write, since which of its references hold
+is a decision. When it removed anything it then posts one comment on the item, with the
+agent marker and no hold phrase, `Unlinked from <ref>: it no longer holds this item`, so an
+older hold comment is no longer the agent's newest word (HOLD_UNLINKED, below). With neither
+form there it prints `not linked` and writes nothing. A CYCLE's answer is taken up with
+`shipmill unlink`.
+
+**One read.** A pull request's Depends on lines hold it as an issue's do:
+
+- `chains.py show` reads an open pull request's lines as its holds (with `--trusted-only`
+  only from an author the origins trust, D-16): its row's `holds` lists the open ones,
+  `waits_on` every one, `waiting_for` is `items` while one is open, and the walk follows
+  them. Its state stays OPEN, and no cycle runs through a pull request
+- `watch_state.py` reads each open pull request's body (`body` joins `PR_FIELDS`, and the
+  gate's change check reads it into `--known`). A non-draft pull request whose lines name
+  an item still open, or one whose state can't be read, is in PRS_PARKED as `WAITS_ON #N
+  (owner/repo#M ...)`, after its WITH_PERSON and TO_MERGE parts, and never in PRS_OPEN or
+  the land window's queue: the gate doesn't hand it to land. The items' states are read
+  once for every pull request, only when one names an item. An agent's draft so held reads
+  AGENT_DRAFT_HELD naming the item, as a hold comment does. Once every item it names
+  closes, it is read as before
+- `shipmill status --item` gives such a pull request the condition `waits on
+  owner/repo#M (open)`, cleared by that item closing or merging, held elsewhere for another
+  repo's item; `shipmill queue` counts it with an open item of the repo as a BLOCKED issue
+  counts with what it waits on (spec 094), and lists the items in its `waits_on`; the item
+  it waits on names it in its `blocks`, in `queue` and in `--item` alike
+
+**HOLD_UNLINKED.** `triage_state.py` reads HOLD_UNLINKED, an action (exit 1), for an open
+issue whose holds it reads (triaged, or a person's item) when the agent's newest word on it
+(its newest comment with the agent marker, or by the `--bot-login`, that is neither a status
+comment nor a needs-decision question) names a hold (the `hold_refs` rule) on an issue still
+open that neither a Depends on line of its body nor a native relation records. Only a hold
+GitHub's answer for its state gives as an issue counts: an issue can't be linked to a pull
+request (S-017-9), so a hold on one, such as the hold `shipmill spec open` posts on a
+feature issue until its spec pull request merges, stays its comment. Only the newest word
+counts, so a hold a later comment took up, such as the one after `shipmill unlink` or a
+cycle's answer, never asks for the link again; in a component only an issue of the repo
+itself counts, since link refuses another repo's item there (S-038-11). It still holds on
+that issue. Its note is `unlinked <owner/repo#M>` for each, then the holds as
+BLOCKED's note shows them. It is read right after MALFORMED_DEPENDS and before CYCLE; the
+session that takes it up runs `shipmill link #N --blocked-by <owner/repo#M>` for each.
+watch_state.py's `TRIAGE_ACTION`, `shipmill status`, `fleet.py`, and the gate's walk count
+it as a triage action.
+
 ### Docs
 
 - `skills/github-issue-triage/references/triage-rubric.md`, Links between issues: the
@@ -156,6 +233,9 @@ CYCLE and MALFORMED_DEPENDS with the triage actions.
 - `skills/github-issue-triage/references/comments.md`: the cycle question
 - `skills/github-ship-watch/SKILL.md`: CHAIN_CYCLE beside CHAIN_NO_GATE
 - The docstrings of `triage_state.py`, `chains.py`, and `watch_state.py`
+- #1645: the skills that record a hold (github-issue-resolve, github-issue-triage,
+  github-pr-triage, github-ship-watch) record it with `shipmill link`, and
+  `triage-rubric.md`'s state table gains HOLD_UNLINKED
 
 ### Compatibility
 
@@ -167,6 +247,9 @@ Existing issues change state on the first pass after this ships, with no migrati
   issue can read UNBLOCKED sooner than before
 - A Depends on line inside a code fence stops holding
 - Items on a cycle read CYCLE, an action, where they read BLOCKED
+- #1645: an issue held only by an agent's hold comment reads HOLD_UNLINKED, an action,
+  where it read BLOCKED; a session links it. A pull request whose body already carries a
+  Depends on line naming an open item leaves PRS_OPEN for PRS_PARKED
 
 ## Acceptance criteria
 
@@ -186,12 +269,21 @@ Existing issues change state on the first pass after this ships, with no migrati
 - S-041-14: `watch_state.py` counts CYCLE and MALFORMED_DEPENDS as triage actions, and `src/shipmill/status.py` and `fleet.py` count them as triage actions too
 - S-041-15: `watch_state.py` reports one CHAIN_CYCLE action row per distinct cycle in `chains.py show --json` that has an item outside the watched repo, its subject the loop's first item and its detail the loop, none for a cycle wholly in the repo, and CHAIN_UNREADABLE for a malformed reference in `"cycle"`; `status.py` and `fleet.py` count CHAIN_CYCLE with the chain rows
 - S-041-16: `triage-rubric.md`'s Links between issues states the strict shape and that context goes on its own line, never on a Depends on line; its state table has CYCLE and MALFORMED_DEPENDS with the session's action; `comments.md` has the cycle question with one option per link; github-issue-triage's SKILL.md documents CYCLE, MALFORMED_DEPENDS, and link's refusal; github-ship-watch's SKILL.md lists CHAIN_CYCLE
+- S-041-17: `shipmill link` and `shipmill unlink` take `#N` (the checkout's origin repo) or `owner/repo#N`, run `chains.py link` or `unlink` from the checkout with both references made whole and `--product` and `--no-text` passed on, and pass its output and exit code on; a malformed reference exits 2 naming it before anything runs
+- S-041-18: `chains.py link P --blocked-by R` on a pull request P appends one strict `Depends on R` line to P's body through the REST edit and writes no relation; run again it prints `already linked` and writes nothing; `--no-text` on a pull request exits 2, and a pull request as the item waited on or on either side of `--child` still exits 2 naming it
+- S-041-19: `chains.py unlink A --blocked-by B` (or `--child`) removes the native relation the forge records and B from every strict Depends on line of A's body, dropping a line that named B alone and keeping a line's other references and note, the rest byte for byte, then posts its comment with the agent marker and no hold phrase, after which triage reads no HOLD_UNLINKED for an older hold comment naming B; with neither form it prints `not linked` and writes nothing; a malformed line naming B exits 2 before any write; on a pull request it removes the line alone
+- S-041-20: `chains.py show` reads an open pull request's Depends on lines as its holds: its row's `holds` lists the open ones, `waits_on` every one, `waiting_for` is `items`, the walk follows them, and its state stays OPEN; with `--trusted-only` an untrusted author's lines hold nothing
+- S-041-21: `watch_state.py` lists a non-draft pull request whose body's Depends on lines name an item still open, or unreadable, in PRS_PARKED as `WAITS_ON #N (owner/repo#M ...)` and never in PRS_OPEN or the land window's queue; an agent's draft so held reads AGENT_DRAFT_HELD naming the item; with every item closed it is in PRS_OPEN; the gate's change check reads each pull request's body into `--known`
+- S-041-22: `shipmill status --item` gives a pull request in a WAITS_ON part the condition `waits on owner/repo#M (open)`, held elsewhere for another repo's item, and `shipmill queue` lists the items in its `waits_on` and counts it with an open item of the repo it waits on, whose `blocks` (in `queue` and `--item`) names it
+- S-041-23: `triage_state.py` reads HOLD_UNLINKED, an action (exit 1), for an open issue whose holds it reads when the agent's newest comment (the marker, or the `--bot-login`; neither a status comment nor a question) names a hold on an open issue that no Depends on line and no native relation records, its note `unlinked <owner/repo#M>` then the holds, read after MALFORMED_DEPENDS and before CYCLE; a hold a line or relation records, one on a pull request, one a later agent comment no longer names, one in a question's options, another repo's item in a component, or one only a person's comment names, reads as before; `watch_state.py`, `shipmill status`, `fleet.py`, and the gate's walk count it as a triage action
+- S-041-24: github-issue-resolve's and github-issue-triage's docs record a hold with `shipmill link`, and `triage-rubric.md`'s state table has HOLD_UNLINKED with its session's action
 
 ## Out of scope
 
-- A `chains.py unlink` command: the session removes the chosen link with `gh` (the body
-  edit and `removeBlockedBy` or `removeSubIssue`); a command can come later if sessions
-  get it wrong
+- A native relation for a pull request: GitHub has none, so its link is its body's line
+- HOLD_UNLINKED for a pull request: `triage_state.py` reads issues alone, and a pull
+  request's agent hold comment holds an agent's draft as before (AGENT_DRAFT_HELD)
+- A cycle through a pull request: `chains.py link` and triage read cycles of open issues
 - Reading cycles across repos in `triage_state.py`: it reads the repo's own issues, and a
   cross-repo cycle is ship-watch's CHAIN_CYCLE for a person
 - CHAIN_MALFORMED rows for another repo's malformed lines: that repo's triage reads them
@@ -215,6 +307,7 @@ The feature issue is shipmill/shipmill#679. Its build issues landed through pull
 - shipmill/shipmill#714: S-041-1, S-041-2, S-041-3, S-041-4, S-041-5, S-041-6
 - shipmill/shipmill#715: S-041-7, S-041-8, S-041-9, S-041-10, S-041-11
 - shipmill/shipmill#716: S-041-12, S-041-13, S-041-14, S-041-15, S-041-16
+- shipmill/shipmill#1645: S-041-17, S-041-18, S-041-19, S-041-20, S-041-21, S-041-22, S-041-23, S-041-24
 
 ## Verification
 
@@ -234,3 +327,11 @@ The feature issue is shipmill/shipmill#679. Its build issues landed through pull
 - S-041-14: `test_s041_14_cycle_and_malformed_depends_are_triage_actions_in_the_watch_status_and_fleet` finds both in `TRIAGE_ACTION`, in the watch's ISSUES row (`CYCLE #3; MALFORMED_DEPENDS #4`), which `fleet.py` counts as an action (exit 1), and on `shipmill status`'s `to triage` line; `tests/test_status_picture.py` keeps `ISSUE_LINES` covering triage_state's `ACTION`, and `tests/test_ship_watch.py` keeps `TRIAGE_ACTION` equal to it
 - S-041-15: `test_s041_15_ship_watch_reports_one_chain_cycle_per_loop_through_another_repo` runs `chains.py show --json --trusted-only` on a fake forge through `chain_rows`: one `CHAIN_CYCLE o/r#3` row with the detail `o/r#3 -> x/b#2 -> o/r#3` and the fix `answer which link is wrong and remove it: ... show o/r#3`, none for the loop wholly in `o/r`, a person's action; a malformed reference in `"cycle"` reads CHAIN_UNREADABLE naming only its checked part; `test_s041_15_status_and_the_fleet_count_chain_cycle_with_the_chain_rows` shows it on status's `chain` line as WAITS ON YOU with its fix and as a fleet action
 - S-041-16: `test_s041_16_the_docs_say_the_strict_shape_cycle_and_chain_cycle` finds the strict shape, "Context goes on its own line, never on a Depends on line", and link's `closes a cycle:` in `triage-rubric.md`'s Links between issues, MALFORMED_DEPENDS and CYCLE rows in its state table, the cycle question with one option per link in `comments.md`, CYCLE, MALFORMED_DEPENDS, and link's refusal in github-issue-triage's SKILL.md, and CHAIN_CYCLE in both of github-ship-watch's SKILL.md tables
+- S-041-17: `tests/test_shipmill_link.py` (`test_s041_17_link_and_unlink_run_chains_py_with_whole_references`) runs `shipmill link` and `unlink` from a checkout of `o/r` and finds chains.py run there with `#N` made `o/r#N` and `--product` and `--no-text` passed on; `test_s041_17_its_output_and_exit_code_pass_through` gets chains.py's exit 2 and its message; `test_s041_17_a_malformed_reference_is_refused_before_anything_runs` refuses five malformed references and `#N` with no origin; `test_s041_17_link_runs_the_real_chains_py` runs the bundled script, which refuses a self-link
+- S-041-18: `test_s041_18_link_on_a_pull_request_writes_its_line_alone_and_again_nothing` appends `Depends on x/y#116` to a pull request's body with one REST edit and no relation, then prints `already linked` with no write; `test_s041_18_a_pull_request_takes_no_relation` exits 2 for `--no-text` on one, one as the item waited on, and one on either side of `--child`, with no write
+- S-041-19: `test_s041_19_unlink_removes_both_forms_and_again_nothing` removes the relation and the line, keeping a CRLF body's other lines byte for byte, then prints `not linked`; `test_s041_19_unlink_keeps_a_lines_other_references_and_its_note` keeps `- Depends on: #3, x/y#9 (all deployed)` and drops a line naming it alone; `test_s041_19_unlink_of_a_child_and_of_a_pull_request` removes a sub-issue and a pull request's line; `test_s041_19_a_refused_relation_with_nothing_to_remove_posts_nothing` writes and posts nothing, run twice, on a forge without the relation; `test_s041_19_unlinks_comment_takes_the_hold_up_so_triage_asks_no_link_again` posts the comment, names no hold in it, and reads BLOCKED where the older hold line alone read HOLD_UNLINKED; `test_s041_19_a_malformed_line_naming_it_is_refused_before_any_write` exits 2 with no write
+- S-041-20: `test_s041_20_show_reads_an_open_pull_requests_depends_on_lines_as_holds` gives an open pull request's row its open holds, every `waits_on`, `waiting_for` `items`, and state OPEN, follows its lines, and with `--trusted-only` reads none from an untrusted author
+- S-041-21: `test_s041_21_a_pull_request_whose_line_names_an_open_item_is_parked_not_handed` parks `#115` as `WAITS_ON #115 (o/r#7 x/y#116)` (an unread state holds), keeps `#120`, whose item merged, in PRS_OPEN, and reads the states once; `test_s041_21_after_with_person_and_to_merge_and_an_agents_draft_is_held` holds an agent's draft as AGENT_DRAFT_HELD and reads the part after WITH_PERSON and TO_MERGE, refusing it out of order or malformed; `test_s041_21_the_gates_change_check_reads_each_pull_requests_body` finds `body` in the change check's pull request fields and in `PR_FIELDS`
+- S-041-22: `test_s041_22_status_and_queue_hold_a_pull_request_by_what_it_waits_on` explains a WAITS_ON pull request as parked, `waits on x/y#116 (open)` held elsewhere, and `queue` lists its `waits_on`, counts one waiting on an open issue of the repo with it, and lists it in that issue's `blocks`
+- S-041-23: `test_s041_23_an_agents_hold_comment_with_no_link_reads_hold_unlinked` reads HOLD_UNLINKED with `unlinked o/r#12 unlinked o/r#13 | <holds>` for an agent's hold comment alone, BLOCKED with a Depends on line or a native relation, for a hold on a pull request, for one a later agent comment took up, for a question's options, for another repo's item in a component, or for a person's comment, nothing for a closed hold, and MALFORMED_DEPENDS first; `test_s041_23_the_script_reads_hold_unlinked_for_an_issue_and_not_a_pull_request` runs `triage_state.py` on a fake GitHub and exits 1 naming `o/r#12`, an issue, and never `o/r#20`, a pull request; `tests/test_spec_open.py` keeps a feature issue held on its spec pull request BLOCKED; `test_s041_23_the_watch_status_and_gate_count_it_as_a_triage_action` finds it in `TRIAGE_ACTION`, status's `to triage` line, and a gate tier; `tests/test_status_comment_readers.py` keeps its held issue BLOCKED by linking the hold
+- S-041-24: `test_s041_24_the_skills_record_a_hold_with_shipmill_link` finds `shipmill link` in github-issue-resolve's, github-issue-triage's, and github-pr-triage's docs, HOLD_UNLINKED in triage's SKILL.md and rubric table, and `WAITS_ON` in github-ship-watch's PRS_PARKED row

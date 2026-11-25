@@ -120,6 +120,7 @@ def pr(
         "headRefOid": HEAD,
         "assignees": [{"login": login} for login in assignees],
         "author": {"login": author, "is_bot": author.startswith("app/")},
+        "body": "",
     }
 
 

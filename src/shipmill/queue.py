@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
+from shipmill import item_status
 from shipmill.item_links import Holds, ItemRef, Waiter, local_holds, merged, waiters
 from shipmill.item_status import CHILDREN, WAIT, Condition, Holder, Kind, PullDetail, Ref, bucket, explain
 from shipmill.land_window import LandWindow
@@ -71,6 +72,17 @@ def waits_on(repo: str, issue: Issue) -> tuple[str, ...]:
         found = [w["ref"] for w in WAIT.finditer(issue.note) if w["state"].lower() not in DONE]
     else:
         found = []
+    return tuple(dict.fromkeys(found))
+
+
+def pull_links(repo: str, number: int, on: Sequence[str], opened: frozenset[int]) -> tuple[int, ...]:
+    """S-041-22: the open items of the repo a pull request held by its Depends on lines counts
+    with, as a BLOCKED issue counts with what it waits on"""
+    found = []
+    for ref in on:
+        own, _, n = ref.rpartition("#")
+        if own.casefold() == repo.casefold() and int(n) in opened and int(n) != number:
+            found.append(int(n))
     return tuple(dict.fromkeys(found))
 
 
@@ -159,10 +171,14 @@ class Item:
 
 def local_links(facts: Facts) -> tuple[Holds, dict[int, str]]:
     """S-094-14: the repo's BLOCKED open issues with what each waits on, from the notes the
-    facts already hold, and the bucket of each, as --item reads them (S-088-14)"""
+    facts already hold, and the bucket of each, as --item reads them (S-088-14); and its pull
+    requests held by their Depends on lines, parked (S-041-22)"""
     opened = [i for i in facts.issues if i.state not in CLOSED_STATES and not i.closed]
     holds = local_holds(facts.repo, [(i.number, i.state, i.note) for i in opened])
-    return holds, {ref.number: bucket(facts, ref.number, Kind.ISSUE) for ref, _, _ in holds.values()}
+    buckets = {ref.number: bucket(facts, ref.number, Kind.ISSUE) for ref, _, _ in holds.values()}
+    pulls = item_status.pull_holds(facts)
+    buckets |= {ref.number: bucket(facts, ref.number, Kind.PULL) for ref, _, _ in pulls.values()}
+    return holds | pulls, buckets
 
 
 def items(
@@ -179,6 +195,8 @@ def items(
     kinds = {n: Kind.ISSUE for n in issues} | {p.number: Kind.PULL for p in facts.pulls}
     opened = frozenset(kinds)
     links = {n: linked(facts.repo, i, opened) for n, i in issues.items()}
+    pull_waits = {p.number: item_status.pull_waits(facts, p.number) for p in facts.pulls}
+    links |= {n: pull_links(facts.repo, n, on, opened) for n, on in pull_waits.items() if on}
     todo = list(kinds if start is None else start)
     conditions: dict[int, tuple[Condition, ...]] = {}
     while todo:  # the closure over links, each item explained once
@@ -210,7 +228,7 @@ def items(
             verdict if verdict in ACCEPTS else None,
             decided.reason,
             decided.clears,
-            () if issue is None else waits_on(facts.repo, issue),
+            pull_waits.get(n, ()) if issue is None else waits_on(facts.repo, issue),
             conditions[n],
             blocking(facts.repo, n, holds, buckets),
             None if issue is None else issue.parent,
