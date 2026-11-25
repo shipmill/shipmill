@@ -84,8 +84,10 @@
                   --as-host allows it (spec 037). Every gh call that writes in an agent
                   session goes through it. A leading --product OWNER/NAME runs it with the
                   coordinator's token, refusing commands that write code or pull requests (D-47);
-                  in a component, with a read-only token over its product's other repos (D-84)
-  app-create      create the gate's GitHub App in one click: owner and visibility planned from the
+                  in a component, with a read-only token over its product's other repos (D-84).
+                  `issue|pr comment <n> --status` writes the item's one status comment, creating
+                  it once and editing it after (spec 090)
+  app-create     create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
   app-login       let the App write as you (spec 051): GitHub's device flow for [agents] app_id's App,
@@ -256,6 +258,7 @@ from shipmill.app_gh import (
     Merge,
     MergeReader,
     MergeReads,
+    StatusWrite,
     as_app,
     as_host,
     body_edit,
@@ -286,6 +289,11 @@ from shipmill.app_gh import (
     repo_value,
     run_gh,
     sent_texts,
+    status_args,
+    status_body,
+    status_comments,
+    status_login,
+    status_write,
     stdin_bytes,
     with_body,
     without_author_email,
@@ -2156,12 +2164,21 @@ def _gh(
     public repo), a secret's value, or a known token format exits 2 right before gh would run
     (spec 081, `_leak_check`). In every mode a comment holding the decided marker exits 2 before
     gh runs when its item's body or comments name a CVE or GHSA id, or can't be read (S-030-25,
-    D-104, `hold_decided`)"""
+    D-104, `hold_decided`). shipmill's own `--status` of `issue|pr comment <n>` never reaches gh:
+    refused from the args alone before any token (S-090-4), it reads the item's comments as the
+    identity the write goes out as and turns the comment into the create, or the PATCH, of the
+    writer's one status comment, which then runs every hold and check above (spec 090)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
     decided, gh_args = decided_in(leading.gh_args)  # S-051-7: before anything reads gh's args
     read = body_reader(readers.stdin)
+    status, gh_args = status_write(gh_args, read)  # S-090-4: refused from the args alone, before any token
+    if status is not None and leading.product is not None:
+        raise ReleaseError(
+            f"{status.what} --status is refused with --product: a status comment is written on the session's own "
+            "repo's items (spec 090)"
+        )
     if leading.product is not None:
         component = _component_checkout(root)
         if component is not None:  # spec 065: a component's read token; the home's path below is spec 038's
@@ -2224,6 +2241,11 @@ def _gh(
         if not (is_read(gh_args) or identity.identity is WriteAs.HOST or leading.as_host):
             origin = _known_origin(top) if top is not None and readable else None
             raise _host_write_refused(root, top, origin, identity.config, gh_args)
+        if status is not None:  # S-090-3: the host's login writes it, found among the item's comments
+            binary, env = find_gh(environ), as_host(environ)
+            origin = _known_origin(top) if top is not None and readable else None
+            login = functools.partial(status_login, readers.current, binary, env, status)
+            gh_args = _status_args(status, _gh_default(environ, origin), binary, env, readers.current, login)
         edit = body_edit(gh_args, read)
         gh_args = marked_args(gh_args, read) if edit is None else gh_args
         hold_relay_mention(gh_args)  # #1491: once its body is read, before gh runs
@@ -2244,6 +2266,8 @@ def _gh(
             f"`git -C {top} status` names why"
         )
     repo = named_repo(gh_args) or _origin_repo(top)
+    if status is not None and status.repo is not None:  # S-090-1: a URL's repo is the one written
+        repo = status.repo
     if repo is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo with gh's -R owner/name")
     merge = merge_of(gh_args)
@@ -2259,6 +2283,13 @@ def _gh(
     # S-033-11: the key at --app-key, else SHIPMILL_APP_KEY, else the default path; none there
     # exits 2 before any token, cached or not, and gh never runs (D-14)
     path = require_key(key or session_key(app_id, environ, home))
+    # the App's bot login, read once however many readers ask for it
+    bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
+    token: str | None = None
+    if status is not None:  # S-090-3: as the App, its bot's status comment, found with the App's token
+        token = _gh_token(cache, repo, app_id, path, hub)
+        default = _gh_default(environ, _known_origin(top))
+        gh_args = _status_args(status, default, binary, as_app(environ, token), readers.current, bot_login)
     # spec 050: before any token; a merge's args pass as given, and an edit's wait for its record
     edit = body_edit(gh_args, read)
     gh_args = marked_args(gh_args, read) if edit is None else gh_args
@@ -2266,10 +2297,8 @@ def _gh(
     hold_question(gh_args)  # #1484: once its body is read, before any token
     hold_plan(top, gh_args, repo)  # S-055-17: `pr create` and the api's create, before any token, so gh never runs
     labelled = label_edit(gh_args)  # #1312: read from the args before any token, checked once it is had
-    try:
-        token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
-    except NotInstalled as exc:
-        raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
+    if token is None:
+        token = _gh_token(cache, repo, app_id, path, hub)
     if edit is not None:
         default = _gh_default(environ, _known_origin(top))
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
@@ -2280,8 +2309,6 @@ def _gh(
     deciding = decided_comment(gh_args, edit)
     if deciding is not None:  # S-030-25, D-104: as the App, before gh runs
         hold_decided(deciding, _gh_default(environ, _known_origin(top)), binary, env, readers.current)
-    # the App's bot login, read once however many readers ask for it
-    bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
     if labelled is not None:  # #1312: as the App, before gh runs, by triage_state.py's readers
         hold_label(labelled, _gh_default(environ, _known_origin(top)), binary, env, readers.current, bot_login)
     app = functools.partial(_app_login, bot_login, trailer) if trailer else None
@@ -2332,6 +2359,39 @@ def _gh(
     if held is not None and code == 0:  # S-056-8: as the App, whoever the merge went out as
         _unqueue(held, binary, as_app(environ, token), readers.current)
     return code
+
+
+def _gh_token(cache: Path, repo: str, app_id: int, path: Path, hub: _GhHub) -> str:
+    """The App's installation token for repo (spec 012); one not installed there exits 2 naming
+    the install command"""
+    try:
+        return app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), hub.signer, hub.api)
+    except NotInstalled as exc:
+        raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
+
+
+def _status_args(
+    status: StatusWrite,
+    default: str | None,
+    binary: Path,
+    env: Mapping[str, str],
+    capture: GhCapture,
+    login: Callable[[], str],
+) -> list[str]:
+    """Spec 090: gh's args for a status write, once the item's comments are read with env, the
+    identity the write goes out as, whose login login reads: the PATCH of its status comment, or
+    the create of one, its body `status_body` at the clock's time. A login or comments that can't
+    be read exit 2 before any write"""
+    repo = status.target(default)
+    try:
+        writer = login()
+    except ReleaseError as exc:
+        raise ReleaseError(
+            f"{status.what} {status.number} --status is refused: the login it writes as, whose status comment it "
+            f"edits, can't be read: {exc}"
+        ) from None
+    comments = status_comments(capture, binary, env, status, repo)
+    return status_args(status, repo, writer, comments, status_body(status.text, dt.datetime.now(dt.UTC)))
 
 
 @dataclass(frozen=True, slots=True)

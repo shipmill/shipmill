@@ -44,7 +44,9 @@ For each open issue:
                    line is context). A sentence ends at ".", "!", or "?" followed
                    by a space and a capital letter (not after "e.g.", "i.e.",
                    "cf.", or "vs."), so a hold word in one sentence of a
-                   paragraph doesn't hold on a link in another (#309). Or,
+                   paragraph doesn't hold on a link in another (#309). A status
+                   comment (its first line <!-- shipmill:status -->, spec 090)
+                   holds nothing. Or,
                    once triaged, its body has a "Depends on owner/repo#N" line (or
                    "#N", the same repo: a build issue split from a spec) naming an
                    issue still open. A Depends on line outside a ``` or ~~~ fence
@@ -803,6 +805,7 @@ def native_refused(response: dict[str, Any]) -> str | None:
 INCIDENT_LABEL = "incident"  # the default of [operate] incident_label
 DECISION_LABEL = "needs-decision"  # references/needs-decision.md
 DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # the first line of a session's question
+STATUS_MARKER = "<!-- shipmill:status -->"  # the first line of a session's status comment (spec 090)
 # Spec 030's notify level: a decided comment's first line, `<!-- shipmill:decided zone=<id>
 # until=<time> -->`, and the take-up of a veto's, `<!-- shipmill:veto-handled zone=<id> -->`
 DECIDED_MARKER = re.compile(r"^<!-- shipmill:decided(?:\s[^>]*)?-->$")
@@ -1588,9 +1591,13 @@ def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, s
     """Each issue or pull request a hold comment names, with the index of the newest
     comment naming it: an owner/repo#N or URL in a sentence with a hold phrase, or a plain
     #N right after one, which is one of repo's own (owner, name). The issue itself is never
-    one, in any spelling (#1005): "#126 keeps waiting on #125" on #125 says what waits on it"""
+    one, in any spelling (#1005): "#126 keeps waiting on #125" on #125 says what waits on it.
+    A status comment, its first line STATUS_MARKER, holds nothing: its "waits on #12" is a
+    session's progress, never a hold (spec 090)"""
     refs: dict[tuple[str, str, int], int] = {}
     for i, c in enumerate(issue["comments"]["nodes"]):
+        if first_line(c["body"]) == STATUS_MARKER:
+            continue
         for line in c["body"].splitlines():
             for sentence in SENTENCE.split(line):
                 if HOLD.search(sentence):

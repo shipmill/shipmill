@@ -8,6 +8,19 @@ Write each body to a file and post it with `gh issue comment <n> --body-file <fi
 
 **A login in a code span** (D-61). A bare `@login` is an email to that person, so a template here leads with one only in a needs-decision question, a person's hand-off, and a decided comment. Every other comment names the login in a code span, `` `@{login}` ``, as the templates below do, and so does a verdict that names whose answer it follows (``Triage: implement, on `@{login}`'s answer``). An older comment with the bare form reads the same to every reader.
 
+## Status comment
+
+Once a question mentions the maintainer on an item, GitHub emails them every later comment there; an edit emails nobody (spec 090). So a session keeps one status comment per issue or pull request and writes its progress by editing it: `shipmill gh issue comment <n> --status --body-file <file>`, or `shipmill gh pr comment <n> --status --body-file <file>`, each run as `uvx shipmill==0.168.0 gh ...`, the release the plugin pins. The first call creates it and every later one edits it; shipmill gh writes `<!-- shipmill:status -->` as its first line, `Updated <YYYY-MM-DD HH:MM> UTC` under it, then your text, which says where the item stands now (each write replaces the whole text; GitHub's edit history keeps the earlier ones). Write a login in it in a code span: `--status` refuses a bare `@login`. No reader reads the status comment, so a line in it holds, answers, or decides nothing.
+
+These stay new comments, since they reach someone or a reader dates them by their place in the thread:
+
+- A `Triage:` verdict with its hold sentences ("On hold: ..."), and a hold line on a pull request
+- A needs-decision question, a decided comment, a relayed decision (`Decision by`), and a veto-handled comment
+- A hand-off, a still-waits, check-waiting, check-failed, or verified comment, and a close-confirmed comment
+- The final result: the item is done (a fix merged, a check holds, a parent or report closes as done), closed (as not planned, won't fix, duplicate, or stale), or a pull request is refused
+
+Everything else is progress and goes in the status comment, never in a new comment: "The fix is in #{PR}" below, the Follow-ups' replaced pull request and plan changed after review, and a session's steps on a pull request it reviews or lands (rebased, fixes committed, CI pending). A person's draft gets no status comment, as it gets no review (D-67).
+
 ## Implement
 
 ```markdown
@@ -44,7 +57,7 @@ Decision by `@{login}`, relayed by {agent}
 {The option chosen, or the user's own words}
 ```
 
-Once the PR is up:
+Once the PR is up, in the issue's [status comment](#status-comment), `shipmill gh issue comment <n> --status --body-file <file>`:
 
 ```markdown
 The fix is in #{PR}: {what it does, in one or two sentences}. {Any trade-off or behaviour change, e.g. "a real permission error takes up to 2 s to surface on Windows".} {The answer to the issue's open question, if it had one.} This issue closes when #{PR} merges.
@@ -403,8 +416,8 @@ On "leave it open", post the check-waiting comment, through `--body-file`, on th
 
 ## Follow-ups
 
-- A PR was replaced: "Update: #{old} was replaced by #{new}, {rebased with review fixes}. This issue closes when #{new} merges."
-- The plan changed after review, e.g. main already had part of the fix: "Update after rebasing: {what main already does}; #{PR} now only {what remains}." Also update the PR's title and body.
+- A PR was replaced, in the issue's status comment (`shipmill gh issue comment <n> --status --body-file <file>`): "Update: #{old} was replaced by #{new}, {rebased with review fixes}. This issue closes when #{new} merges."
+- The plan changed after review, e.g. main already had part of the fix, in the issue's status comment (`--status`): "Update after rebasing: {what main already does}; #{PR} now only {what remains}." Also update the PR's title and body.
 - A wrong auto-close: `gh issue reopen <n> --comment "Reopening: commit {sha} closed this because its message quotes {text}. The fix is in #{PR}, which hasn't merged yet."`
 - A right close that reads SUSPECT_CLOSE: post the close-confirmed comment through `--body-file`, with `issue comment` once the issue is closed. Its first line is the marker exactly, and only one by an OWNER, MEMBER, or COLLABORATOR or the App, posted after the last close, counts (D-29). `gh issue close --comment` posts its comment before the close, so a marker posted that way never counts; after a reopen and a new close, post it again:
 
