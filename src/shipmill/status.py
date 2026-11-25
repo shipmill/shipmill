@@ -1174,6 +1174,12 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         named = last.rpartition("; fix: ")[2]  # spec 035: a token file's fix names the file
         fix = MISSING_FIX if named == MISSING_FIX else named if TOKEN_FIX.fullmatch(named) else AUTH_FIX
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, fix))
+    elif last.startswith("PAUSED: auth"):  # spec 089: a refused credential starts no session until a person acts
+        named = last.rpartition("; fix: ")[2]  # the gate writes its fix last
+        fix = named if named == AUTH_FIX or TOKEN_REJECTED.fullmatch(named) else AUTH_FIX
+        found.append(
+            JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: Claude Code's credential was refused", fix)
+        )
     elif last.startswith("SESSION_DEAD"):  # #500: the gate's sessions end right after they start
         named = last.rpartition("; fix: ")[2]  # the gate writes its fix last, after the log's line
         gates = (

@@ -1,6 +1,6 @@
 # S-089: A gate waits after a session by why it ended, and resumes once the cause is gone
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -151,3 +151,20 @@ a coming tick".
 - shipmill/shipmill#1556: S-089-13
 
 ## Verification
+
+Checked on the build's pull requests (#1563, #1564, #1565, #1567, #1568, #1581, and this one), each reviewed by a separate agent that fixed what it reproduced, besides the tests `specs.py coverage --spec 089` lists. The classifier ran over the 2594 session logs on the maintainer's host: 1999 `ok`, 476 `error`, 99 `limit`, 20 `auth`, none refused as malformed. `claude -p "/usage"` was run on the host to read its output's form. `gate_wait_rows` read the host's gate state and printed no row, as its gate still ran a release from before this spec.
+
+- S-089-1: the four ends from their events, a limit-killed `result` with `subtype: "success"` included, the order limit, auth, error, a session past 60 s without a result, a STALLED stop, and a malformed event failing fast, in `tests/test_gate_ends.py` and `tests/test_gate_stalled.py`
+- S-089-2: `ended` written once per session and read back, a hand without it loading, and watch_state.py reading it as strictly, in `tests/test_gate_ends.py`
+- S-089-3: a walk marks no `limit`, `auth`, or `error` hand idle, and an `ok` one as S-061-5 does, in `tests/test_gate_ended_hands.py`
+- S-089-4: cf076ed3's and b65d4d03's hands as `handed.json` held them on 2026-11-24, with their logs' event shapes, dropped on the first tick and their ten pull requests handed again; a drop is a change; only the tick that records an end acts on it, in `tests/test_gate_ended_hands.py`
+- S-089-5: the record's path under `XDG_STATE_HOME`, its name from the token file's SHA-256 or `login`, its fields with the rejected limit's newest `resetsAt`, no token in it, and a file shipmill doesn't write refused, in `tests/test_gate_pause.py`
+- S-089-6: PAUSED on every tick of any gate with the credential, another credential launching, and no attempt counted past DEAD_STREAK limit ends, in `tests/test_gate_pause.py`
+- S-089-7: `/usage` read for room, run with the token as sessions get it, room lifting the pause, a full window holding it past `resetsAt`, and PAUSED naming no clock then, in `tests/test_gate_probe.py`
+- S-089-8: a probe that exits non-zero, times out, is missing, or prints nothing readable answering none, and the pause lifting at `resetsAt` or after `retry_hours`, in `tests/test_gate_probe.py` and `tests/test_gate_pause.py`
+- S-089-9: a new token ending a `limit` and an `auth` pause and the held item launching, and the login's `auth` pause lifting once `claude auth status` reports one, in `tests/test_gate_pause.py`
+- S-089-10: one notification per `auth` pause, two gates on one token included, and a failed send retried, in `tests/test_gate_pause.py`
+- S-089-11: the delays 15 minutes, 1 hour, and 4 hours after each death, the fourth error end holding for `retry_hours` with SESSION_DEAD, never idle, an `ok` end resetting the run, and the run surviving another item's launch, in `tests/test_gate_backoff.py`. The maintainer chose three retries before the hold on #1554, where S-089-11's wording allowed two
+- S-089-12: the newest marker by the bot naming the waited item, anyone else's ignored, items read across repos and a gone or unreadable one waking nothing, and #1441's case waking once #1253's answer came, in `tests/test_gate_waits_on.py`
+- S-089-13: GATE_PAUSED with its cause, end, and fix, GATE_RETRY soonest first with the item and the run, both in `shipmill status`, and `--item` naming the backoff or the pause, in `tests/test_gate_wait_rows.py`
+- S-089-14: an `ok` end that wrote nothing leaving a subject idle until it changes, and an item without subjects waiting `retry_hours`, in `tests/test_gate_ended_hands.py`

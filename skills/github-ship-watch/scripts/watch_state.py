@@ -384,8 +384,9 @@ Agents (all reported, never an action by itself):
                   session or the cloud, where no script reads it
   HOST_UNKNOWN    the agent sessions weren't read: claude isn't on PATH (a cloud session)
   GATE_SESSIONS_DEAD  on a Mac, the gate log's last decision is SESSION_DEAD: its last
-                  session ended within 60 s of its launch or on an authentication failure
-                  (an interactive one: claude agents lists it failed, or done within 60 s),
+                  session ended other than ok, on a usage limit, an authentication failure,
+                  or with no result without an error, however long it ran (spec 089; an
+                  interactive one: claude agents lists it failed, or done within 60 s),
                   with how many did so
                   in a row and the session log's last line. A person clears it (`claude auth
                   login`, or reading the session's log or `claude logs <id>`), so an action
@@ -401,6 +402,24 @@ Agents (all reported, never an action by itself):
                   for a change`. No file, or no idle hand, no row; a handed.json that isn't the
                   JSON object of hands the gate writes exits 2. In the full report and
                   --no-host, never --tier, --sweep, or --host. Reported, never an action
+  GATE_PAUSED     spec 089: the credential the gate's sessions use (its job's --claude-token
+                  file, else ~/.config/shipmill/claude-token, else the login) is paused, so
+                  no gate on the host starts a session with it. Read from
+                  $XDG_STATE_HOME/shipmill/claude/<credential>.json (~/.local/state without
+                  XDG_STATE_HOME; for a gate on launchd, as its job's EnvironmentVariables
+                  set it, not the shell), the credential named by 16 hex digits of the token file's
+                  SHA-256, never the token. Subject the cause, limit or auth; detail `until
+                  <YYYY-MM-DD HH:MM> UTC, or once /usage shows room: ...` for a limit (its
+                  resetsAt, or retry_hours after it began), `until the token changes: ...` for
+                  an auth pause on a token file, `until claude auth status reports a login:
+                  ...` on the login. Fix: the token's (`claude setup-token`) or `claude auth
+                  login` for auth, none for a limit. A lifted pause, or a limit past its time,
+                  no row. Where GATE_IDLE is; reported, never an agent's
+  GATE_RETRY      spec 089: one row per hand in handed.json an error end's backoff holds,
+                  soonest first: subject the hand's key (`<kind> #<N>`, or the item gate.json
+                  names for its fingerprint), detail `after <YYYY-MM-DD HH:MM> UTC: <n> error
+                  ends in a row`. The gate hands it again by itself. Where GATE_IDLE is;
+                  reported, never an agent's
   GATE_CHECKOUT_MISSING  on a Mac, one row per gate job on the host, this repo's or another's
                   (each dev.shipmill.gate.*.plist in ~/Library/LaunchAgents, no other plist),
                   whose WorkingDirectory is not a folder: launchd exits 78 before shipmill
@@ -592,6 +611,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import functools
+import hashlib
 import importlib.util
 import json
 import os
@@ -5037,6 +5057,144 @@ def idle_rows(path: Path, now: dt.datetime) -> list[Row]:
     ]
 
 
+# spec 089: the credentials' pauses every gate on the host shares, shipmill's claude_pause
+PAUSES = Path("shipmill") / "claude"  # under $XDG_STATE_HOME, ~/.local/state without it
+TOKEN_DEFAULT = Path(".config") / "shipmill" / "claude-token"  # shipmill's claude_token.DEFAULT, under home
+LOGIN_CREDENTIAL = "login"  # a gate with no token file: the host's Claude Code login
+PAUSE_KEYS = frozenset({"cause", "session", "at", "resets_at", "notified", "lifted"})
+RETRY_HOURS = 24  # shipmill's [agents] retry_hours default
+
+
+def pauses_folder(environ: dict[str, str], home: Path) -> Path:
+    """shipmill's claude_pause.pauses_dir: $XDG_STATE_HOME/shipmill/claude, ~/.local/state when
+    unset or empty; a relative one is refused"""
+    base = environ.get("XDG_STATE_HOME", "")
+    folder = Path(base) if base else home / ".local" / "state"
+    if not folder.is_absolute():
+        raise Refused(f"error: XDG_STATE_HOME must be an absolute path, got {base!r}")
+    return folder / PAUSES
+
+
+def token_file(args: list[str], home: Path) -> Path:
+    """The token file the gate's sessions use: its job's --claude-token, else the default"""
+    if "--claude-token" in args[:-1]:
+        return Path(args[args.index("--claude-token") + 1]).expanduser()
+    return home / TOKEN_DEFAULT
+
+
+def credential_name(token: Path) -> str | None:
+    """shipmill's claude_pause.credential_id: 16 hex digits of the SHA-256 of the token file's
+    content, or login without the file; the token is read only to hash it, never shown. None
+    for a file the gate's user can't read: the gate refuses it (CLAUDE_AUTH) and starts no
+    session with it, so no pause names it"""
+    if not token.is_file():
+        return LOGIN_CREDENTIAL
+    try:
+        content = token.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(content).hexdigest()[:16]
+
+
+def pause_record(path: Path) -> dict[str, object] | None:
+    """A pause as shipmill's claude_pause.load_pause reads it, its times parsed; None without
+    the file; anything else the gate never writes is refused"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise Refused(f"error: {path}: not JSON: {exc}") from None
+    if not isinstance(data, dict) or not {"cause", "session", "at"} <= set(data) <= PAUSE_KEYS:
+        raise Refused(f"error: {path}: expected cause, session, at, and resets_at, notified, and lifted or not")
+    if data["cause"] not in ("limit", "auth") or not isinstance(data["session"], str):
+        raise Refused(f"error: {path}: cause must be limit or auth, and session a string")
+    found: dict[str, object] = {"cause": data["cause"], "session": data["session"]}
+    for key in ("at", "resets_at", "notified", "lifted"):
+        if key in data:
+            when = moment_of(data[key])
+            if when is None:
+                raise Refused(f"error: {path}: {key} must be an ISO 8601 time with its offset")
+            found[key] = when.astimezone(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
+    return found
+
+
+def retry_hours(repo_dir: Path) -> int:
+    """The config's [agents] retry_hours, as shipmill reads it, its default without one"""
+    policy = policy_file(repo_dir)
+    table = None if policy is None else agents_table((repo_dir / policy).read_text(encoding="utf-8"), policy)
+    value = None if table is None else table.get("retry_hours")
+    if value is None:
+        return RETRY_HOURS
+    if not value.isdigit() or int(value) < 1:
+        raise Refused(f"error: {POLICY}: [agents] retry_hours must be a positive integer, got {value}")
+    return int(value)
+
+
+def paused_rows(pauses: Path, token: Path, retry: int, now: dt.datetime) -> list[Row]:
+    """Spec 089 (S-089-13): GATE_PAUSED while a pause holds for the credential the gate's
+    sessions use, its subject the cause and its detail `until <when>`: a limit's resetsAt, or
+    retry_hours after it began without one, or sooner once /usage shows room; an auth pause
+    until the token changes, or for the login until claude auth status reports one. A limit
+    whose time has passed lifts on the gate's next tick: no row. The fix is the token's for
+    auth, none for a limit. Reported, never an agent's"""
+    credential = credential_name(token)
+    if credential is None:
+        return []
+    found = pause_record(pauses / f"{credential}.json")
+    if found is None or "lifted" in found:
+        return []
+    cause, session, at = found["cause"], found["session"], found["at"]
+    if not isinstance(at, dt.datetime):
+        raise Refused(f"error: {pauses}: the pause of {credential} has no at")
+    if cause == "limit":
+        resets = found.get("resets_at")
+        lifts = resets if isinstance(resets, dt.datetime) else at + dt.timedelta(hours=retry)
+        if lifts <= now:
+            return []
+        detail = f"until {lifts:%Y-%m-%d %H:%M} UTC, or once /usage shows room: a usage limit stopped session {session}"
+        return [Row("GATE_PAUSED", "limit", detail)]
+    if credential == LOGIN_CREDENTIAL:
+        detail = f"until claude auth status reports a login: Claude Code refused session {session}'s login"
+        return [Row("GATE_PAUSED", "auth", detail, "claude auth login")]
+    fix = f"the token in {token} was not accepted; run claude setup-token and save it to {token}"
+    return [Row("GATE_PAUSED", "auth", f"until the token changes: its token was refused for session {session}", fix)]
+
+
+def retry_rows(path: Path, record: Path, now: dt.datetime) -> list[Row]:
+    """Spec 089 (S-089-13): one GATE_RETRY row per hand in handed.json its backoff holds, its
+    until still ahead, soonest first: the subject the hand's key (an item's fingerprint named
+    by gate.json's item when it is the last launch's), the detail `after <time> UTC: <n> error
+    ends in a row`. Reported, never an agent's: the gate hands it again by itself"""
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise Refused(f"error: {path}: not JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise Refused(f"error: {path}: expected a JSON object of hands, as shipmill gate writes it")
+    last: dict[str, object] = {}
+    if record.is_file():
+        try:
+            loaded = json.loads(record.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise Refused(f"error: {record}: not JSON: {exc}") from None
+        last = loaded if isinstance(loaded, dict) else {}
+    held = []
+    for key, entry in data.items():
+        idle_hand(path, key, entry)  # checked as the gate writes it
+        until = moment_of(entry.get("until")) if isinstance(entry, dict) else None
+        if until is None or until <= now:
+            continue
+        named = last.get("item") if last.get("fingerprint") == key and isinstance(last.get("item"), str) else key
+        held.append((until.astimezone(dt.timezone.utc), str(named), entry["errors"]))  # noqa: UP017
+    return [
+        Row("GATE_RETRY", named, f"after {until:%Y-%m-%d %H:%M} UTC: {errors} error ends in a row")
+        for until, named, errors in sorted(held)
+    ]
+
+
 def gate_idle_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     """The GATE_IDLE rows of the gate's folder (gate_folder: launchd's working directory, else
     where shipmill-setup puts it, else tmp/shipmill-gate beside the main checkout, else the
@@ -5046,6 +5204,38 @@ def gate_idle_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     folder = gate_folder(repo_dir, workdir if isinstance(workdir, str) else None, gate_home(repo, Path.home()))
     state = gate_state(folder)
     return [] if state is None else idle_rows(state / HANDED, now)
+
+
+def gate_environ(plist: dict[str, object] | None, environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the gate's tick reads XDG_STATE_HOME from: its launchd job's
+    EnvironmentVariables, since launchd hands a job none of a shell's, else this process's,
+    for a gate run by hand"""
+    if plist is None:
+        return dict(environ)
+    found = plist.get("EnvironmentVariables", {})
+    if not isinstance(found, dict):
+        raise Refused(f"error: the gate job {plist.get('Label')}: EnvironmentVariables must be a dict")
+    return {str(k): str(v) for k, v in found.items()}
+
+
+def gate_wait_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
+    """GATE_IDLE, then spec 089's GATE_PAUSED for the credential the gate's sessions use and
+    GATE_RETRY for its hands in backoff, from the gate's folder as gate_idle_rows finds it"""
+    plist = gate_plist(repo)
+    workdir = plist.get("WorkingDirectory") if plist else None
+    folder = gate_folder(repo_dir, workdir if isinstance(workdir, str) else None, gate_home(repo, Path.home()))
+    state = gate_state(folder)
+    if state is None:
+        return []
+    args = plist.get("ProgramArguments") if plist else None
+    job = [str(a) for a in args] if isinstance(args, list) else []
+    paused = paused_rows(
+        pauses_folder(gate_environ(plist, os.environ), Path.home()),
+        token_file(job, Path.home()),
+        retry_hours(repo_dir),
+        now,
+    )
+    return [*idle_rows(state / HANDED, now), *paused, *retry_rows(state / HANDED, state / "gate.json", now)]
 
 
 GATE_PREFIX = "dev.shipmill.gate."  # shipmill's launchd.LABEL_PREFIX: each gate job's label and plist name
@@ -6779,9 +6969,9 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         rows += trends_rows(args.repo, repo_dir)
     rows += active_rows(fetch_active(args.repo), now, lambda r: fetch_jobs(args.repo, r.id))
     if args.no_host:  # shipmill status reads the host sections with --host, each on its own (#745)
-        rows += [*launchd_rows(args.repo, now), *gate_idle_rows(args.repo, repo_dir, now)]
+        rows += [*launchd_rows(args.repo, now), *gate_wait_rows(args.repo, repo_dir, now)]
     else:  # GATE_IDLE beside LOOP (spec 061), and in no --host section
-        rows += [*agent_rows(args.repo, repo_dir, now), *gate_idle_rows(args.repo, repo_dir, now)]
+        rows += [*agent_rows(args.repo, repo_dir, now), *gate_wait_rows(args.repo, repo_dir, now)]
         rows += shipmill_rows(args.repo, repo_dir, host_wide=False)
         rows += shadow_rows(Path.home(), skill_names())
     return merged_waits(rows)
@@ -6801,12 +6991,17 @@ def names_item(row: Row, number: int) -> bool:
     return any(int(n) == number for n in OWN_NUMBER.findall(f"{row.subject} {row.detail}"))
 
 
+GATE_WAITS = frozenset({"GATE_IDLE", "GATE_RETRY"})  # an item the gate holds, named in the row
+
+
 def item_row(row: Row, number: int) -> bool:
     """Whether `shipmill status --item <number>` reads the row: one of ITEM_WHOLE, or a row
     naming #number that is an agent's (its --json `agent`) or GATE_IDLE"""
     if row.state in ITEM_WHOLE:
         return True
-    return names_item(row, number) and (row.state == "GATE_IDLE" or bool(row.json()["agent"]))
+    if row.state == "GATE_PAUSED":  # spec 089: the whole gate waits, this item too
+        return True
+    return names_item(row, number) and (row.state in GATE_WAITS or bool(row.json()["agent"]))
 
 
 def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> list[Row]:
@@ -6863,7 +7058,7 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         # with --trusted-only, PyPI's wait for the plans' shipmill leaves the issues and the pull
         # requests unread (D-16), so neither starts before the intake's lines say it's read
         triage_read = None if args.trusted_only else pool.submit(triage)
-        idle_read = pool.submit(gate_idle_rows, args.repo, repo_dir, now)
+        idle_read = pool.submit(gate_wait_rows, args.repo, repo_dir, now)
 
         def pulls() -> IntakeReads:
             return intake_reads(
