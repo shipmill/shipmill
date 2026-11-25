@@ -1,0 +1,160 @@
+# The seeded set of spec 083 (S-083-12): cases the earned landing level is scored on.
+#
+# Each [[case]] holds the changed paths with their lines (added plus deleted), the base's
+# [decisions] table, the states of the areas on record (raised or cleared; an area not listed
+# has no record), whether the default branch requires a check that proves, and the landing
+# level expected: act, notify, ask, never, or none when no zone is detected.
+# tests/test_landing_seeded.py runs earned.py's function over every case and prints
+# `MISS L-n: expected <level>, got <level>` for each miss.
+#
+# A case's expectation changes only in a pull request that says why in its body (D-74).
+
+# The Protected areas of the base's REVIEW.md, the same for every case
+protected = ["src/auth/**", "infra/**", "db/**", "web/**", "uv.lock"]
+
+[[case]]
+id = "L-1"
+why = "a protected change whose four pieces of evidence hold earns the bound"
+proves = true
+expected = "act"
+files = { "src/auth/login.py" = 40 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-2"
+why = "size fails alone: 201 lines with max_lines = 200"
+proves = true
+expected = "ask"
+files = { "src/auth/login.py" = 130, "src/auth/session.py" = 71 }
+decisions = { earned = { protected = "act", max_lines = 200 } }
+
+[[case]]
+id = "L-3"
+why = "size holds at max_lines exactly"
+proves = true
+expected = "act"
+files = { "src/auth/login.py" = 130, "src/auth/session.py" = 70 }
+decisions = { earned = { protected = "act", max_lines = 200 } }
+
+[[case]]
+id = "L-4"
+why = "checks fails alone: the default branch requires no check that proves"
+proves = false
+expected = "ask"
+files = { "src/auth/login.py" = 40 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-5"
+why = "record fails alone: the change touches a raised area"
+proves = true
+expected = "ask"
+files = { "src/auth/login.py" = 40 }
+areas = { "src/auth" = "raised" }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-6"
+why = "a cleared area reads like an area with no record"
+proves = true
+expected = "act"
+files = { "src/auth/login.py" = 40 }
+areas = { "src/auth" = "cleared" }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-7"
+why = "a raised area the change doesn't touch holds nothing back"
+proves = true
+expected = "act"
+files = { "src/auth/login.py" = 40 }
+areas = { "src/billing" = "raised" }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-8"
+why = "kind fails alone, controls: a workflow, in security"
+proves = true
+expected = "ask"
+files = { ".github/workflows/ci.yml" = 10 }
+decisions = { earned = { security = "notify" } }
+
+[[case]]
+id = "L-9"
+why = "kind fails alone, infrastructure: a Terraform file"
+proves = true
+expected = "ask"
+files = { "infra/main.tf" = 10 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-10"
+why = "kind fails alone, dependencies: a package manifest under a directory"
+proves = true
+expected = "ask"
+files = { "web/package.json" = 10 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-11"
+why = "a ceiling path holds back the whole change, the other paths too"
+proves = true
+expected = "ask"
+files = { "src/auth/login.py" = 20, "uv.lock" = 20 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-12"
+why = "a security change earns its bound, notify, never below security's floor"
+proves = true
+expected = "notify"
+files = { ".github/ISSUE_TEMPLATE/bug.md" = 12 }
+decisions = { earned = { security = "notify" } }
+
+[[case]]
+id = "L-13"
+why = "a path a never part sets stays never, whatever the evidence"
+proves = true
+expected = "never"
+files = { "src/auth/keys/signing.py" = 5 }
+decisions = { earned = { protected = "act" }, paths = { protected = { "src/auth/keys/**" = "never" } } }
+
+[[case]]
+id = "L-14"
+why = "a change no zone detects has no level to earn"
+proves = true
+expected = "none"
+files = { "src/app/main.py" = 40 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-15"
+why = "without [decisions.earned] nothing earns"
+proves = true
+expected = "ask"
+files = { "src/auth/login.py" = 40 }
+decisions = {}
+
+[[case]]
+id = "L-16"
+why = "the strictest zone wins: an earned protected path beside the direction"
+proves = true
+expected = "never"
+files = { "src/auth/login.py" = 40, "docs/product.md" = 3 }
+decisions = { earned = { protected = "act" } }
+
+[[case]]
+id = "L-17"
+why = "a zone the config sets at notify earns down to the bound"
+proves = true
+expected = "act"
+files = { "src/auth/login.py" = 40 }
+decisions = { protected = "notify", earned = { protected = "act" } }
+
+[[case]]
+id = "L-18"
+why = "a part at ask, not never, earns down to the bound too"
+proves = true
+expected = "act"
+files = { "src/auth/admin/roles.py" = 40 }
+decisions = { protected = "notify", earned = { protected = "act" }, paths = { protected = { "src/auth/admin/**" = "ask" } } }

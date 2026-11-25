@@ -1,0 +1,3 @@
+### Added
+
+- `src/shipmill/earned.py` holds spec 083's earned landing level as a pure function: a path that puts `protected` or `security` in takes the zone's `[decisions.earned]` bound when the four pieces of evidence (a required check that proves, at most `max_lines` changed, no raised area, no path of a ceiling kind: `controls`, `infrastructure`, `dependencies`) hold, never for a path at `never` or below the zone's floor; `tests/landing/seeded.toml` holds 18 seeded cases the rule is scored on, and a miss fails CI naming `MISS L-n: expected <level>, got <level>`; nothing calls the rule yet (spec 083) (#1547)
