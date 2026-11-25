@@ -373,7 +373,21 @@ modes](design/agent-modes.md) has the details.
    # infra = ["octocat", "hubot"]    # GitHub logins, never an App's [bot]
    # legal = ["@example-org/legal"]  # a team, as @org/team: mentioned, not assigned
    # accounting = []                 # nobody yet: falls back to the maintainer
+
+   # [agents.sandbox]  # what a sandboxed headless session may reach beyond the default (spec 087); optional
+   # domains = ["registry.npmjs.org"]  # host names, or *. and a name; no scheme, port or path
+   # read = ["~/.config/some-tool"]    # absolute or ~/ paths, without ..: taken out of the deny list
+   # write = ["~/.cache/pnpm"]         # absolute or ~/ paths, without ..: extra paths a session may write
+   # [[agents.sandbox.tunnels]]        # checked, but opens nothing yet (#1589)
+   # ssh = "readonly@db.example.com"   # [user@]host, no options
+   # local = 15432                     # 1024..65535, each once
+   # remote = "127.0.0.1:5432"         # host:port on the far side
    ```
+
+   A malformed `[agents.sandbox]` key is dropped, so sessions run without it, and named by
+   `doctor`, the tick, and every command that loads the config; a key shipmill doesn't know
+   there fails the load. A pull request that adds an entry under it asks the maintainer,
+   whatever `[decisions] security` sets (D-110).
 
    `shipmill roles` prints each role resolved (`--json`, or `--flags` for triage_state.py's
    `--role` arguments); a malformed `[agents.roles]` exits 2 from every command that reads

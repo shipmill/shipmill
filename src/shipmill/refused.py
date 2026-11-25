@@ -17,7 +17,9 @@ NOTHING = "nothing"  # what an entry whose feature is gone turns off, before its
 @dataclass(frozen=True, slots=True)
 class Refusal:
     """A refused key: its table and key, the spec that removed it, what it turns off (NOTHING,
-    then why, when its feature is gone), and the fix the refusal's message ends with"""
+    then why, when its feature is gone), and the fix the refusal's message ends with. A key
+    whose value is malformed (spec 087's [agents.sandbox]) is refused the same way, why saying
+    what is wrong with it; a removed key has no why"""
 
     table: str  # as the config writes its header, such as [lanes.stable]
     key: str
@@ -25,15 +27,21 @@ class Refusal:
     off: str
     fix: str
     lane: Lane | None = None  # the lane it turns off, which the planner leaves unplanned
+    why: str = ""  # a malformed value's fault, such as "holds 'https://x.org', which has a scheme"
 
     @property
     def turns_off(self) -> bool:
         return not (self.off == NOTHING or self.off.startswith(f"{NOTHING}:"))
 
     @property
+    def _head(self) -> str:
+        fault = self.why or "was removed"
+        return f"{self.table} {self.key} {fault} (spec {self.spec})"
+
+    @property
     def removed(self) -> str:
-        """The line a load raised before spec 052 (S-029-9, S-031-22)"""
-        return f"{self.table} {self.key} was removed (spec {self.spec}); {self.fix}"
+        """The line a load raised before spec 052 (S-029-9, S-031-22), or a malformed key's"""
+        return f"{self._head}; {self.fix}"
 
     @property
     def message(self) -> str:
@@ -53,12 +61,13 @@ class Refusal:
     @property
     def what(self) -> str:
         """The refusal without its fix, for a row that prints the fix on its own line (S-052-9)"""
-        removed = f"{self.table} {self.key} was removed (spec {self.spec})"
-        return f"{removed}; {self.off} is off" if self.turns_off else f"{removed}; it turns off {self.off}"
+        head = self._head
+        return f"{head}; {self.off} is off" if self.turns_off else f"{head}; it turns off {self.off}"
 
     def record(self) -> dict[str, str]:
-        """The refusal in a command's --json object (S-052-11)"""
-        return {"key": f"{self.table} {self.key}", "spec": self.spec, "off": self.off, "fix": self.fix}
+        """The refusal in a command's --json object (S-052-11); a malformed key's adds its why"""
+        found = {"key": f"{self.table} {self.key}", "spec": self.spec, "off": self.off, "fix": self.fix}
+        return found | {"why": self.why} if self.why else found
 
 
 MIN_SOAK_DAYS = Refusal(

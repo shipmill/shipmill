@@ -10,7 +10,9 @@ request's (--pr) by its files and their patches too, read through gh:
 - decision-policy: .github/shipmill.toml whose [decisions] table differs between the merge
   base and the head, compared parsed, so a comment or a reorder doesn't count; or whose
   [autonomy] raises a stage's level, resolved as `shipmill autonomy` resolves it (D-99)
-- security: any other path under .github/, or the config's other tables, compared parsed
+- security: any other path under .github/, or the config's other tables, compared parsed; at
+  ask at least, whatever [decisions] sets, when [agents.sandbox] gains an entry or a side
+  doesn't parse (spec 087, D-110)
 - protected: a path a REVIEW.md Protected areas glob on the base covers, as pr_gate.py matches
 - scope: a docs/specs/*.md whose header's status line reads approved at the head and not at
   the merge base, both read whole
@@ -54,6 +56,7 @@ from shipmill.gitrepo import Git
 from shipmill.policy import Policy
 from shipmill.review import REVIEW, Protected
 from shipmill.review import parse as parse_review
+from shipmill.sandbox import SandboxConfig
 from shipmill.workflows import WORKFLOWS_DIR, Job, has_environment, is_workflow, jobs
 
 DIRECTION = "docs/product.md"
@@ -63,6 +66,9 @@ CONFIG = CONFIG_PATH.as_posix()
 DECISIONS_TABLE = "decisions"
 AUTONOMY_TABLE = "autonomy"
 AGENTS_TABLE = "agents"
+SANDBOX_TABLE = "sandbox"
+SANDBOX = f"[{AGENTS_TABLE}.{SANDBOX_TABLE}]"
+SANDBOX_LEVEL = Level.ASK  # a widening of [agents.sandbox] asks whatever [decisions] security sets (D-110)
 ENVIRONMENTS_TABLE = "environments"
 SPECS = "docs/specs/*.md"
 LOGS = ("DECISIONS.md", "docs/decisions.md")  # decisions.py's order
@@ -163,12 +169,15 @@ class PathLevel:
 @dataclass(frozen=True, slots=True)
 class Detected:
     """A zone code detects in a change, at the base's level, with why, and the changed paths
-    that put it in, each at its own level (none for a zone detected without a path rule)"""
+    that put it in, each at its own level (none for a zone detected without a path rule); floor
+    is the least a rule holds it at whatever [decisions] sets, which no earned bound lowers
+    (spec 087's widening of [agents.sandbox], D-110)"""
 
     zone: Zone
     level: Level
     reason: str
     paths: tuple[PathLevel, ...] = ()
+    floor: Level | None = None
 
     def record(self) -> dict[str, Any]:
         return {
@@ -334,6 +343,12 @@ class _Found:
         self.reasons: dict[Zone, list[str]] = {}
         self.paths: dict[Zone, dict[str, PathLevel]] = {}
         self.pathless: set[Zone] = set()  # zones a rule put in without a path, at the zone's level
+        self.floors: dict[Zone, Level] = {}  # the least a rule holds a zone at, whatever the base sets
+
+    def at_least(self, zone: Zone, level: Level) -> None:
+        """Hold the zone at level or stricter, whatever [decisions] sets it to (spec 087); a
+        floor is no path's, so an earned bound (spec 083) never lowers it"""
+        self.floors[zone] = Level.strictest([level, *([self.floors[zone]] if zone in self.floors else [])])
 
     def add(self, zone: Zone, reason: str, path: str | None = None) -> None:
         if path is None:
@@ -351,11 +366,19 @@ class _Found:
         levels = [p.level for p in self.paths.get(zone, {}).values()]
         if zone in self.pathless:
             levels.append(self.base.level(zone))
+        if zone in self.floors:
+            levels.append(self.floors[zone])
         return Level.strictest(levels)
 
     def result(self, paths: Sequence[str]) -> Classification:
         detected = tuple(
-            Detected(zone, self.level(zone), "; ".join(self.reasons[zone]), tuple(self.paths.get(zone, {}).values()))
+            Detected(
+                zone,
+                self.level(zone),
+                "; ".join(self.reasons[zone]),
+                tuple(self.paths.get(zone, {}).values()),
+                self.floors.get(zone),
+            )
             for zone in Zone
             if zone in self.reasons
         )
@@ -446,6 +469,7 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
             reason = f"{CONFIG} at {side[:7]} doesn't parse ({exc}), so its tables can't be compared"
             found.add(Zone.DECISION_POLICY, reason)
             found.add(Zone.SECURITY, reason, CONFIG)
+            found.at_least(Zone.SECURITY, SANDBOX_LEVEL)  # a widening of [agents.sandbox] can't be ruled out
             return
     before, after = sides
     if before.get(DECISIONS_TABLE, {}) != after.get(DECISIONS_TABLE, {}):  # an empty table sets nothing
@@ -454,6 +478,45 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
         if at_head:  # a removed config leaves no levels to run by
             _raise(found, change, before, after)
         found.add(Zone.SECURITY, f"{CONFIG} changes outside [{DECISIONS_TABLE}]", CONFIG)
+    added = sandbox_added(before, after)
+    if added:  # spec 087: whatever [decisions] security sets, a widening waits for the maintainer
+        reason = f"{CONFIG} widens {SANDBOX}: adds {', '.join(added)}, which asks whatever security is set to (D-110)"
+        found.add(Zone.SECURITY, reason, CONFIG)
+        found.at_least(Zone.SECURITY, SANDBOX_LEVEL)
+
+
+def sandbox_added(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
+    """Each entry [agents.sandbox] holds at the head and not at the merge base, as `<key>
+    <entry>`, compared raw, so an entry a malformed key would drop still counts, as does a key
+    shipmill doesn't know; a sandbox that isn't a table is one entry of its own. The merge base
+    holds only the entries its sessions ran with: none of a key it refused, so fixing a malformed
+    key widens, nor any when its table fails the load"""
+    was, now = _sandbox_held(before), _sandbox_entries(after)
+    return [f"{key} {entry!r}" for key, entries in now.items() for entry in entries if entry not in was.get(key, [])]
+
+
+def _sandbox_held(raw: Mapping[str, Any]) -> dict[str, list[object]]:
+    """The merge base's entries, less each key SandboxConfig.parse refuses there (D-64)"""
+    agents = raw.get(AGENTS_TABLE)
+    sandbox = agents.get(SANDBOX_TABLE) if isinstance(agents, Mapping) else None
+    if not isinstance(sandbox, dict):  # none, or one refused whole
+        return {}
+    try:
+        _, refused = SandboxConfig.parse(sandbox, f"[{AGENTS_TABLE}]")
+    except ReleaseError:  # a key shipmill doesn't know fails the load (D-63): no session ran with any
+        return {}
+    dropped = {r.key for r in refused}
+    return {key: entries for key, entries in _sandbox_entries(raw).items() if key not in dropped}
+
+
+def _sandbox_entries(raw: Mapping[str, Any]) -> dict[str, list[object]]:
+    agents = raw.get(AGENTS_TABLE)
+    sandbox = agents.get(SANDBOX_TABLE) if isinstance(agents, Mapping) else None
+    if sandbox is None:
+        return {}
+    if not isinstance(sandbox, Mapping):
+        return {SANDBOX: [sandbox]}
+    return {str(key): list(value) if isinstance(value, list) else [value] for key, value in sandbox.items()}
 
 
 def _raise(found: _Found, change: PullChange, before: Mapping[str, Any], after: Mapping[str, Any]) -> None:

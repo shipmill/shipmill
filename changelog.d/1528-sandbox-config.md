@@ -1,0 +1,3 @@
+### Added
+
+- `.github/shipmill.toml` takes `[agents.sandbox]`, the hosts, paths, and tunnels a repo declares for spec 087's sandboxed headless sessions: `domains`, `read`, `write`, and `[[agents.sandbox.tunnels]]` are read and checked now, and a malformed key is dropped, so sessions run without it, with a `refused` row in `shipmill doctor`, a `refused:` note on the gate's tick line and in `tick.json` (its record gaining a `why`), and a stderr line from every command that loads the config; `shipmill decide classify --pr` reports a pull request that adds an entry under `[agents.sandbox]` as `security` at `ask`, whatever `[decisions] security` sets and whatever level `[decisions.earned]` would earn (D-110) (#1528)

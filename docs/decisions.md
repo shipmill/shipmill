@@ -919,3 +919,11 @@ entry that supersedes it, never by editing an old one.
 - Why: An answer to a design question on the issue judged the plan before any work existed; letting it widen what the build may touch would make the files check bite only on issues the maintainer never answered, against spec 085's rule that nothing but the maintainer's answer on the pull request widens its allowance
 - Applies to: skills/github-pr-triage/scripts/pr_gate.py, docs/specs/085-allowed-files.md
 - Enforced by: review, until #1604's tests
+
+## D-110: A pull request that widens [agents.sandbox] is security at ask, whatever [decisions] sets
+
+- Decided: 2026-11-25, in shipmill/shipmill#1528
+- Rule: Refines D-48: a pull request whose .github/shipmill.toml adds an entry under [agents.sandbox] (a domains, read or write entry, a tunnel, or any value the merge base's table lacks, compared raw, so a malformed or unknown entry counts too, and an entry of a key the merge base refused or a table that failed its load counts as lacking, since its sessions ran without it), or whose config doesn't parse on a side, is classified in the security zone at ask at least, whatever [decisions] security sets, and an earned level of D-101 never lowers it; a stricter level (never) stays. A change that only removes or reorders entries follows [decisions] security, and security's floor stays notify for every other change
+- Why: Spec 087's escape widens what a sandboxed headless session can read, write and reach; landed at notify, an agent could open the sandbox it runs in without the maintainer's answer, so a widening waits for it while a narrowing costs nothing to land
+- Applies to: src/shipmill/classify.py, src/shipmill/earned.py, src/shipmill/decide.py, src/shipmill/sandbox.py, skills/github-pr-triage/scripts/pr_gate.py, docs/specs/087-headless-sandbox.md, [agents.sandbox], [decisions] security
+- Enforced by: tests/test_classify_sandbox.py (test_s087_11_*)
