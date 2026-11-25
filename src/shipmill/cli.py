@@ -3785,7 +3785,10 @@ def _status_item(
 
         walked = pool.submit(chain)
         read = StateRead(bot_login=bot, roles=resolved)
-        proc = run(watch_command(slug, top, read, json=True, host=False, item=ref.number))
+        # S-094-8: a record placed through the open items it counts with reads their rows too,
+        # as the summary does, so --json reads the whole report's rows when the item links
+        links = () if not as_json else _item_links(slug, ref.number, issues.result(), pulls.result())
+        proc = run(watch_command(slug, top, read, json=True, host=False, item=None if links else ref.number))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
         if state_failed(proc):
             print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
@@ -3826,6 +3829,20 @@ def _status_item(
     else:  # S-094-9: the schema first
         sys.stdout.write(json.dumps({"schema": status_summary.SCHEMA, **why.record(), **record.placing()}) + "\n")
     return 0
+
+
+def _item_links(
+    slug: str, number: int, issues: Sequence[status.Issue], pulls: Sequence[status.Pull]
+) -> tuple[int, ...]:
+    """S-094-8: the open items of the repo the open issue numbered number counts with"""
+    opened = frozenset(
+        [
+            *(i.number for i in issues if i.state not in status.CLOSED_STATES and not i.closed),
+            *(p.number for p in pulls),
+        ]
+    )
+    issue = next((i for i in issues if i.number == number and i.number in opened), None)
+    return () if issue is None else status_summary.linked(slug, issue, opened)
 
 
 def _status_summary(

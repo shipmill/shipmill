@@ -97,6 +97,7 @@ def test_s094_3_waits_on_names_the_open_targets() -> None:
         (Issue(5, "POSTPONED"), Holder.POSTPONED),
         (Issue(5, "TRIAGED", verdict="postponed"), Holder.POSTPONED),
         (Issue(5, "BLOCKED", note=f"children 0/1 closed waits on {REPO}#6:open"), Holder.POSTPONED),
+        (Issue(5, "BLOCKED", note=f"children 0/1 closed waits on {OTHER}#6:open"), Holder.POSTPONED),
         (Issue(5, "BLOCKED", note="veto window of #8 until 2026-11-26T10:00:00Z"), Holder.NOBODY),
     ],
 )
@@ -158,6 +159,49 @@ def test_s094_8_item_json_agrees_with_the_summarys_record(tmp_path: Path, capsys
         assert {k: item[k] for k in summary[number] if k != "number"} == {
             k: v for k, v in summary[number].items() if k != "number"
         }
+
+
+class RetryFake(LinkedFake):
+    """LinkedFake's picture with a GATE_RETRY row naming #9 alone, which watch_state.py --item
+    keeps only for #9, as its item_row does"""
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[1].endswith("watch_state.py") and "--host" not in cmd:
+            proc = super().__call__(cmd)
+            retry = {
+                "state": "GATE_RETRY",
+                "subject": "PRS_OPEN #9",
+                "detail": "after 2026-11-25T12:15:00+00:00",
+                "agent": False,
+            }
+            rows = [json.loads(line) for line in proc.stdout.splitlines()] + [retry]
+            if "--item" in cmd:
+                shown = cmd[cmd.index("--item") + 1]
+                rows = [
+                    r
+                    for r in rows
+                    if r["state"] == "SHIPMILL_VERSION" or f"#{shown}" in f"{r['subject']} {r['detail']}"
+                ]
+            return subprocess.CompletedProcess(cmd, 0, "".join(json.dumps(r) + "\n" for r in rows), "")
+        return super().__call__(cmd)
+
+
+def test_s094_8_item_json_reads_the_rows_of_the_items_it_counts_with(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    main(["--repo", str(root), "status", "--summary", "--json"], state=RetryFake(), login=host)
+    summary = {i["number"]: i for i in json.loads(capsys.readouterr().out)["items"]}
+    assert summary[2]["holder"] == "attention" and summary[2]["via"] == 9
+    fake = RetryFake()
+    main(["--repo", str(root), "status", "--item", "2", "--json"], state=fake, login=host)
+    item = json.loads(capsys.readouterr().out)
+    assert {k: item[k] for k in summary[2] if k != "number"} == {k: v for k, v in summary[2].items() if k != "number"}
+    # without --json, --item keeps reading only the rows that can name it (#1469)
+    main(["--repo", str(root), "status", "--item", "2"], state=(text := RetryFake()), login=host)
+    capsys.readouterr()
+    assert any("--item" in c for c in text.seen if c[1].endswith("watch_state.py"))
+    assert not any("--item" in c for c in fake.seen if c[1].endswith("watch_state.py"))
 
 
 def gate_job(home: Path, repo: str, checkout: Path) -> None:

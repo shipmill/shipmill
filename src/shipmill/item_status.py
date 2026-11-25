@@ -391,7 +391,8 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                 f"waits on {w['ref']} ({w['state'].lower()})",
                 Who.EVENT,
                 f"{w['ref']} closing or merging",
-                where=own if w["ref"].rpartition("#")[0].casefold() == facts.repo.casefold() else Holder.ELSEWHERE,
+                where=own
+                or (None if w["ref"].rpartition("#")[0].casefold() == facts.repo.casefold() else Holder.ELSEWHERE),
             )
             for w in WAIT.finditer(note)
             if w["state"].lower() not in ("closed", "merged", "not_planned")
