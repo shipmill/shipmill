@@ -535,6 +535,12 @@ COMMENT_NODES = re.compile(r"comments\([^)]*\)\s*\{.*?nodes\s*\{(?P<fields>[^}]*
 @pytest.mark.parametrize("name", list(READERS))
 def test_s090_7_no_reader_asks_github_for_a_comments_edit_time(name: str) -> None:
     text = READERS[name].read_text(encoding="utf-8")
-    assert "lastEditedAt" not in text
+    if name == "pr_gate.py":
+        # save S-085-13 (D-106): edited_since reads lastEditedAt once, and only allowance calls it
+        assert text.count('.get("lastEditedAt")') == 1
+        assert text.count("edited_since(") == 2
+        assert "any(edited_since(c, issue, opened) for c in counting)" in text
+    else:
+        assert "lastEditedAt" not in text
     selections = [m["fields"] for m in COMMENT_NODES.finditer(text)]
     assert all("updatedAt" not in fields for fields in selections), selections
