@@ -122,9 +122,11 @@ class FakeHub:
 
 @dataclass
 class FakeCheckout:
-    """origin: its default branch and branches; every publish recorded, none pushed"""
+    """origin: its default branch and branches, and the files changed on it since the working
+    tree's base; every publish recorded, none pushed"""
 
     branches: dict[str, str] = field(default_factory=dict)
+    changed: tuple[str, ...] = ()
     published: list[tuple[str, str, tuple[PurePosixPath, ...], str]] = field(default_factory=list)
 
     def default_branch(self) -> str:
@@ -132,6 +134,9 @@ class FakeCheckout:
 
     def remote_branch(self, branch: str) -> str | None:
         return self.branches.get(branch)
+
+    def stale(self, base: str, paths: Sequence[PurePosixPath]) -> tuple[PurePosixPath, ...]:
+        return tuple(path for path in paths if path.as_posix() in self.changed)
 
     def publish(
         self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
@@ -310,6 +315,12 @@ def test_1623_a_working_tree_on_mains_head_opens_with_the_file_as_before(clone: 
     assert git(clone, "rev-parse", f"{pushed}^").strip() == head
     assert git(clone, "show", f"{pushed}:docs/decisions.md") == decisions.read_text(encoding="utf-8")
     assert [write[0] for write in hub.writes] == ["pull", "comment"]
+
+
+def test_1623_a_spec_file_main_changed_since_the_working_tree_was_made_is_refused(tmp_path: Path) -> None:
+    fake = FakeCheckout(changed=(SPEC,))
+    message = refused(only_file(tmp_path), request(), FakeHub(), fake)
+    assert message.startswith(f"{SPEC} changed on trunk since the working tree's base") and "rebase" in message
 
 
 @pytest.mark.parametrize("given", ["/etc/hosts", "../outside.md", ".git/config", "docs/missing.md", SPEC, "docs"])

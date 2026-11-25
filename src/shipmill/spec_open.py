@@ -1,7 +1,8 @@
 """`spec open` (spec 053): open a spec's pull request that the spec gate can follow.
 
 Every check runs before the first write: the path, `specs.py check`, the spec's status, the
-App, the leak check of --body-file (spec 081), the feature issue, and the branch on origin.
+App, the leak check of --body-file (spec 081), the feature issue, the branch on origin, and that
+no file it commits changed on the default branch since the working tree's base (#1623).
 Then one commit, checked for leaks before it is pushed, on `spec/NNN-<slug>` from
 origin's default branch and its push, the pull request whose body starts `Spec for #N`, and the
 feature verdict on #N in comments.md's Feature template, whose hold line holds the issue on the
@@ -93,6 +94,12 @@ class Checkout(Protocol):
         """The branch's commit on origin; None when origin has no such branch"""
         ...
 
+    def stale(self, base: str, paths: Sequence[PurePosixPath]) -> tuple[PurePosixPath, ...]:
+        """The paths whose content on origin's base differs from their content at the merge-base
+        of the working tree's commit and that head: a change landed since the tree was made,
+        which publishing the tree's copy would undo (#1623). A path absent at both reads the same"""
+        ...
+
     def publish(
         self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
     ) -> None:
@@ -178,6 +185,13 @@ def open_spec(
         raise ReleaseError(
             f"origin already has the branch {branch}: a pull request for this spec may be open; update that branch, "
             "or delete it once nothing needs it"
+        )
+    behind = checkout.stale(base, paths)
+    if behind:
+        listed = ", ".join(path.as_posix() for path in behind)
+        raise ReleaseError(
+            f"{listed} changed on {base} since the working tree's base, and the spec pull request would commit the "
+            f"working tree's copy over that change: rebase onto {base} first; nothing was written"
         )
     checkout.publish(branch, base, paths, f"Spec {spec_path.number}: {lowered(spec.title)}", leaks.push)
     body = f"Spec for #{issue}\n\n{text}" if text else f"Spec for #{issue}"
@@ -318,11 +332,21 @@ class GitCheckout:
     def remote_branch(self, branch: str) -> str | None:
         return self._git.remote_branch(branch)
 
+    def stale(self, base: str, paths: Sequence[PurePosixPath]) -> tuple[PurePosixPath, ...]:
+        tracking = self._fetch(base)
+        since = self._git.run("merge-base", "HEAD", tracking).strip()
+        return tuple(path for path in paths if self._git.differs(since, tracking, path.as_posix()))
+
+    def _fetch(self, base: str) -> str:
+        """Fetch origin's base into its tracking ref; the ref"""
+        tracking = f"refs/remotes/{REMOTE}/{base}"
+        self._git.run("fetch", "-q", REMOTE, f"+refs/heads/{base}:{tracking}")
+        return tracking
+
     def publish(
         self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
     ) -> None:
-        tracking = f"refs/remotes/{REMOTE}/{base}"
-        self._git.run("fetch", "-q", REMOTE, f"+refs/heads/{base}:{tracking}")
+        tracking = self._fetch(base)
         with tempfile.TemporaryDirectory() as folder:
             scratch = Git(self._top)
             scratch.env = {"GIT_INDEX_FILE": str(Path(folder) / "index")}
