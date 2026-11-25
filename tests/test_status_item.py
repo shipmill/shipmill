@@ -32,6 +32,7 @@ from shipmill.item_status import (
 from shipmill.land_window import LandWindow
 from shipmill.launchd import label
 from shipmill.status import ISSUE_LINES, TRIAGE_VERDICTS, Facts, Issue, Pull, Row, parse_issues, report
+from shipmill.status_summary import Holder, split
 from tests import test_app
 from tests.test_status_picture import REPO, VERSION_JSON, facts, gate, host, repo_with_release
 
@@ -286,6 +287,30 @@ def test_s088_8_the_parked_line_and_item_say_a_triaged_issues_verdict() -> None:
     reason = "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
     assert (reason, Who.MAINTAINER) in whos(found, 4)
     assert ("triaged with nothing pending", Who.EVENT) in whos(found, 3)
+
+
+# #1611: the watch's SPEC_DUE row names the opportunities intake_state.py reads ACCEPTED (planned)
+SPEC_DUE = Row("SPEC_DUE", REPO, "ACCEPTED #2 #4", True, f"/shipmill:github-issue-triage {REPO}")
+ACCEPTED = "triaged as opportunity and accepted: waits on triage's spec gate to give it a feature verdict"
+UNACCEPTED = "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
+
+
+def accepted_facts() -> Facts:
+    triaged = [Issue(4, "TRIAGED", verdict="opportunity"), Issue(14, "TRIAGED", verdict="opportunity")]
+    return facts(SPEC_DUE, issues=[*triaged, Issue(2, "TRIAGED", verdict="clarify")])
+
+
+def test_s088_8_an_accepted_opportunity_waits_on_the_agent_not_the_maintainer() -> None:
+    found = accepted_facts()
+    assert whos(found, 4) == [(ACCEPTED, Who.AGENT)]
+    assert whos(found, 14) == [(UNACCEPTED, Who.MAINTAINER)]  # not labelled planned: as before
+    assert whos(found, 2) == [("triaged as clarify: waits on the reporter's answer", Who.PERSON)]  # #2 isn't one
+    assert whos(facts(issues=[Issue(4, "TRIAGED", verdict="opportunity")]), 4) == [(UNACCEPTED, Who.MAINTAINER)]
+
+
+def test_s088_8_the_summary_counts_an_accepted_opportunity_on_the_agents_line() -> None:
+    found = split(accepted_facts(), lambda _: NONE, None)
+    assert found.issues[Holder.AGENT] == (4,) and found.issues[Holder.MAINTAINER] == (14,)
 
 
 def test_s088_8_a_verdict_triage_state_doesnt_write_is_refused() -> None:
