@@ -395,6 +395,7 @@ HAND_KEYS = frozenset({"session", "at"})
 HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})
 PULL_KEYS = frozenset({"head", "rollup"})
 ENDS = ", ".join(e.value for e in End)
+CAUSED = frozenset({End.LIMIT, End.AUTH})  # ends that drop their hand, the wait the credential's pause (S-089-4)
 
 
 def hand_of(key: str, entry: object) -> Hand:
@@ -571,19 +572,22 @@ class Handed:
         )
 
     def settled(self, recorded: Iterable[str], died: Callable[[Hand], dt.datetime], retry: dt.timedelta) -> Handed:
-        """Spec 089, on the tick that records the ends of these keys: a hand whose session ended
-        limit or auth drops, whichever session gate.json names by then (S-089-4); one that ended
-        error is held for its backoff, the next delay of its run after its session's end (died,
-        S-089-11); one that ended ok ends its run. A hand whose end an earlier tick recorded
-        stays as that tick left it"""
+        """Spec 089: a hand whose session ended limit or auth drops, whichever session gate.json
+        names by then (S-089-4), and whichever tick recorded its end: one saved with it, as
+        0.167.0's capped run of limit ends did, drops on the next (#1602). On the tick that
+        records the ends of these keys, one that ended error is held for its backoff, the next
+        delay of its run after its session's end (died, S-089-11), and one that ended ok ends its
+        run; an error or ok hand whose end an earlier tick recorded stays as that tick left it"""
         fresh = set(recorded)
         found: dict[str, Hand] = {}
         for k, h in self.hands.items():
+            if h.ended in CAUSED:
+                continue
             if k not in fresh or h.ended is None:
                 found[k] = h
             elif h.ended is End.ERROR:
                 found[k] = h.backed_off(died(h), retry)
-            elif h.ended is End.OK:
+            else:
                 found[k] = replace(h, errors=0)
         return Handed(found)
 
