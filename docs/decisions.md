@@ -861,6 +861,7 @@ entry that supersedes it, never by editing an old one.
 - Why: Without the file every public write passed the leak check, and issue bodies naming private repositories were posted after the check shipped (#1480); a new machine running agents should not leak by default, at the cost of one setup step. Decided by `@romamo` on #1480 (option 1, relayed 2026-11-24)
 - Applies to: src/shipmill/leaks.py, src/shipmill/app_gh.py, src/shipmill/doctor.py, docs/specs/081-outgoing-leak-check.md, ~/.config/shipmill/private.toml
 - Enforced by: the leaks and app_gh tests (with the implementing PR)
+- Superseded by: D-107
 
 ## D-103: A relayed veto counts as the maintainer's own
 
@@ -893,3 +894,28 @@ entry that supersedes it, never by editing an old one.
 - Why: Spec 085 fixed the allowance when the work starts by the comment's createdAt alone, so editing the verdict after the pull request opened widened what the agent may touch without the maintainer's answer (#1570). Holding is cheaper and stricter than reconstructing the text as it stood when the pull request opened. Decided by `@romamo` on #1570 (option 1, relayed 2026-11-25)
 - Applies to: skills/github-pr-triage/scripts/pr_gate.py, docs/specs/085-allowed-files.md
 - Enforced by: the pr_gate.py tests (with the implementing PR)
+
+## D-107: A private repository is named in the private terms file, not only read through the token at hand
+
+- Decided: 2026-11-25, in shipmill/shipmill#1595
+- Rule: As D-102, save what counts a referenced owner/name as private: shipmill gh refuses a write to a public repo with exit 2 when its text names an owner/name that the repos key of ~/.config/shipmill/private.toml lists (an owner/name entry, or owner/* for every repo of an owner), whatever any token reads, or that the token at hand reads as private; one neither listed nor read as private is not counted, so the App's installation token still adds what it can see and no other credential is read on the write path; shipmill doctor warns while a checkout whose .github/shipmill.toml has an [agents] section reads a private file that lists no repos. D-102's refusal while the file is missing stays
+- Why: A gate session writes with the App's installation token, which reads every private repo outside its installation as a 404, so the token-only check caught nothing on the writes #1480 reported; a list on the machine needs no new credential in a sandboxed session, where the person's gh login is denied (spec 087)
+- Applies to: src/shipmill/leaks.py, src/shipmill/app_gh.py, src/shipmill/doctor.py, docs/specs/081-outgoing-leak-check.md, docs/leaks.md, ~/.config/shipmill/private.toml
+- Enforced by: review, until #1595's tests
+- Supersedes: D-102
+
+## D-108: An answer carries over a rebase that only brought main's changes
+
+- Decided: 2026-11-25, in shipmill/shipmill#1587
+- Rule: pr_gate.py counts an answer on a pull request for a later head, beyond S-055-5's equal patch, when every approved spec the pull request edits passes specs.py same-approval between the answered head and the judged head, and the change between those two heads is exactly main's change between their two merge-bases, compared file by file on the lines git diff adds and removes; its line then reads answer carried over from <sha7>: only main's changes since; any other difference asks again, and same-approval alone carries nothing
+- Why: #1502 and #1506 were asked the same rule-departure question three times, each after a rebase that only resolved a conflict with main and left the approved spec text unchanged; a conflict resolution that also changed the code must still ask, since the answer judged the old code
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/scripts/specs.py, docs/specs/055-landing-rules-in-code.md
+- Enforced by: review, until #1587's tests
+
+## D-109: An answer given before an agent's pull request opened never widens its files
+
+- Decided: 2026-11-25, in shipmill/shipmill#1604
+- Rule: pr_gate.py lifts a files: line of spec 085 only on an answer that covers the judged head by its question's <!-- shipmill:head <sha> --> line or by S-055-5's same change; an accepting answer on an issue the pull request names, given before the pull request opened, keeps lifting the pull request's other asks as spec 055 says, but no files: line
+- Why: An answer to a design question on the issue judged the plan before any work existed; letting it widen what the build may touch would make the files check bite only on issues the maintainer never answered, against spec 085's rule that nothing but the maintainer's answer on the pull request widens its allowance
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, docs/specs/085-allowed-files.md
+- Enforced by: review, until #1604's tests
