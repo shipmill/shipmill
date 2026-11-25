@@ -943,3 +943,11 @@ entry that supersedes it, never by editing an old one.
 - Why: Sessions that a GitHub rate limit, a full disk, or a headless denial stopped ended ok, and their subjects turned idle as if they had chosen to write nothing (#1644); none of those causes is the item's or clears by a change on it, and a GitHub limit or a full disk belongs to the host, so each gate and item learning it alone wastes sessions
 - Applies to: src/shipmill/gate.py, src/shipmill/walk.py, src/shipmill/host_pause.py, src/shipmill/status.py, src/shipmill/item_status.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/095-gate-outside-failure-ends.md, handed.json
 - Enforced by: tests of spec 095 (test_s095_*), with the implementing PR
+
+## D-113: A denied permission notifies and ends no session
+
+- Decided: 2026-11-25, in shipmill/shipmill#1644
+- Rule: Supersedes D-112's permission end: a denied permission, in the last result's permission_denials or a failed tool result, is no end. A session that met one keeps the end spec 089 and D-112's other causes give it (ok, idle as before, when nothing else stopped it), and its hand follows that end. Once a headless session ended with a result, whatever its end, the gate records each denied tool once in its denied.json and, with notify on, sends one notification per tool not yet recorded, naming the session, the tool, and the command's first line cut at 120 characters. D-112's github_limit, disk, and network ends and the host's pause stand
+- Why: In one host's gate logs of 14 days, 1006 of 1109 sessions whose result was no error listed a denied Bash or Monitor call. As an end that drops its hand, a denial would have handed nearly every ok session again on every tick, with no ceiling, undoing spec 061's change-gated launches (#1648's review). A denial is a gap in the allowlist for the maintainer to close, which a notification reaches, not a fault of the item
+- Applies to: src/shipmill/gate.py, src/shipmill/walk.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/095-gate-outside-failure-ends.md, handed.json, denied.json
+- Enforced by: tests of spec 095 (test_s095_1_*, test_s095_7_*), with the implementing PR
