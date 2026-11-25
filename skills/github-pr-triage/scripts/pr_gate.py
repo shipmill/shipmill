@@ -119,12 +119,13 @@ or built spec the PR renames, named by its old path. Outside a checkout it isn't
 
 The files its issues allow (spec 085): an agent's open PR, not a draft, is checked against the
 allowed files of each issue it closes or names as `Part of #N`, read from the issue threads the veto
-reads (no new read). An issue's allowance is its newest comment whose first line starts `Triage:
-**implement**` or `Proposed plan:`, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, created
-before the PR: the backticked paths of each of its `Files:` lines outside a fence (after an optional
-list bullet) add up; without such a comment, or with one that has no `Files:` line, the issue
-declares none. When an issue declares one, the files API is read: each changed path, and a renamed
-file's old path, is covered when it equals an allowed path, sits under one ending in `/`, or matches
+reads (no new read). An issue's allowance is its newest comment whose first line, past its leading
+`<!-- shipmill:... -->` marker lines, starts `Triage: **implement**` or `Proposed plan:`, by the
+--bot-login or an OWNER, MEMBER, or COLLABORATOR, created before the PR: the backticked paths of
+each of its `Files:` lines outside a fence (after an optional list bullet) add up; without such a
+comment, or with one that has no `Files:` line, the issue declares none. When an issue declares one,
+the files API is read: each changed path, and a renamed file's old path, is covered when it equals
+an allowed path, sits under one ending in `/`, or matches
 one by spec 061's grammar (metrics.py's covered), or sits directly inside the default branch config's
 `[changelog] fragments` folder. A path none covers reads NEEDS_DECISION, exit 5, `  files: <path> is outside
 what #A allows` (`#A, #B allow` naming every issue declaring one), 20 such lines and then `  files: and
@@ -2069,7 +2070,8 @@ class Allowance:
 
 def allowance(node: object, issue: int, opened: datetime, bot_login: str | None) -> Allowance:
     """Issue's allowed files, read from its thread as GraphQL gives it (THREAD): the newest comment
-    whose first line starts `Triage: **implement**` or `Proposed plan:`, by the --bot-login or an
+    whose first line past its leading marker lines (allowing_line) starts `Triage: **implement**` or
+    `Proposed plan:`, by the --bot-login or an
     OWNER, MEMBER, or COLLABORATOR (retro.py's trusted), created before the pull request opened
     (opened). Each of its lines outside a fence that starts `Files:`, after an optional list bullet,
     adds its backticked paths (metrics.py's FILES_LINE and BACKTICKED, the plan's reading); such a
@@ -2086,7 +2088,7 @@ def allowance(node: object, issue: int, opened: datetime, bot_login: str | None)
     counting = [
         c
         for c in comments
-        if rt.first_line(c["body"]).startswith(ALLOWING)
+        if allowing_line(c["body"]).startswith(ALLOWING)
         and rt.trusted(c, bots)
         and moment(c["createdAt"], f"a comment of #{issue}'s createdAt") < opened
     ]
@@ -2107,6 +2109,19 @@ def allowance(node: object, issue: int, opened: datetime, bot_login: str | None)
             return Allowance(issue, unread=FILES_UNREAD.format(issue=issue, why=why))
         paths += named
     return Allowance(issue, tuple(paths) if files_lines else None)
+
+
+def allowing_line(body: str) -> str:
+    """The line of a comment ALLOWING is matched against: its first line past the leading
+    `<!-- shipmill:... -->` marker lines (retro.py's SHIPMILL_LINE), so a `Proposed plan:` written
+    under the needs-decision marker and the zone line, as autonomy.md writes it, counts (#1594);
+    a marker after text, or another HTML comment, is the line itself"""
+    lines = body.lstrip().split("\n")
+    shipmill_line = retro().SHIPMILL_LINE
+    lead = 0
+    while lead < len(lines) and shipmill_line.match(lines[lead]):
+        lead += 1
+    return retro().first_line("\n".join(lines[lead:]))
 
 
 def edited_since(comment: dict, issue: int, opened: datetime) -> bool:
