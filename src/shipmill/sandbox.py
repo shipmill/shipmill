@@ -6,9 +6,15 @@ beyond the default, in .github/shipmill.toml (D-4), read from the default branch
   with no scheme, port, or path
 - read: paths taken out of the deny list; write: extra paths a session may write. Each is
   absolute or starts `~/`, without `..`
-- tunnels: tables of exactly ssh (`[user@]host`, no options), local (1024 to 65535, unique),
-  and remote (`host:port`); parsed and checked, they open nothing until a probe finds how a
-  sandboxed command reaches a local port (D-105, #1589)
+- local_ports: a boolean; true opens every local port (allowLocalBinding), on macOS only until
+  the Linux probe (S-087-29) is recorded
+- tunnels: tables of exactly ssh (`[user@]host`, no options), local (1024 to 65535, unique
+  across both tables), and remote (`host:port`); parsed and checked, they open nothing until a
+  probe finds how a sandboxed command reaches a local port (D-105, #1589)
+
+[agents.sandbox.grant] holds the same keys, opened only for a launch whose item a trusted
+person granted that kind (spec 087, Per item); its read and write entries may not name, hold,
+or lie inside a credential store or ~/.config/gh/hosts.yml.
 
 A malformed key is refused as D-64 says: the config still loads, the key is dropped, so the
 session runs with the narrower default, never a wider one, and doctor, the tick, and every
@@ -20,8 +26,10 @@ sees, and the env's uv cache and gh config folders (#1531)."""
 
 import re
 import shutil
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+import sys
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
 from shipmill.config import Table
@@ -29,12 +37,17 @@ from shipmill.errors import ReleaseError
 from shipmill.refused import Refusal
 
 TABLE = "[agents.sandbox]"
+GRANT_TABLE = "[agents.sandbox.grant]"
 SPEC = "087"
 DOMAINS = "domains"
 READ = "read"
 WRITE = "write"
+LOCAL_PORTS = "local_ports"
 TUNNELS = "tunnels"
-KEYS = (DOMAINS, READ, WRITE, TUNNELS)
+GRANT = "grant"
+KEYS = (DOMAINS, READ, WRITE, LOCAL_PORTS, TUNNELS)
+MACOS = "darwin"  # the one platform whose local ports the probe recorded (#1588)
+LINUX_PROBE = "local ports wait for the Linux probe (S-087-29)"
 SSH = "ssh"
 LOCAL = "local"
 REMOTE = "remote"
@@ -175,28 +188,40 @@ _OFF = {
     DOMAINS: "each declared domain",
     READ: "each declared read exception",
     WRITE: "each declared write path",
+    LOCAL_PORTS: "local ports",
     TUNNELS: "each declared tunnel",
-}
-_FIX = {
-    DOMAINS: "write each entry as a host name, or *. and a name, such as registry.npmjs.org",
-    READ: "write each entry as an absolute path or one starting ~/, without .., such as ~/.config/some-tool",
-    WRITE: "write each entry as an absolute path or one starting ~/, without .., such as ~/.cache/pnpm",
-    TUNNELS: (
-        'write each as [[agents.sandbox.tunnels]] with exactly ssh = "[user@]host", local = <1024..65535, '
-        'each once> and remote = "host:port"'
-    ),
 }
 _WHAT = {
     DOMAINS: "a list of host names",
     READ: "a list of paths",
     WRITE: "a list of paths",
-    TUNNELS: "an array of tables, [[agents.sandbox.tunnels]]",
+    LOCAL_PORTS: "a boolean",
 }
 
 
-def refusal(key: str, why: str) -> Refusal:
-    """The refusal of a malformed [agents.sandbox] key: dropped, so the session runs without it"""
-    return Refusal(TABLE, key, SPEC, _OFF[key], _FIX[key], why=why)
+def _fix(key: str, table: str) -> str:
+    if key == DOMAINS:
+        return "write each entry as a host name, or *. and a name, such as registry.npmjs.org"
+    if key in (READ, WRITE):
+        example = "~/.config/some-tool" if key == READ else "~/.cache/pnpm"
+        outside = ", outside the credential stores and ~/.config/gh/hosts.yml" if table == GRANT_TABLE else ""
+        return f"write each entry as an absolute path or one starting ~/, without ..{outside}, such as {example}"
+    if key == LOCAL_PORTS:
+        return f"write {LOCAL_PORTS} = true or {LOCAL_PORTS} = false"
+    return (
+        f'write each as [[{table[1:-1]}.{TUNNELS}]] with exactly ssh = "[user@]host", local = <1024..65535, '
+        'each once across [agents.sandbox] and its grant> and remote = "host:port"'
+    )
+
+
+def _what(key: str, table: str) -> str:
+    return _WHAT[key] if key in _WHAT else f"an array of tables, [[{table[1:-1]}.{TUNNELS}]]"
+
+
+def refusal(key: str, why: str, table: str = TABLE) -> Refusal:
+    """The refusal of a malformed [agents.sandbox] or [agents.sandbox.grant] key: dropped, so
+    the session runs without it"""
+    return Refusal(table, key, SPEC, _OFF[key], _fix(key, table), why=why)
 
 
 def table_refusal(value: object) -> Refusal:
@@ -211,47 +236,158 @@ def table_refusal(value: object) -> Refusal:
     )
 
 
+def grant_refusal(value: object) -> Refusal:
+    """The refusal of an [agents.sandbox] grant that isn't a table: no kind can be granted"""
+    return Refusal(
+        TABLE,
+        GRANT,
+        SPEC,
+        "every sandbox grant",
+        f"write {GRANT_TABLE} as a table of {', '.join(KEYS)}",
+        why=f"must be a table, {GRANT_TABLE}, got {value!r}",
+    )
+
+
+def host_refusal(key: str, table: str, platform: str) -> Refusal:
+    """S-087-26: local_ports or a tunnel on a gate whose host isn't macOS, dropped until the
+    Linux probe records how a sandboxed command there reaches a local port (D-64)"""
+    return Refusal(
+        table,
+        key,
+        SPEC,
+        _OFF[key],
+        "a macOS gate opens it; on this host, leave it for the probe or delete it",
+        why=f"is dropped on {platform}: {LINUX_PROBE}",
+    )
+
+
+type Paths = tuple[SandboxPath, ...]
+
+
+class GrantKind(StrEnum):
+    """A kind of resource a trusted person's `sandbox:<kind>` label grants one launch (spec 087,
+    Per item); each opens the [agents.sandbox.grant] key of the same name"""
+
+    DOMAINS = DOMAINS
+    READ = READ
+    WRITE = WRITE
+    LOCAL_PORTS = "local-ports"
+    TUNNELS = TUNNELS
+
+    @property
+    def label(self) -> str:
+        return f"sandbox:{self.value}"
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxConfig:
     """The [agents.sandbox] table, each key as declared; empty without the table, or with a key
-    that was refused"""
+    that was refused. grant is its [agents.sandbox.grant] table, read the same way, whose own
+    grant is always None; None without the table"""
 
     domains: tuple[Domain, ...] = ()
     read: tuple[SandboxPath, ...] = ()
     write: tuple[SandboxPath, ...] = ()
     tunnels: tuple[Tunnel, ...] = ()
+    local_ports: bool = False
+    grant: SandboxConfig | None = None
 
     @classmethod
-    def parse(cls, raw: object, where: str) -> tuple[SandboxConfig, tuple[Refusal, ...]]:
+    def parse(cls, raw: object, where: str, home: Path | None = None) -> tuple[SandboxConfig, tuple[Refusal, ...]]:
         """The table, and the refusal of each malformed key, which is left out; where names the
-        [agents] table for an unknown key, which fails the load (D-63)"""
+        [agents] table for an unknown key, which fails the load (D-63). home, Path.home() when
+        None, places the credential stores a grant's read or write entry may not reach"""
         if not isinstance(raw, dict):
             return cls(), (table_refusal(raw),)
-        Table(raw, f"{where} [sandbox]").allow(*KEYS)
+        Table(raw, f"{where} [sandbox]").allow(*KEYS, GRANT)
         refusals: list[Refusal] = []
-        found = cls(
-            domains=_key(raw, DOMAINS, _domains, refusals),
-            read=_key(raw, READ, _paths, refusals),
-            write=_key(raw, WRITE, _paths, refusals),
-            tunnels=_key(raw, TUNNELS, _tunnels, refusals),
+        found = cls._keys(raw, TABLE, refusals, _paths)
+        if GRANT not in raw:
+            return found, tuple(refusals)
+        granted = raw[GRANT]
+        if not isinstance(granted, dict):
+            return found, (*refusals, grant_refusal(granted))
+        Table(granted, f"{where} [sandbox.grant]").allow(*KEYS)
+        grant = cls._keys(granted, GRANT_TABLE, refusals, _outside(Path.home() if home is None else home))
+        repeated = sorted({int(t.local) for t in found.tunnels} & {int(t.local) for t in grant.tunnels})
+        if repeated:  # the grant's tunnels go: the table every session runs with stays as declared
+            why = f"is malformed: {LOCAL} {repeated[0]} is given in {TABLE} {TUNNELS} too"
+            refusals.append(refusal(TUNNELS, why, GRANT_TABLE))
+            grant = replace(grant, tunnels=())
+        return replace(found, grant=grant), tuple(refusals)
+
+    @classmethod
+    def _keys(
+        cls, raw: Mapping[str, object], table: str, refusals: list[Refusal], paths: Callable[[list[object]], Paths]
+    ) -> SandboxConfig:
+        return cls(
+            domains=_key(raw, DOMAINS, _domains, refusals, table),
+            read=_key(raw, READ, paths, refusals, table),
+            write=_key(raw, WRITE, paths, refusals, table),
+            tunnels=_key(raw, TUNNELS, _tunnels, refusals, table),
+            local_ports=_flag(raw, LOCAL_PORTS, refusals, table),
         )
-        return found, tuple(refusals)
+
+    def on_host(self, platform: str) -> tuple[SandboxConfig, tuple[Refusal, ...]]:
+        """S-087-26: the table as a gate on platform opens it. Off macOS, local_ports and every
+        tunnel, in either table, are dropped with a refusal each (D-64), until the Linux probe
+        (S-087-29) records how a sandboxed command there reaches a local port"""
+        if platform == MACOS:
+            return self, ()
+        refusals: list[Refusal] = []
+        tables = ((self, TABLE), (self.grant, GRANT_TABLE))
+        for table, name in tables:
+            if table is not None and table.local_ports:
+                refusals.append(host_refusal(LOCAL_PORTS, name, platform))
+            if table is not None and table.tunnels:
+                refusals.append(host_refusal(TUNNELS, name, platform))
+        grant = None if self.grant is None else replace(self.grant, local_ports=False, tunnels=())
+        return replace(self, local_ports=False, tunnels=(), grant=grant), tuple(refusals)
+
+    def granting(self, kinds: Collection[GrantKind]) -> SandboxConfig:
+        """What one launch opens: this table with the entries of each granted kind its grant
+        declares added, and no grant left; a kind the grant doesn't declare adds nothing"""
+        grant = self.grant if self.grant is not None else SandboxConfig()
+
+        def given[T](kind: GrantKind, entries: tuple[T, ...]) -> tuple[T, ...]:
+            return entries if kind in kinds else ()
+
+        return SandboxConfig(
+            domains=(*self.domains, *given(GrantKind.DOMAINS, grant.domains)),
+            read=(*self.read, *given(GrantKind.READ, grant.read)),
+            write=(*self.write, *given(GrantKind.WRITE, grant.write)),
+            tunnels=(*self.tunnels, *given(GrantKind.TUNNELS, grant.tunnels)),
+            local_ports=self.local_ports or (GrantKind.LOCAL_PORTS in kinds and grant.local_ports),
+        )
+
+
+def _flag(raw: Mapping[str, object], key: str, refusals: list[Refusal], table: str) -> bool:
+    """A boolean key, false without it, and false with its refusal added when it isn't one"""
+    value = raw.get(key, False)
+    if isinstance(value, bool):
+        return value
+    refusals.append(refusal(key, f"must be {_WHAT[key]}, got {value!r}", table))
+    return False
 
 
 def _key[T](
-    raw: Mapping[str, object], key: str, parse: Callable[[list[object]], tuple[T, ...]], refusals: list[Refusal]
+    raw: Mapping[str, object],
+    key: str,
+    parse: Callable[[list[object]], tuple[T, ...]],
+    refusals: list[Refusal],
+    table: str,
 ) -> tuple[T, ...]:
     """The key's entries, or none with its refusal added when it is malformed; none without it"""
     if key not in raw:
         return ()
     value = raw[key]
     if not isinstance(value, list):
-        refusals.append(refusal(key, f"must be {_WHAT[key]}, got {value!r}"))
+        refusals.append(refusal(key, f"must be {_what(key, table)}, got {value!r}", table))
         return ()
     try:
         return parse(value)
     except ReleaseError as exc:  # the first malformed entry, named; the whole key is dropped
-        refusals.append(refusal(key, f"is malformed: {exc}"))
+        refusals.append(refusal(key, f"is malformed: {exc}", table))
         return ()
 
 
@@ -266,8 +402,34 @@ def _domains(value: list[object]) -> tuple[Domain, ...]:
     return tuple(Domain(text) for text in _texts(value))
 
 
-def _paths(value: list[object]) -> tuple[SandboxPath, ...]:
+def _paths(value: list[object]) -> Paths:
     return tuple(SandboxPath(text) for text in _texts(value))
+
+
+def _outside(home: Path) -> Callable[[list[object]], Paths]:
+    """_paths for a grant: an entry that names, holds, or lies inside a credential store or
+    ~/.config/gh/hosts.yml is malformed, since a key is full access, never a narrow grant. The
+    home is taken as given and resolved, and names compare case-folded, as macOS's file system
+    does, so another spelling of a store can't reach it"""
+    homes = dict.fromkeys((home, home.resolve()))
+    stores = [(PurePosixPath(HOME) / name, [h / name for h in homes]) for name in CREDENTIALS]
+
+    def folded(path: PurePosixPath | Path) -> tuple[str, ...]:
+        return tuple(part.casefold() for part in path.parts)
+
+    def reaches(path: tuple[str, ...], store: tuple[str, ...]) -> bool:
+        shorter = min(len(path), len(store))
+        return path[:shorter] == store[:shorter]  # the same path, or one holds the other
+
+    def parse(value: list[object]) -> Paths:
+        paths = _paths(value)
+        for path in paths:
+            for named, places in stores:
+                if any(reaches(folded(expand(path, h)), folded(p)) for h in homes for p in places):
+                    raise ReleaseError(f"{str(path)!r} reaches {named}, a credential store a grant can't open")
+        return paths
+
+    return parse
 
 
 def _tunnels(value: list[object]) -> tuple[Tunnel, ...]:
@@ -285,8 +447,9 @@ def _tunnels(value: list[object]) -> tuple[Tunnel, ...]:
 # one `--settings` JSON carries beside its env. Every path is absolute and expanded; the
 # listings of ~/.config/shipmill and ~/.claude/projects are read at each launch, never cached
 
-# What a session can't read, under the home, whether or not each exists
-DENIED = (
+# What a session can't read, under the home, whether or not each exists. The credential stores
+# and the host's own GitHub login come first: a grant's read or write entry may reach none of them
+CREDENTIALS = (
     ".ssh",
     ".gnupg",
     ".netrc",
@@ -301,6 +464,9 @@ DENIED = (
     ".password-store",
     "Library/Keychains",
     ".config/gh/hosts.yml",  # the host's own GitHub login; the session's gh reads GH_CONFIG_DIR (D-105)
+)
+DENIED = (
+    *CREDENTIALS,
     ".claude.json",
     ".claude/.credentials.json",
     ".claude/history.jsonl",
@@ -445,11 +611,23 @@ class Sandbox:
         return " ".join(narrowed)
 
 
-def launch(where: Where, declared: SandboxConfig, app_key: Path | None, state_files: Sequence[str]) -> Sandbox:
+def launch(
+    where: Where,
+    declared: SandboxConfig,
+    app_key: Path | None,
+    state_files: Sequence[str],
+    granted: Collection[GrantKind] = (),
+    platform: str = sys.platform,
+) -> Sandbox:
     """Spec 087's settings for one headless launch, read now: the listings it denies by path,
     and gh-config, created empty, and the uv cache, created, before the session starts.
     declared is [agents.sandbox] as origin's default branch has it; app_key, the path the
-    session's SHIPMILL_APP_KEY names, None without an App"""
+    session's SHIPMILL_APP_KEY names, None without an App; granted, the kinds of
+    [agents.sandbox.grant] a trusted person granted this launch's item. local_ports opens
+    every local port (allowLocalBinding) on a macOS gate only, and adds nothing to
+    allowedDomains (S-087-26). No key, grant or platform opens a Unix socket or an unsandboxed
+    command (S-087-27)"""
+    declared = declared.granting(granted)
     deny = denied_reads(where, declared, app_key)
     scope = write_scope(where, declared)
     gh = where.gh_config  # what the last session's gh wrote there goes
@@ -459,6 +637,9 @@ def launch(where: Where, declared: SandboxConfig, app_key: Path | None, state_fi
         shutil.rmtree(gh)
     gh.mkdir(parents=True)
     where.uv_cache.mkdir(parents=True, exist_ok=True)
+    network: dict[str, object] = {"allowedDomains": [*DEFAULT_DOMAINS, *(str(d) for d in declared.domains)]}
+    if declared.local_ports and platform == MACOS:
+        network["allowLocalBinding"] = True
     sandbox = {
         "enabled": True,
         "allowUnsandboxedCommands": False,
@@ -468,7 +649,7 @@ def launch(where: Where, declared: SandboxConfig, app_key: Path | None, state_fi
             "allowWrite": [str(p) for p in scope],
             "denyWrite": [str(p) for p in denied_writes(where, state_files)],
         },
-        "network": {"allowedDomains": [*DEFAULT_DOMAINS, *(str(d) for d in declared.domains)]},
+        "network": network,
     }
     rules = [_rule(tool, q) for p in deny for tool in ("Read", "Edit") for q in (p, p / "**")]
     memory = tuple(where.home / PROJECTS / name / MEMORY for name in where.projects)

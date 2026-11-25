@@ -51,8 +51,8 @@ TUNNEL = 'ssh = "readonly@db.example.com"\nlocal = 15432\nremote = "127.0.0.1:54
 BAD_DOMAIN = '[agents.sandbox]\ndomains = ["https://registry.npmjs.org"]\nwrite = ["~/.cache/pnpm"]\n'
 
 
-def parse(text: str) -> AgentsConfig:
-    return AgentsConfig.parse(Table(tomllib.loads(AGENTS + text), "shipmill.toml").table("agents"))
+def parse(text: str, platform: str = "darwin") -> AgentsConfig:
+    return AgentsConfig.parse(Table(tomllib.loads(AGENTS + text), "shipmill.toml").table("agents"), platform)
 
 
 def test_s087_9_parse_reads_each_key_as_declared() -> None:

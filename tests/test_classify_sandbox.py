@@ -132,3 +132,84 @@ def test_s087_11_an_earned_bound_never_lowers_a_widening(repo: Repo) -> None:
         landed = landing(found, holds, base.policy.decisions, frozenset(), Proof("ci"))
         assert all(e.holds for e in landed.evidence)
         assert landed.level is not None and landed.level.value == level
+
+
+# The amendment (#1616, #1649): [agents.sandbox.grant] entries and local_ports
+
+GRANT = '\n[agents.sandbox.grant]\ndomains = ["api.staging.example.com"]\nwrite = ["~/data/fixtures"]\n'
+GRANT_TUNNEL = TUNNEL.replace("agents.sandbox.tunnels", "agents.sandbox.grant.tunnels")
+WIDER_WRITE = GRANT.replace('["~/data/fixtures"]', '["~/data/fixtures", "/srv"]')
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "named"),
+    [
+        (SANDBOX, SANDBOX + GRANT, "grant.domains 'api.staging.example.com'"),
+        (SANDBOX + GRANT, SANDBOX + WIDER_WRITE, "grant.write '/srv'"),
+        (SANDBOX + GRANT, SANDBOX + GRANT + 'read = ["~/.config/tool"]\n', "grant.read '~/.config/tool'"),
+        (SANDBOX + GRANT, SANDBOX + GRANT + GRANT_TUNNEL, "grant.tunnels {'ssh': 'readonly@db.example.com'"),
+        (SANDBOX, SANDBOX + "local_ports = true\n", "local_ports True"),
+        (SANDBOX + "local_ports = false\n", SANDBOX + "local_ports = true\n", "local_ports True"),
+        (SANDBOX + GRANT, SANDBOX + GRANT + "local_ports = true\n", "grant.local_ports True"),
+    ],
+    ids=["grant domains", "grant write", "grant read", "grant tunnels", "local_ports", "false to true", "grant ports"],
+)
+def test_s087_11_a_grant_entry_or_local_ports_true_is_security_at_ask_under_security_notify(
+    repo: Repo, capsys: pytest.CaptureFixture[str], before: str, after: str, named: str
+) -> None:
+    level, why = security(classify(repo, capsys, before, after))
+    assert level == "ask"
+    assert f"widens [agents.sandbox]: adds {named}" in why and "(D-110)" in why
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (SANDBOX, SANDBOX + "local_ports = false\n"),
+        (SANDBOX + "local_ports = true\n", SANDBOX + "local_ports = false\n"),
+        (SANDBOX + "local_ports = true\n", SANDBOX),
+        (SANDBOX + GRANT + "local_ports = true\n", SANDBOX + GRANT + "local_ports = false\n"),
+        (SANDBOX + GRANT, SANDBOX + GRANT.replace('["~/data/fixtures"]', "[]")),
+        (SANDBOX + GRANT, SANDBOX),
+    ],
+    ids=[
+        "local_ports false",
+        "true to false",
+        "local_ports removed",
+        "grant true to false",
+        "grant entry",
+        "grant gone",
+    ],
+)
+def test_s087_11_local_ports_false_or_a_removed_grant_entry_follows_decisions_security(
+    repo: Repo, capsys: pytest.CaptureFixture[str], before: str, after: str
+) -> None:
+    level, why = security(classify(repo, capsys, before, after))
+    assert level == "notify" and "widens" not in why
+
+
+def test_s087_11_sandbox_added_reads_the_grant_and_local_ports_raw() -> None:
+    def config(sandbox: object) -> dict[str, Any]:
+        return {"agents": {"prompt": "/t", "sandbox": sandbox}}
+
+    def grant(**keys: object) -> dict[str, Any]:
+        return {"grant": keys}
+
+    assert sandbox_added({}, config({"local_ports": False})) == []
+    assert sandbox_added({}, config({"local_ports": "yes"})) == ["local_ports 'yes'"]  # malformed still counts
+    # fixing a malformed value widens: the base's sessions ran without it
+    assert sandbox_added(config({"local_ports": "yes"}), config({"local_ports": True})) == ["local_ports True"]
+    assert sandbox_added(config({"local_ports": True}), config({"local_ports": True})) == []
+    assert sandbox_added({}, config(grant())) == []
+    assert sandbox_added({}, config({"grant": ["a.org"]})) == ["grant 'a.org'"]  # a grant that isn't a table
+    # a grant the base refused whole granted nothing, so each of its entries now widens
+    assert sandbox_added(config({"grant": "x"}), config(grant(domains=["a.org"]))) == ["grant.domains 'a.org'"]
+    # a grant entry the base refused, inside a credential store, still widens at the head
+    assert sandbox_added(config(grant(read=["~/.ssh"])), config(grant(read=["~/.ssh"]))) == ["grant.read '~/.ssh'"]
+    # the same entry in the other table is another widening
+    both = config({"domains": ["a.org"], **grant(domains=["a.org"])})
+    assert sandbox_added(config({"domains": ["a.org"]}), both) == ["grant.domains 'a.org'"]
+    tunnel = {"ssh": "h.org", "local": 2000, "remote": "db:5432"}
+    repeated = config({"tunnels": [tunnel], **grant(tunnels=[tunnel])})  # the base drops the grant's
+    assert sandbox_added(config({"tunnels": [tunnel]}), repeated) == [f"grant.tunnels {tunnel!r}"]
+    assert sandbox_added({}, config(grant(network=["x"]))) == ["grant.network 'x'"]  # a key it doesn't know
