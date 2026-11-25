@@ -98,6 +98,8 @@ STUCK_ROWS = (
 # a chain walk that fails, waits on a person too (spec 017): none stops this repo's releases,
 # and no session can clear it
 CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_CYCLE", "CHAIN_UNREADABLE")  # CHAIN_CYCLE: spec 041
+# spec 086: a chain's head idle 7 days or more, on its own line; report-only, so no verdict
+CHAIN_STALLED = "CHAIN_STALLED"
 # spec 022's rows, which watch_state.py reads from `shipmill milestones` (#475): a goal's
 # milestone waiting on its specs (no verdict: the build work is the factory's), and one a
 # stable tag overtook, renamed to the version the lane cuts next
@@ -154,6 +156,7 @@ PLACED = {
     "UPGRADE_PENDING",  # spec 014: the upgrade lines say it, each with its issue (S-014-15)
     MILESTONE_WAITING,  # spec 022: the milestone lines say both
     MILESTONE_MISSING,  # spec 068: the milestone lines say it with its create, the maintainer's (D-32)
+    CHAIN_STALLED,  # spec 086: the stalled chains line says it, with its fix
     *(state for _, state in INTAKE_LINES),  # spec 074: their own lines, with their fix
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
@@ -1438,12 +1441,16 @@ def issue_value(repo: str, issue: Issue) -> str:
 CHAIN_ITEM = re.compile(r"(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>[1-9]\d*)")
 
 
+def chain_item(subject: str) -> str:
+    """A chain row's item, owner/repo#N (which may be another repo's), with its link"""
+    found = CHAIN_ITEM.fullmatch(subject)
+    return f"{subject} {github(found['repo'])}/issues/{found['number']}" if found else subject
+
+
 def chain_value(r: Row) -> str:
     """A CHAIN_NO_GATE, CHAIN_CYCLE, or CHAIN_UNREADABLE row in its own words, its item
     (owner/repo#N, which may be another repo's; a cycle's first) with its link"""
-    found = CHAIN_ITEM.fullmatch(r.subject)
-    subject = f"{r.subject} {github(found['repo'])}/issues/{found['number']}" if found else r.subject
-    return f"{r.state} {subject}: {r.detail}"
+    return f"{r.state} {chain_item(r.subject)}: {r.detail}"
 
 
 def milestone_value(r: Row) -> str:
@@ -1494,6 +1501,8 @@ def item_lines(facts: Facts) -> list[str]:
     untrusted = [(r, int(n)) for r in of("UNTRUSTED") for n in re.findall(r"#(\d+)", r.detail)]
     lines += _fixed("untrusted", [(item(repo, n, n in pulls), fixed(r)) for r, n in untrusted])
     lines += _fixed("chain", [(chain_value(r), fixed(r)) for r in of(*CHAIN_ROWS)])
+    # spec 086: each head idle a week or more, its subject and detail, and its chains.py show
+    lines += _fixed("stalled chains", [(f"{chain_item(r.subject)}: {r.detail}", r.fix) for r in of(CHAIN_STALLED)])
     # spec 068: a missing milestone is no reason for the verdict, but its line keeps its create
     marked = of(MILESTONE_WAITING, MILESTONE_OVERTAKEN, MILESTONE_RELEASED, MILESTONE_MISSING)
     lines += _fixed(
