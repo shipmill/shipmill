@@ -11,7 +11,7 @@ def provides() -> str:
 
 
 def test_s087_1_the_design_doc_records_the_macos_sandbox_probe() -> None:
-    # proves: S-087-1 (macOS half; the Linux half is recorded by its own sub-issue of #1524)
+    # proves: S-087-1 (macOS half; the Linux half is the next test)
     section = provides()
     assert "macOS half verified on Claude Code 2.1.330 (#1524)" in section
     assert ROOT.joinpath("docs", "design", "probe-087", "probe.sh").is_file()
@@ -27,6 +27,32 @@ def test_s087_1_the_design_doc_records_the_macos_sandbox_probe() -> None:
         "**Refusal text the tick reads.**",
     ):
         assert observed in section, observed
+
+
+def test_s087_1_the_design_doc_records_the_linux_sandbox_probe() -> None:
+    # proves: S-087-1 (Linux half, #1586)
+    section = provides()
+    assert "Linux half verified on Claude Code 2.1.332 (#1586)" in section
+    assert "not run yet" not in section
+    linux = section.split("**Linux half.**", 1)[1]
+    for observed in (
+        "Claude Code 2.1.332 on Ubuntu 24.04",
+        "`bwrap --ro-bind / / --unshare-user true` exits 0",
+        "`FileNotFoundError: [Errno 2] No such file or directory`",
+        "`OSError: [Errno 30] Read-only file system`",
+        "deny network-outbound example.com:443",
+        "Could not resolve hostname github.com",
+        "Couldn't connect to server",
+        "pushed a branch and deleted it as the App",
+        "`unable to access '<checkout>/.gitmodules': Permission denied`",
+        "`gh api` ran and printed `shipmill-romamo[bot]`",
+        "`uv run pytest -q tests/test_headless_docs.py` passed",
+        "The Write tool outside the write scope was refused",
+        "The project settings file did not widen the sandbox",
+        "**Refusal text the tick reads on Linux.**",
+        "the canary count after them was 0",
+    ):
+        assert observed in linux, observed
 
 
 def test_the_design_doc_records_the_local_port_probe() -> None:
