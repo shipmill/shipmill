@@ -86,6 +86,9 @@ class Fake:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(line) + "\n", "")
         if cmd[:3] == ["gh", "pr", "list"]:
             pull = {"number": 9, "isDraft": False, "mergeStateStatus": "UNSTABLE", "baseRefName": "main", "labels": []}
+            if "statusCheckRollup" in cmd[cmd.index("--json") + 1]:  # S-094-10: the checks of every pull request
+                rollup = [{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+                pull = {"number": 9, "statusCheckRollup": rollup, "reviewDecision": "", "labels": []}
             return subprocess.CompletedProcess(cmd, 0, json.dumps([pull]), "")
         if cmd[:3] == ["gh", "pr", "view"]:
             rollup = [{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"}]
@@ -360,12 +363,15 @@ def test_s088_10_a_pull_request_names_what_holds_its_merge() -> None:
     assert not any("land window" in r for r in why(dataclasses.replace(found, now=weekday), 9, detail, window(weekday)))
 
 
+# proves: S-094-8, S-094-9
 def test_s088_11_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = repo_with_release(tmp_path / "repo")
     code, out, _ = run_item(root, capsys, "4", "--json")
     assert code == 0 and out.count("\n") == 1
     found = json.loads(out)
+    reason = "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
     assert found == {
+        "schema": 1,  # S-094-9
         "repo": REPO,
         "number": 4,
         "kind": "issue",
@@ -373,17 +379,23 @@ def test_s088_11_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixtur
         "bucket": "parked",
         "conditions": [
             {
-                "reason": (
-                    "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
-                ),
+                "reason": reason,
                 "who": "maintainer",
                 "clears": "accept or decline the opportunity",
+                "holder": "maintainer",
             }
         ],
         "step": None,
         "blocks": [],
         "blocks_error": None,
         "closes": [],
+        # S-094-8: the summary's record of the item
+        "holder": "maintainer",
+        "via": None,
+        "accept": "opportunity",
+        "why": reason,
+        "clears": "accept or decline the opportunity",
+        "waits_on": [],
     }
 
 

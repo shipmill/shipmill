@@ -267,7 +267,18 @@ def test_s091_9_summary_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFix
     root = configured(repo_with_release(tmp_path / "repo"))
     _, _, fake = run_summary(root, capsys)
     gh = [c for c in fake.seen if c[0] == "gh"]
-    assert ["gh", "pr", "view", "9", "-R", REPO, "--json", "statusCheckRollup,reviewDecision,labels"] in gh
+    # S-094-10: the pull requests' checks in one read, not one per pull request
+    assert [
+        "gh",
+        "pr",
+        "list",
+        "-R",
+        REPO,
+        "--json",
+        "number,statusCheckRollup,reviewDecision,labels",
+        "-L",
+        "1000",
+    ] in gh
     assert not any(set(c) & WRITES for c in gh)
     assert not any(Path(c[0]).name == "shipmill" or c[1:2] == ["gh"] for c in fake.seen)  # no shipmill gh
 

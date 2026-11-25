@@ -42,6 +42,9 @@
                   bucket and each condition that keeps it open, with who clears it (spec 088);
                   --summary says in a few lines whether the gate works and who holds the open
                   work: you, the agent, needs attention, or nobody (spec 091)
+  queue           read-only: who holds each open issue and pull request, why, and what clears
+                  it, from one read of the repo's facts; --json for one object with a record
+                  per item, --fleet for every gate job on this host, one repo at a time (spec 094)
   factory         read-only: this host's machinery for the repo, one line per check (gate,
                   sessions, github app, shipmill, checkout, worktrees), each run on its own;
                   --json for one JSON object (spec 044)
@@ -192,6 +195,7 @@ from shipmill import (
     status,
     status_summary,
 )
+from shipmill import queue as queue_mod
 from shipmill import verify as verifying
 from shipmill.agents import (
     AgentsConfig,
@@ -799,6 +803,17 @@ def _parser() -> argparse.ArgumentParser:
             "say in a few lines whether the gate works and who holds the open work (spec 091);"
             " with --json, one JSON object"
         ),
+    )
+
+    p = sub.add_parser(
+        "queue", help="say who holds each open issue and pull request, why, and what clears it (spec 094)"
+    )
+    p.add_argument(
+        "slug", nargs="?", metavar="owner/name", help="the GitHub repo (default: origin's); --repo is its checkout"
+    )
+    p.add_argument("--json", action="store_true", help="print one JSON object")
+    p.add_argument(
+        "--fleet", action="store_true", help="read every gate job's repo on this host, one at a time, from its checkout"
     )
 
     p = sub.add_parser("factory", help="print this host's machinery for the repo, one line per check (spec 044)")
@@ -1418,7 +1433,13 @@ def main(
     if args.command == "status":
         host = login or (lambda: host_login(root))
         hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
-        return _status(root, args, state or run_state, hub_api, hub_signer, host, gate_maintainer=maintainer)
+        return _status(root, args, state or run_state, hub_api, hub_signer, host, home, gate_maintainer=maintainer)
+    if args.command == "queue":
+        host = login or (lambda: host_login(root))
+        hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
+        return _queue_command(
+            root, args, state or run_state, hub_api, hub_signer, host, home, gate_maintainer=maintainer
+        )
     if args.command == "factory":
         hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
         return _factory(root, args, state or run_state, hub_api, hub_signer, github, sessions, user_home)
@@ -3754,7 +3775,10 @@ def _status_item(
 
         walked = pool.submit(chain)
         read = StateRead(bot_login=bot, roles=resolved)
-        proc = run(watch_command(slug, top, read, json=True, host=False, item=ref.number))
+        # S-094-8: a record placed through the open items it counts with reads their rows too,
+        # as the summary does, so --json reads the whole report's rows when the item links
+        links = () if not as_json else _item_links(slug, ref.number, issues.result(), pulls.result())
+        proc = run(watch_command(slug, top, read, json=True, host=False, item=None if links else ref.number))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
         if state_failed(proc):
             print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
@@ -3786,10 +3810,29 @@ def _status_item(
         holds, chain_error = walked.result()
         reach = item_links.Reach(own.result(), holds, chain_error)
         why = item_status.explain(facts, ref, read_detail, window, reach)
+        # S-094-8: the record the summary gives the item, built by the same code
+        record = queue_mod.items(facts, read_detail, window, [ref.number])[ref.number] if as_json else None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    sys.stdout.write(json.dumps(why.record()) + "\n" if as_json else why.text())
+    if record is None:
+        sys.stdout.write(why.text())
+    else:  # S-094-9: the schema first
+        sys.stdout.write(json.dumps({"schema": queue_mod.SCHEMA, **why.record(), **record.placing()}) + "\n")
     return 0
+
+
+def _item_links(
+    slug: str, number: int, issues: Sequence[status.Issue], pulls: Sequence[status.Pull]
+) -> tuple[int, ...]:
+    """S-094-8: the open items of the repo the open issue numbered number counts with"""
+    opened = frozenset(
+        [
+            *(i.number for i in issues if i.state not in status.CLOSED_STATES and not i.closed),
+            *(p.number for p in pulls),
+        ]
+    )
+    issue = next((i for i in issues if i.number == number and i.number in opened), None)
+    return () if issue is None else queue_mod.linked(slug, issue, opened)
 
 
 def _status_summary(
@@ -3805,28 +3848,67 @@ def _status_summary(
     when: dt.datetime,
     bot_login: Callable[[int, Path], str | None],
 ) -> int:
-    """Spec 091: the readings --item makes, for every open item at once, beside each other: the
-    bot's login, the open pull requests and each one's checks and review, the upgrades, the
-    landing branch, triage_state.py's states, watch_state.py's rows, and the default branch's
-    last landed pull request; then the gate's state files, each failing on its own part (D-55).
-    None of the host's other checks is read: they are shipmill factory's"""
+    """Spec 091: the summary of the checkout's repo, as text or one JSON object: the open items'
+    readings, the default branch's last landed pull request beside them, then the gate's state
+    files, each failing on its own part (D-55). None of the host's other checks is read: they
+    are shipmill factory's"""
+    with ThreadPoolExecutor(max_workers=1) as side:
+        landed = side.submit(status_summary.read_landed, slug, run)
+        read = _read_open(top, slug, run, resolved, autonomy, environments, home, platform, when, bot_login)
+        found = status_summary.split(read.facts, read.detail, read.window)
+        state = status_summary.read_gate_state(state_dir(Git(top)), read.facts.gate.agents is not None, landed.result())
+    summary = status_summary.summarize(read.facts, state, found)
+    sys.stdout.write(json.dumps(summary.record()) + "\n" if as_json else summary.text(when))
+    return 0
+
+
+NO_DETAIL = item_status.PullDetail((), "", ())
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Open:
+    """One read of the repo's facts: what queue and status --summary build from (S-094-10)"""
+
+    facts: status.Facts
+    details: Mapping[int, item_status.PullDetail]
+    window: land_window.LandWindow | None
+
+    def detail(self, number: int) -> item_status.PullDetail:
+        return self.details[number]
+
+
+def _read_open(
+    top: Path,
+    slug: str,
+    run: StateRunner,
+    resolved: tuple[roles.ResolvedRole, ...],
+    autonomy: AutonomyPolicy,
+    environments: tuple[EnvironmentName, ...],
+    home: Path,
+    platform: str,
+    when: dt.datetime,
+    bot_login: Callable[[int, Path], str | None],
+) -> _Open:
+    """Specs 091 and 094: the readings --item makes, for every open item at once, beside each
+    other: the bot's login, the open pull requests, their checks, reviews, and labels in one
+    read (no read per item, S-094-10), the upgrades, the landing branch, triage_state.py's
+    states, and watch_state.py's rows"""
     pool = ThreadPoolExecutor(max_workers=8)
     try:
         login = pool.submit(status.read_login, slug, top, home, platform, bot_login)
         gate = status.agents_gate(top, platform)
         pulls = pool.submit(status.read_pulls, slug, run)
+        details = pool.submit(item_status.read_pull_details, slug, run)
         upgrades = pool.submit(status.read_upgrades, slug, top, run)
         branch = pool.submit(status.landing_branch, slug, top, run)
-        landed = pool.submit(status_summary.read_landed, slug, run)
-        details = {p.number: pool.submit(item_status.read_pull_detail, slug, p.number, run) for p in pulls.result()}
         bot = login.result()
         issues = pool.submit(status.read_issues, slug, run, bot, resolved)
         read = StateRead(bot_login=bot, roles=resolved)
         proc = run(watch_command(slug, top, read, json=True, host=False))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
-        if state_failed(proc):
-            print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
-            return 2
+        if state_failed(proc):  # S-094-12: its own error, so a fleet read sees a rate limit in it
+            said = [line for line in proc.stderr.splitlines() if line.strip()]
+            raise ReleaseError(f"watch_state.py failed (exit {proc.returncode})" + (f": {said[-1]}" if said else ""))
         git = Git(top)
         main = status.read_main(git, branch.result())  # after watch_state.py's fetch
         facts = status.Facts(
@@ -3845,14 +3927,102 @@ def _status_summary(
             autonomy=autonomy,
             environments=environments,
         )
+        listed = details.result()
+        # S-094-10: no read per item; a pull request opened between the two lists has no checks,
+        # review, or labels read yet, and the next run reads them
+        found = {p.number: listed.get(p.number, NO_DETAIL) for p in facts.pulls}
         window = land_window_of(top) if (top / CONFIG_PATH).is_file() else None
-        found = status_summary.split(facts, lambda n: details[n].result(), window)
-        state = status_summary.read_gate_state(state_dir(git), gate.agents is not None, landed.result())
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    summary = status_summary.summarize(facts, state, found)
-    sys.stdout.write(json.dumps(summary.record()) + "\n" if as_json else summary.text(when))
+    return _Open(facts, found, window)
+
+
+def _queue_command(
+    root: Path,
+    args: argparse.Namespace,
+    run: StateRunner,
+    api: Api,
+    signer: Signer,
+    login: LoginReader,
+    home: Path | None = None,
+    platform: str = sys.platform,
+    now: dt.datetime | None = None,
+    gate_maintainer: str = "",
+) -> int:
+    """Spec 094: who holds each open issue and pull request of the repo, why, and what clears
+    it, or with --fleet of every gate job's repo on this host; it only reads"""
+    home = home if home is not None else Path.home()
+    when = now if now is not None else dt.datetime.now(dt.UTC)
+
+    def bot_login(app_id: int, key: Path) -> str | None:
+        try:
+            return app_login(signer, api)(app_id, key)
+        except ReleaseError as exc:  # the App's questions then read unanswered, as status reads them
+            print(f"shipmill: the App's bot login is unknown, so its questions read unanswered: {exc}", file=sys.stderr)
+            return None
+
+    def read(top: Path, slug: str) -> queue_mod.Queue:
+        resolved = roles.resolve(roles.configured(top), login, gate_maintainer)
+        autonomy, environments = status.read_autonomy(top)
+        found = _read_open(top, slug, run, resolved, autonomy, environments, home, platform, when, bot_login)
+        return queue_mod.queue(found.facts, found.detail, found.window)
+
+    if args.fleet:
+        if args.slug is not None:  # S-094-12: before any read
+            raise ReleaseError("--fleet reads every gate job on this host; use queue --fleet [--json], with no repo")
+        return _queue_fleet(args.json, home, read)
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(f"{root} is not a git checkout; run queue in a checkout of the repo, or pass --repo PATH")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    slug: str | None = args.slug
+    if slug is None:
+        slug = _origin_repo(top)
+        if slug is None:
+            raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo, such as owner/name")
+    else:
+        check_checkout(Git(top), slug)
+    found = read(top, slug)
+    sys.stdout.write(json.dumps(found.record()) + "\n" if args.json else found.text())
     return 0
+
+
+def _queue_fleet(as_json: bool, home: Path, read: Callable[[Path, str], queue_mod.Queue]) -> int:
+    """S-094-11, S-094-12: every gate job's repo on this host, in plist order, each read from its
+    job's WorkingDirectory, one at a time; a repo whose read fails is its own entry's error and
+    the others still print (D-55), and once a read fails on GitHub's rate limit no further repo
+    is read, so a fleet read never spends the budget the gates read with. Exit 2 when one wasn't
+    read"""
+    entries: list[dict[str, object]] = []
+    texts: list[str] = []
+    limited = False
+    for repo in gate_repos(home):
+        if limited:
+            entry = queue_mod.not_read(repo)
+            entries.append(entry)
+            texts.append(f"{repo}: unread: {entry['error']}\n")
+            continue
+        try:
+            job = read_job(repo, home)
+            checkout = None if job is None else job.get("WorkingDirectory")
+            if not isinstance(checkout, str):
+                raise ReleaseError(f"the launchd job for {repo} has no WorkingDirectory")
+            top = Path(checkout)
+            check_checkout(Git(top), repo)
+            found = read(top, repo)
+        except status.CHECK_FAILURES as exc:
+            error = status.first_line(exc)
+            limited = queue_mod.rate_limited(str(exc))
+            entries.append({"schema": queue_mod.SCHEMA, "repo": repo, "error": error})
+            texts.append(f"{repo}: unread: {error}\n")
+            continue
+        entries.append(found.record())
+        texts.append(found.text())
+    if as_json:
+        sys.stdout.write(json.dumps({"schema": queue_mod.SCHEMA, "repos": entries}) + "\n")
+    else:
+        sys.stdout.write("\n".join(texts) if texts else "no gate job on this host\n")
+    return 2 if any("error" in e for e in entries) else 0
 
 
 def _with_tick(gate: status.Gate, git: Git) -> status.Gate:

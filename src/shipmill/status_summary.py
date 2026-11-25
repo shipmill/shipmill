@@ -1,19 +1,20 @@
 """Spec 091: the repo's status in a few lines. `shipmill status --summary` prints the gate's
 state from its state directory (tick.json, gate.json, last-result.json) and the default
 branch's last landed pull request, the totals of open issues and pull requests, and each open
-item on one of four lines by who holds it. The split is read from the conditions
+item on one of four lines by who holds it, folded from spec 094's records (`shipmill queue`).
+The split is read from the conditions
 `status --item` gives each item (spec 088), and through them from watch_state.py's GATE_RETRY,
 GATE_PAUSED, and GATE_IDLE rows, which come from the gate's hand-off record, handed.json
 (spec 046, D-87, spec 089). It only reads (S-091-9)."""
 
 import datetime as dt
 import json
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from shipmill import queue
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
@@ -28,9 +29,11 @@ from shipmill.gate import (
     load_launch,
     load_tick,
 )
-from shipmill.item_status import WAIT, Condition, Kind, PullDetail, Ref, Who, explain
+from shipmill.item_status import Condition, Kind, PullDetail
+from shipmill.item_status import Holder as ItemHolder
 from shipmill.land_window import LandWindow
-from shipmill.status import CHECK_FAILURES, CLOSED_STATES, Facts, Issue, ago, first_line, gh_read
+from shipmill.queue import linked as linked
+from shipmill.status import CHECK_FAILURES, CLOSED_STATES, Facts, ago, first_line, gh_read
 from shipmill.walk import HISTORY, LANDED, Landed, last_landed
 
 
@@ -55,66 +58,32 @@ LINES = (
 WIDTH = max(len(label) for _, label in LINES)
 RUNS = frozenset({Action.RUNNING.value, Action.STALLED.value})  # tick.json names the session it waits on
 LAUNCHES = frozenset({Action.LAUNCH.value, Action.SESSION_DEAD.value})  # gate.json names the session it started
-LINKED_STATES = frozenset({"IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD"})  # its open pull requests, as --item reads
-OPEN_PULL = re.compile(r"(?<![\w/])#(\d+):(?:open|draft)\b")
-DONE = frozenset({"closed", "merged", "not_planned"})
 SESSION_SHOWN = 8  # a session id's first characters on the text line
+
+
+# S-094-13: the finer holders of spec 094 count on the four lines; a person, another repo, or a
+# postponement is outside the factory, as spec 091's waits on nobody
+FOLD = {
+    ItemHolder.ATTENTION: Holder.ATTENTION,
+    ItemHolder.MAINTAINER: Holder.MAINTAINER,
+    ItemHolder.AGENT: Holder.AGENT,
+    ItemHolder.PEOPLE: Holder.NOBODY,
+    ItemHolder.ELSEWHERE: Holder.NOBODY,
+    ItemHolder.POSTPONED: Holder.NOBODY,
+    ItemHolder.NOBODY: Holder.NOBODY,
+}
 
 
 def own_holder(conditions: Sequence[Condition]) -> Holder:
     """S-091-5, S-091-6: attention when the gate's record holds it, else the maintainer, else
-    an agent, else nobody (a person or an event)"""
-    if any(c.held for c in conditions):
-        return Holder.ATTENTION
-    if any(c.who is Who.MAINTAINER for c in conditions):
-        return Holder.MAINTAINER
-    if any(c.who is Who.AGENT for c in conditions):
-        return Holder.AGENT
-    return Holder.NOBODY
-
-
-def linked(repo: str, issue: Issue, opened: frozenset[int]) -> tuple[int, ...]:
-    """S-091-7: the open items of the repo the issue counts with: its open pull requests
-    (IN_PROGRESS, AGENT_DRAFT) or the open items it waits on (BLOCKED), as --item names them"""
-    found: list[int] = []
-    if issue.state in LINKED_STATES:
-        found = [int(n) for n in OPEN_PULL.findall(issue.note)]
-    elif issue.state == "BLOCKED":
-        for w in WAIT.finditer(issue.note):
-            own, _, number = w["ref"].rpartition("#")
-            if own.casefold() == repo.casefold() and w["state"].lower() not in DONE:
-                found.append(int(number))
-    return tuple(dict.fromkeys(n for n in found if n in opened and n != issue.number))
+    an agent, else nobody (a person or an event), folded from queue's holder (S-094-13)"""
+    return FOLD[queue.own_holder(conditions)]
 
 
 def resolve(own: Mapping[int, Holder], links: Mapping[int, tuple[int, ...]]) -> dict[int, Holder]:
     """S-091-7: each item's line, the first in PRECEDENCE among its own and its links' lines;
     an item on a cycle of links counts by its own conditions alone, so every walk ends"""
-
-    def reaches(start: int) -> bool:
-        seen: set[int] = set()
-        todo = list(links.get(start, ()))
-        while todo:
-            n = todo.pop()
-            if n == start:
-                return True
-            if n not in seen:
-                seen.add(n)
-                todo.extend(links.get(n, ()))
-        return False
-
-    looped = {n for n in own if reaches(n)}
-    found: dict[int, Holder] = {}
-
-    def line(n: int) -> Holder:
-        if n not in found:
-            candidates = [own[n]] if n in looped else [own[n], *(line(m) for m in links.get(n, ()))]
-            found[n] = min(candidates, key=PRECEDENCE.index)
-        return found[n]
-
-    for n in own:
-        line(n)
-    return found
+    return {n: holder for n, (holder, _) in queue.placed(own, links, PRECEDENCE).items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,19 +98,12 @@ class Split:
 
 
 def split(facts: Facts, read_detail: Callable[[int], PullDetail], window: LandWindow | None) -> Split:
-    """S-091-4 to S-091-7: every open issue and pull request on exactly one line"""
-    issues = [i for i in facts.issues if i.state not in CLOSED_STATES and not i.closed]
-    kinds = {i.number: Kind.ISSUE for i in issues} | {p.number: Kind.PULL for p in facts.pulls}
-    own = {
-        n: own_holder(explain(facts, Ref(str(n), n, kind), read_detail, window).conditions) for n, kind in kinds.items()
-    }
-    opened = frozenset(kinds)
-    links = {i.number: linked(facts.repo, i, opened) for i in issues}
-    lines = resolve(own, links)
+    """S-091-4 to S-091-7: every open issue and pull request on exactly one line, from the
+    records queue builds, each holder folded onto its line (S-094-13)"""
     by_issue: dict[Holder, list[int]] = {}
     by_pull: dict[Holder, list[int]] = {}
-    for n, kind in kinds.items():
-        (by_issue if kind is Kind.ISSUE else by_pull).setdefault(lines[n], []).append(n)
+    for n, item in queue.items(facts, read_detail, window).items():
+        (by_issue if item.kind is Kind.ISSUE else by_pull).setdefault(FOLD[item.holder], []).append(n)
     return Split(
         {h: tuple(sorted(ns)) for h, ns in by_issue.items()},
         {h: tuple(sorted(ns)) for h, ns in by_pull.items()},
