@@ -1363,6 +1363,8 @@ class AppSees(Reads):
         (HIDDEN, "see Acme/SECRET"),
         ("acme/*", f"see {HIDDEN}"),
         ("Acme/*", "see https://github.com/acme/launchpad"),
+        (f"{HIDDEN}.git", f"see {HIDDEN}"),  # an entry is read as a reference is: no .git, no end .
+        (f"{HIDDEN}.", f"see https://github.com/{HIDDEN}.git"),
     ],
 )
 def test_s081_20_a_listed_repo_the_token_cant_read_is_refused(

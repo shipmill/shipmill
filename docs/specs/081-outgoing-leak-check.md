@@ -45,7 +45,8 @@ repos = ["acme/rocket", "acme-labs/*"]
 - `secret_files`: a list of dotenv files (`~` expanded) whose values are secrets, beside the
   checkout's own (below)
 - `repos` (D-107, #1595): a list of private repos, each `owner/name`, or `owner/*` for every
-  repo of an owner, matched case-insensitively as GitHub matches them (below)
+  repo of an owner, matched case-insensitively as GitHub matches them, a name's trailing `.`
+  and `.git` dropped as a reference's are (below)
 
 All three keys are optional. An unknown key, a wrong type, a term under 3 characters, a
 `repos` entry that is neither form, a file that isn't TOML, or a `secret_files` path that

@@ -744,11 +744,16 @@ class ListedRepo:
 
     @classmethod
     def of(cls, text: str) -> ListedRepo | None:
-        """text as an `owner/name` or `owner/*` entry; None when it is neither"""
+        """text as an `owner/name` or `owner/*` entry; None when it is neither. The name is read as
+        `_references` reads a reference's, a trailing `.` and `.git` dropped, so an entry written
+        `owner/name.git` still matches"""
         matched = _LISTED_REPO.fullmatch(text)
-        if matched is None or matched.group(2) in (".", ".."):
+        if matched is None:
             return None
-        name = matched.group(2)
+        given = matched.group(2)
+        name = given.rstrip(".").removesuffix(".git") if given != "*" else given
+        if name in ("", ".", ".."):
+            return None
         return cls(matched.group(1).lower(), None if name == "*" else name.lower())
 
     def covers(self, repo: str) -> bool:

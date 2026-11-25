@@ -28,7 +28,8 @@ repos = ["acme/rocket", "acme-labs/*"]
 - `secret_files`: dotenv files (`~` is your home) whose values are secrets, read beside the
   checkout's own `.env` files
 - `repos`: your private repos on GitHub, each `owner/name`, or `owner/*` for every repo of
-  an owner, matched in any case as GitHub matches them. A write naming one is refused
+  an owner, matched in any case as GitHub matches them (`owner/name.git` reads as
+  `owner/name`). A write naming one is refused
   whatever any token reads (`private-repo`, below), which matters most in a gate session:
   it writes with the App's installation token, which reads another installation's private
   repo as missing (D-107). An entry that is neither form is named by its place, never its
