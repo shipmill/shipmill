@@ -24,8 +24,12 @@ command that loads the config name it. A key shipmill never knew fails the load 
 `--settings` JSON: the sandbox, the permission rules that make the file tools see what Bash
 sees, and the env's uv cache and gh config folders (#1531)."""
 
+import json
+import os
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -567,6 +571,13 @@ def write_scope(where: Where, declared: SandboxConfig) -> tuple[Path, ...]:
     return (where.checkout, worktrees, where.common, where.uv_cache, *(expand(p, where.home) for p in declared.write))
 
 
+def editable(where: Where, declared: SandboxConfig) -> tuple[Path, ...]:
+    """The folders a session's Edit and Write tools may reach (S-087-7): the write scope and
+    the session's own project memory folders; read only, nothing is created"""
+    memory = tuple(where.home / PROJECTS / name / MEMORY for name in where.projects)
+    return (*write_scope(where, declared), *memory)
+
+
 def denied_writes(where: Where, state_files: Sequence[str]) -> tuple[Path, ...]:
     """S-087-6: the common dir's config and hooks, the state dir's entries (those there now
     and the ones the gate writes, state_files) but the token caches and gh-config, and the
@@ -652,9 +663,196 @@ def launch(
         "network": network,
     }
     rules = [_rule(tool, q) for p in deny for tool in ("Read", "Edit") for q in (p, p / "**")]
-    memory = tuple(where.home / PROJECTS / name / MEMORY for name in where.projects)
     return Sandbox(
         env={UV_CACHE_DIR: str(where.uv_cache), GH_CONFIG_DIR: str(where.gh_config)},
         settings={"sandbox": sandbox, "permissions": {"deny": rules}},
-        editable=(*scope, *memory),
+        editable=editable(where, declared),
     )
+
+
+# Before a sandboxed launch (spec 087): what would widen the session's sandbox from outside its
+# --settings (S-087-13), and whether a Linux host can confine at all (S-087-17). Either fails
+# the tick, which then starts no session; doctor's sandbox row reads the same (S-087-18)
+
+WIDENS = "which would widen a headless session's sandbox"
+WIDENING_FIX = (
+    "move it to a project's settings outside the gate's checkout, and declare what the gate's sessions need in "
+    "[agents.sandbox] of .github/shipmill.toml"
+)
+ADDITIONAL_DIRECTORIES = "additionalDirectories"
+_GLOB = re.compile(r"[*?\[{]")
+_FILE_RULE = re.compile(r"(Edit|Write)\((.*)\)", re.DOTALL)
+
+
+@dataclass(frozen=True, slots=True)
+class Widening:
+    """A settings file Claude Code merges into a headless session's own, and the key in it that
+    would widen the session's sandbox (S-087-13)"""
+
+    file: Path
+    key: str
+
+    @property
+    def message(self) -> str:
+        return f"{self.file} sets {self.key}, {WIDENS}"
+
+    def error(self) -> ReleaseError:
+        return ReleaseError(self.message, WIDENING_FIX)
+
+
+def settings_files(checkout: Path, home: Path) -> tuple[Path, ...]:
+    """The settings files whose keys merge into a session started in checkout: the checkout's
+    .claude/settings.json and .claude/settings.local.json, and the user's ~/.claude/settings.json"""
+    return (
+        checkout / ".claude" / "settings.json",
+        checkout / ".claude" / "settings.local.json",
+        home / ".claude" / "settings.json",
+    )
+
+
+def widening(checkout: Path, home: Path, scope: Sequence[Path]) -> Widening | None:
+    """S-087-13: the first key of settings_files that would widen a session whose Edit and
+    Write tools may reach scope: a `sandbox` key, `permissions.additionalDirectories`, or a
+    `permissions.allow` entry for Edit or Write that is bare or reaches beyond scope. None
+    when no file holds one; a file that doesn't parse as a JSON object fails, as the gate
+    can't tell what it would merge"""
+    for path in settings_files(checkout, home):
+        if not path.is_file():
+            continue
+        try:
+            found = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ReleaseError(
+                f"{path} doesn't parse as JSON ({exc}), so the gate can't tell whether it would widen a headless"
+                " session's sandbox",
+                "fix the file, or move it out of the way",
+            ) from None
+        if not isinstance(found, dict):
+            raise ReleaseError(
+                f"{path} holds no JSON object, so the gate can't tell what it would merge", "fix the file"
+            )
+        key = _widening_key(found, path, checkout, home, scope)
+        if key is not None:
+            return Widening(path, key)
+    return None
+
+
+def _widening_key(
+    found: Mapping[str, object], path: Path, checkout: Path, home: Path, scope: Sequence[Path]
+) -> str | None:
+    if "sandbox" in found:
+        return "sandbox"
+    permissions = found.get("permissions")
+    if permissions is None:
+        return None
+    if not isinstance(permissions, dict):
+        return "permissions"  # Claude Code's reading of it can't be told, so it counts
+    if ADDITIONAL_DIRECTORIES in permissions:
+        return f"permissions.{ADDITIONAL_DIRECTORIES}"
+    allowed = permissions.get("allow", [])
+    if not isinstance(allowed, list):
+        return "permissions.allow"
+    project = path.parent.parent  # .claude/settings.json's project, the home for ~/.claude/settings.json
+    for entry in allowed:
+        if not isinstance(entry, str):
+            return "permissions.allow"
+        if entry in FILE_TOOLS:
+            return f'permissions.allow "{entry}"'
+        rule = _FILE_RULE.fullmatch(entry)
+        if rule is not None and not _inside(rule[2], (project, path.parent), checkout, home, scope):
+            return f'permissions.allow "{entry}"'
+    return None
+
+
+def _inside(pattern: str, bases: Sequence[Path], checkout: Path, home: Path, scope: Sequence[Path]) -> bool:
+    """Whether every file a rule's gitignore-style pattern can match lies in scope: `//p` is
+    absolute, `~/p` under the home, `/p` relative to the settings file (read both as its
+    project and as its folder, so either reading must stay in scope), and anything else
+    relative to the session's working directory, the checkout. The part before the first
+    glob character is the folder it reaches; an empty pattern reaches everything"""
+    if not pattern:
+        return False
+    if pattern.startswith("//"):
+        roots = [Path(pattern[1:])]
+    elif pattern.startswith("~/"):
+        roots = [home / pattern[2:]]
+    elif pattern.startswith("/"):
+        roots = [base / pattern[1:] for base in bases]
+    else:
+        roots = [checkout / pattern]
+    return all(_within(_fixed(root), scope) for root in roots)
+
+
+def _fixed(path: Path) -> Path:
+    """The folder a pattern reaches: its parts up to the first one holding a glob character,
+    with `..` folded"""
+    parts: list[str] = []
+    for part in path.parts:
+        if _GLOB.search(part):
+            break
+        parts.append(part)
+    return Path(os.path.normpath(Path(*parts))) if parts else Path("/")
+
+
+def _within(path: Path, scope: Sequence[Path]) -> bool:
+    return any(path == folder or folder in path.parents for folder in scope)
+
+
+@dataclass(frozen=True, slots=True)
+class Unconfined:
+    """S-087-17: what keeps Claude Code's sandbox from starting on this host, and its fix"""
+
+    failed: str
+    fix: str
+
+    @property
+    def message(self) -> str:
+        return f"the sandbox can't start on this host: {self.failed}"
+
+    def error(self) -> ReleaseError:
+        return ReleaseError(self.message, self.fix)
+
+
+BWRAP_PROBE = ("bwrap", "--ro-bind", "/", "/", "--unshare-user", "true")
+PACKAGES = "install bubblewrap and socat (apt install bubblewrap socat, or dnf install bubblewrap socat)"
+USERNS_FIX = (
+    "let unprivileged users create user namespaces: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0, "
+    "and the same line in /etc/sysctl.d to keep it"
+)
+type Probe = Callable[[Sequence[str]], tuple[int, str]]  # a command -> its exit code and stderr
+
+
+def _probe(cmd: Sequence[str]) -> tuple[int, str]:
+    try:
+        done = subprocess.run(list(cmd), capture_output=True, text=True, timeout=30, check=False)
+    except FileNotFoundError:
+        return 127, f"{cmd[0]}: not found"
+    except subprocess.TimeoutExpired:
+        return 124, f"{shlex.join(cmd)} didn't finish within 30 seconds"
+    return done.returncode, done.stderr
+
+
+def confinement(
+    platform: str = sys.platform, run: Probe = _probe, which: Callable[[str], str | None] = shutil.which
+) -> Unconfined | None:
+    """S-087-17: on Linux, whether bubblewrap can make a user namespace (`bwrap --ro-bind / /
+    --unshare-user true`) and socat is on PATH, which Claude Code's sandbox needs; None when
+    both hold, or on any other platform. A user-namespace refusal's fix is the sysctl"""
+    if not platform.startswith("linux"):
+        return None
+    failed: list[str] = []
+    fixes: list[str] = []
+    if which(BWRAP_PROBE[0]) is None:
+        failed.append("bwrap is not on PATH")
+        fixes.append(PACKAGES)
+    else:
+        code, err = run(BWRAP_PROBE)
+        if code != 0:
+            last = next((line.strip() for line in reversed(err.splitlines()) if line.strip()), "no output")
+            failed.append(f"`{shlex.join(BWRAP_PROBE)}` exited {code}: {last}")
+            fixes.append(USERNS_FIX if "namespace" in err.lower() or "uid map" in err.lower() else PACKAGES)
+    if which("socat") is None:
+        failed.append("socat is not on PATH")
+        if PACKAGES not in fixes:
+            fixes.append(PACKAGES)
+    return Unconfined("; ".join(failed), "; ".join(fixes)) if failed else None

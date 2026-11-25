@@ -428,6 +428,7 @@ from shipmill.landing import GhRules, RulesReader
 from shipmill.launchd import (
     DEFAULT_EVERY,
     DEFAULT_TOOL,
+    SANDBOX_FLAG,
     build,
     gate_cli,
     gate_repos,
@@ -635,6 +636,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="with [downstream]: the App's private key, to check its installation on each downstream"
         " (default: ~/.config/shipmill/app-<app_id>.pem when it exists)",
+    )
+    p.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="check the sandbox as `shipmill gate --sandbox` runs it, for a gate that isn't this host's launchd job"
+        " (a launchd job's --sandbox is read from the job; spec 087)",
     )
 
     p = sub.add_parser("decide", help="the decision policy's zones and levels, and the zones of a change (spec 030)")
@@ -1626,6 +1633,7 @@ def main(
             rules=lambda: rules_reader or (GhRules(root) if has_gh else None),
             leaks=LeakProbe(private_home, gitleaks_version, lambda: repo_visibility(root, slug)),
             identity=identity_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
+            sandboxed=args.sandbox or (job is not None and SANDBOX_FLAG in job_arguments(job)),  # spec 087
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
