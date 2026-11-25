@@ -17,10 +17,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import PurePosixPath
+from typing import Any
 
+from shipmill import merge_checks
 from shipmill.classify import Classification, Detected, PathLevel, PathSource, matches
 from shipmill.decide import EARNED_ZONES, DecisionPolicy, Earned, Level, Zone, zones
 from shipmill.errors import ReleaseError
+from shipmill.github import PullChange
 
 NOT_READ = "not read: [decisions.earned] is not set"
 
@@ -165,18 +168,76 @@ class Landing:
             "evidence": [e.record() for e in self.evidence],
         }
 
+    def classified(self, found: Classification) -> dict[str, Any]:
+        """`decide classify --pr --json`: classify's record at the landing's zones, each one a
+        bound lowered gaining `"earned": {"from", "to"}`, and the top-level `landing`"""
+        record = Classification(self.zones, found.candidates).record()
+        lowered = {low.zone.value: low for low in self.lowered}
+        for zone in record["zones"]:
+            low = lowered.get(zone["zone"])
+            if low is not None:
+                zone["earned"] = {"from": low.before.value, "to": low.after.value}
+        return record | {"landing": self.record()}
+
+    def text(self, found: Classification) -> str:
+        """`decide classify --pr`'s text: classify's at the landing's zones, then the landing
+        level and one line per piece of evidence"""
+        level = "none, no zone detected" if self.level is None else self.level.value
+        lines = [f"landing: {level}", *(e.text() for e in self.evidence)]
+        return Classification(self.zones, found.candidates).text() + "\n".join(lines) + "\n"
+
+
+def changed_of(change: PullChange) -> tuple[tuple[Changed, ...], str | None]:
+    """A pull request's changed paths with their lines, a renamed file's old path at 0 (it
+    is touched, its lines counted once), and why its size can't be measured: a file GitHub
+    gives no count for, or fewer files listed than it says the change holds; None when it can"""
+    changed: list[Changed] = []
+    unmeasured: str | None = None
+    for file in change.files:
+        if file.lines is None and unmeasured is None:
+            unmeasured = f"GitHub gives no count of {file.path}'s changed lines"
+        changed.append(Changed(file.path, file.lines or 0))
+        if file.previous is not None:
+            changed.append(Changed(file.previous, 0))
+    if change.changed is None:
+        unmeasured = "GitHub gives no count of the pull request's changed files"
+    elif change.changed != len(change.files):
+        unmeasured = f"GitHub lists {len(change.files)} of the {change.changed} files the pull request changes"
+    return tuple(changed), unmeasured
+
+
+def proof_of(found: merge_checks.Report) -> Proof:
+    """The merge-checks reading (spec 080) as evidence: the first required check that proves;
+    none when any read failed, since a rules read that fails does not hold"""
+    if found.unread:
+        return Proof(None, f"the required checks can't be read: {'; '.join(found.unread)}")
+    if found.proving:
+        return Proof(found.proving[0].required.context)
+    if not found.checks:
+        return Proof(None, f"{found.branch} requires no status check")
+    listed = ", ".join(f"{c.label()} {c.coverage}" for c in found.checks)
+    return Proof(None, f"no check {found.branch} requires proves ({listed})")
+
 
 def evidence(
-    changed: Sequence[Changed], decisions: DecisionPolicy, raised: frozenset[str] | None, proof: Proof | None
+    changed: Sequence[Changed],
+    decisions: DecisionPolicy,
+    raised: frozenset[str] | None,
+    proof: Proof | None,
+    unmeasured: str | None = None,
 ) -> tuple[Evidence, ...]:
-    """The four pieces of evidence, in the table's order; a raised or proof of None was not read"""
+    """The four pieces of evidence, in the table's order; a raised or proof of None was not
+    read, and unmeasured, when given, says why the change's size can't be read, which fails it"""
     if proof is None:
         checks = Evidence("checks", False, NOT_READ)
     else:
         checks = Evidence("checks", proof.check is not None, proof.check or proof.why)
     limit = (decisions.earned or Earned()).max_lines
     lines = sum(c.lines for c in changed)
-    size = Evidence("size", lines <= limit, f"{lines} of at most {limit} lines")
+    if unmeasured is None:
+        size = Evidence("size", lines <= limit, f"{lines} of at most {limit} lines")
+    else:
+        size = Evidence("size", False, f"{unmeasured}, so its size can't be measured")
     if raised is None:
         record = Evidence("record", False, NOT_READ)
     else:
@@ -196,12 +257,13 @@ def landing(
     decisions: DecisionPolicy,
     raised: frozenset[str] | None,
     proof: Proof | None,
+    unmeasured: str | None = None,
 ) -> Landing:
     """The change's landing level. Only with [decisions.earned] and every piece of evidence
     holding does a path that puts protected or security in, above its zone's bound, take the
     bound instead; never a path at never, and never below the zone's floor. raised and proof
-    are None when they weren't read, which holds nothing"""
-    shown = evidence(changed, decisions, raised, proof)
+    are None when they weren't read, which holds nothing, and so does a size unmeasured"""
+    shown = evidence(changed, decisions, raised, proof, unmeasured)
     earns = decisions.earned is not None and all(e.holds for e in shown)
     detected = tuple(_earn(z, decisions) if earns else z for z in found.zones)
     lowered = tuple(

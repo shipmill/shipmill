@@ -363,6 +363,7 @@ def test_s030_7_a_comment_in_decisions_is_neither(repo: Repo, capsys: pytest.Cap
     before = POLICY + '\n[decisions]\ntriage-verdict = "ask"\n'
     after = POLICY + '\n[decisions]\n# the maintainer wants to see each verdict\ntriage-verdict = "ask"  # for now\n'
     found = run(repo, capsys, "classify", "--pr", "7", pulls=config_change(before, after))
+    assert found.pop("landing")["level"] is None  # spec 083: a pull request's landing, no zone detected
     assert found == {"level": None, "zones": [], "candidates": [], "refused": []}
 
 
@@ -764,6 +765,7 @@ def test_s030_10_candidates_list_active_decisions_covering_a_changed_path_and_ne
     assert zones_of(found) == {"direction": "never"}
     assert not any(z["zone"].startswith("D-") or z["zone"] == "rule-departure" for z in found["zones"])
     code = run(repo, capsys, "classify", "--pr", "12", pulls=FakePulls((FileChange("src/x.py", "modified", "x"),)))
+    assert code.pop("landing")["level"] is None  # spec 083: a pull request's landing, no zone detected
     assert code == {"level": None, "zones": [], "candidates": [], "refused": []}
 
 

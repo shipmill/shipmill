@@ -171,6 +171,7 @@ from shipmill import (
     decide,
     deprecations,
     deprecations_report,
+    earned,
     evals,
     factory,
     fragments,
@@ -313,11 +314,11 @@ from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, S
 from shipmill.classify import (
     DEFAULT_REF,
     Base,
+    Classification,
     Pulls,
     RepoPath,
     classify_change,
     classify_paths,
-    classify_pull,
     policy_at,
 )
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
@@ -396,7 +397,7 @@ from shipmill.gate import (
     tick_record,
     watch_command,
 )
-from shipmill.github import UPGRADE_LABEL, GhCli, GitHub, find_gh
+from shipmill.github import UPGRADE_LABEL, GhCli, GitHub, PullChange, find_gh
 from shipmill.github_auth import github_auth
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.handoff_close import hold_close, issue_close
@@ -1439,7 +1440,8 @@ def main(
     if args.command == "decide" and args.decide == "record":
         return _decide_record(root, args.json, record_reads or GhCli(root))
     if args.command == "decide":
-        return _decide(root, args, pulls or GhCli(root), record_reads or GhCli(root))
+        rules = rules_reader or (GhRules(root) if shutil.which("gh") is not None else None)
+        return _decide(root, args, pulls or GhCli(root), record_reads or GhCli(root), rules)
     if args.command == "autonomy":
         return _autonomy(root, args.ref, args.json, github or GhCli(root))
     if args.command == "window":
@@ -4191,10 +4193,13 @@ def _user_logout(root: Path, args: argparse.Namespace, web: Web, environ: Mappin
     return 0
 
 
-def _decide(root: Path, args: argparse.Namespace, pulls: Pulls, reads: area_record.Reads) -> int:
+def _decide(
+    root: Path, args: argparse.Namespace, pulls: Pulls, reads: area_record.Reads, rules: RulesReader | None
+) -> int:
     """Spec 030: `decide levels` from the working tree's config or --ref's; `decide classify`
     by the levels at --ref, never the change's own, with the production record when the
-    levels there ask for it (spec 083)"""
+    levels there ask for it (spec 083); a pull request's with its landing level and evidence,
+    the required checks read through rules only when --ref has [decisions.earned]"""
     git = Git(root)
     if args.decide == "levels":
         policy = Policy.load(config_path(root)) if args.ref is None else policy_at(git, args.ref)
@@ -4214,17 +4219,43 @@ def _decide(root: Path, args: argparse.Namespace, pulls: Pulls, reads: area_reco
     if args.pr is not None and args.pr < 1:
         raise ReleaseError(f"--pr is a pull request's number, got {args.pr}")
     base = Base.read(git, args.ref).with_record(git, reads)
+    landed: earned.Landing | None = None  # a change given as --files has no evidence, and earns nothing
     if args.pr is not None:
-        found = classify_pull(base, pulls, args.pr)
+        change = pulls.pull_change(args.pr)
+        found = classify_change(base, pulls, change)
+        landed = _landing(root, base, change, found, rules)
     else:
         found = classify_paths(base, [RepoPath.given(p) for p in args.files])
     if args.json:  # S-052-11: the refused keys of the config at --ref, whose levels it read
-        sys.stdout.write(
-            json.dumps(found.record() | {"refused": refused.records(base.policy.refused)}, indent=2) + "\n"
-        )
+        record = found.record() if landed is None else landed.classified(found)
+        sys.stdout.write(json.dumps(record | {"refused": refused.records(base.policy.refused)}, indent=2) + "\n")
     else:
-        sys.stdout.write(found.text())
+        sys.stdout.write(found.text() if landed is None else landed.text(found))
     return 0
+
+
+def _landing(
+    root: Path, base: Base, change: PullChange, found: Classification, rules: RulesReader | None
+) -> earned.Landing:
+    """Spec 083: the pull request's landing level by the base's [decisions] alone (D-48, D-101).
+    The required checks are read only when the base has [decisions.earned], and the raised
+    areas count only when with_record read them; what wasn't read holds nothing"""
+    decisions = base.policy.decisions
+    raised = frozenset(base.raised) if base.record_reason() is not None else None
+    proof = None if decisions.earned is None else _proof(root, base.policy, change, rules)
+    changed, unmeasured = earned.changed_of(change)
+    return earned.landing(found, changed, decisions, raised, proof, unmeasured)
+
+
+def _proof(root: Path, policy: Policy, change: PullChange, rules: RulesReader | None) -> earned.Proof:
+    """Whether the base's branch requires a check that proves, by merge_checks.py's reading
+    (spec 080) of the base repo's rules; a reading that fails holds nothing, never stops it"""
+    land = policy.autonomy.configured(Stage(StageKind.LAND))
+    try:
+        found = merge_checks.report(root, change.repo or _known_origin(root), policy.branch, land, rules)
+    except ReleaseError as exc:  # a workflow or package.json the reading can't read
+        return earned.Proof(None, f"the required checks can't be read: {exc}")
+    return earned.proof_of(found)
 
 
 def _decide_record(root: Path, as_json: bool, reads: area_record.Reads) -> int:

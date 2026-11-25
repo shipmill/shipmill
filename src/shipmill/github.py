@@ -141,12 +141,14 @@ class Missing(ReleaseError):
 @dataclass(frozen=True, slots=True)
 class FileChange:
     """A file a pull request changes, as GitHub's pull request files list it: its unified diff
-    hunks in patch, None when GitHub gives none (a binary file, a diff too large)"""
+    hunks in patch, None when GitHub gives none (a binary file, a diff too large), and its
+    added plus deleted lines, None when GitHub's entry gives no count (spec 083)"""
 
     path: str
     status: str  # added, removed, modified, renamed, copied, changed
     patch: str | None = None
     previous: str | None = None  # a renamed file's old path
+    lines: int | None = None
 
     @property
     def paths(self) -> tuple[str, ...]:
@@ -154,11 +156,21 @@ class FileChange:
         return (self.path,) if self.previous is None else (self.path, self.previous)
 
 
+def _count(*parts: object) -> int | None:
+    """The sum of counts GitHub gives, None when one isn't a count from 0, so a change whose
+    size can't be read never passes for a small one (spec 083)"""
+    if not all(isinstance(p, int) and not isinstance(p, bool) and p >= 0 for p in parts):
+        return None
+    return sum(p for p in parts if isinstance(p, int))
+
+
 @dataclass(frozen=True, slots=True)
 class PullChange:
     """A pull request's change: the commit it branched from on its base (the merge base, the
     side its diff is against), its head commit, its files, its labels' names as GitHub
-    spells them (S-030-23), its body, and its base repo's owner/name (spec 063)"""
+    spells them (S-030-23), its body, its base repo's owner/name (spec 063), and the number of
+    files GitHub says it changes, None when its answer gives none (spec 083: the files list
+    stops at 3000, so fewer listed than changed is a change that can't be measured)"""
 
     number: int
     base: str
@@ -167,6 +179,7 @@ class PullChange:
     labels: tuple[str, ...] = ()
     body: str = ""
     repo: str | None = None
+    changed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1048,6 +1061,7 @@ class GhCli:
                     str(entry["status"]),
                     None if patch is None else str(patch),
                     None if entry.get("previous_filename") is None else str(entry["previous_filename"]),
+                    _count(entry.get("additions"), entry.get("deletions")),
                 )
             )
         names = tuple(str(label["name"]) for label in labels)
@@ -1058,7 +1072,9 @@ class GhCli:
         if repo is not None and (not isinstance(repo, str) or repo.count("/") != 1):
             raise ReleaseError(f"gh api of pull request #{number} named no owner/name base repo, got {repo!r}")
         body = pull.get("body")
-        return PullChange(number, base, head, tuple(files), names, "" if body is None else str(body), repo)
+        text = "" if body is None else str(body)
+        changed = _count(pull.get("changed_files"))
+        return PullChange(number, base, head, tuple(files), names, text, repo, changed)
 
     def run_attempt(self, run: int, attempt: int | None) -> RunAttempt:
         """The run as of the attempt, or of its latest attempt for None (spec 063); a GET"""
