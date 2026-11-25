@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.177.0] - 2026-11-25
+
+### Fixed
+
+- `shipmill queue` and `status --summary` put a person's item assigned to the maintainer (spec 036's `maintainer` role: its listed users and teams, else the host's `gh` login) under `waits on you`, with why `assigned to you: ...`, instead of `waits on people` and `waits on nobody` (#1641)
+
+### Added
+
+- `shipmill link` and `shipmill unlink` record and remove a hold between issues and pull requests: on an issue GitHub's native relation and a strict `Depends on` line, on a pull request the line in its body (spec 041 amended). The gate doesn't hand a pull request whose `Depends on` names an open item, `queue` and `status --item` hold it by its target, and triage reads HOLD_UNLINKED for an agent comment that names a wait with no link (#1645)
+
 ## [0.176.0] - 2026-11-25
 
 ### Changed
@@ -3147,7 +3157,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.176.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.177.0...HEAD
+[0.177.0]: https://github.com/shipmill/shipmill/compare/v0.176.0...v0.177.0
 [0.176.0]: https://github.com/shipmill/shipmill/compare/v0.175.0...v0.176.0
 [0.175.0]: https://github.com/shipmill/shipmill/compare/v0.174.0...v0.175.0
 [0.174.0]: https://github.com/shipmill/shipmill/compare/v0.173.1...v0.174.0
