@@ -18,11 +18,11 @@ from shipmill.autonomy import Autonomy, AutonomyPolicy
 from shipmill.claude_pause import Pause, credential_id, pause_path, save_pause
 from shipmill.claude_token import PREFIX, Token
 from shipmill.item_status import Who
-from shipmill.status import Pull, Row, report
+from shipmill.status import Pull, Row, Verdict, report
 from shipmill.walk import HANDED, End, Hand, Handed, Head
 
 from .test_status_item import whos
-from .test_status_picture import REPO, facts
+from .test_status_picture import REPO, facts, gate, job
 from .test_watch_gate_idle import Host, host, rows, ws
 
 __all__ = ["host", "ws"]  # the fixtures, imported for the tests below
@@ -121,6 +121,23 @@ def test_s089_13_shipmill_status_prints_both_rows_with_the_pauses_fix() -> None:
     text = "\n".join(report(facts(paused, retry)).lines)
     assert "GATE_PAUSED auth until the token changes" in text and "x" in text
     assert "GATE_RETRY PRS_OPEN #3 after 2026-11-25 07:00 UTC: 2 error ends in a row" in text
+
+
+@pytest.mark.parametrize(
+    "fix", ["claude auth login", "the token in /u/t was not accepted; run claude setup-token and save it to /u/t"]
+)
+def test_s089_13_an_auth_pause_waits_on_you_in_shipmill_status(fix: str) -> None:
+    # the tick's PAUSED replaces the SESSION_DEAD that read STUCK before spec 089: a refused
+    # credential still waits on a person, never "nothing to do"
+    last = (
+        f"PAUSED: auth: a refused credential stopped session s0; no session starts until the token changes; fix: {fix}"
+    )
+    paused = Row("GATE_PAUSED", "auth", "until the token changes: its token was refused for session s0", False, fix)
+    found = report(facts(paused, gate=gate(job=job(last=last))))
+    assert found.verdict is Verdict.WAITS
+    assert [(r.text, r.fix) for r in found.reasons] == [(f"the gate: {last}", fix)]
+    limit = "PAUSED: limit: a usage limit stopped session s0; no session starts until 2026-11-25T08:00+00:00"
+    assert report(facts(gate=gate(job=job(last=limit)))).verdict is not Verdict.WAITS  # it lifts by itself
 
 
 def test_s089_13_status_item_names_the_backoff_or_the_pause_instead_of_a_coming_tick() -> None:
