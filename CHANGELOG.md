@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.178.0] - 2026-11-25
+
+### Changed
+
+- A gate session that ended `ok` although an outside cause stopped its tool calls no longer turns its subject idle (spec 095): the tick reads the session's failed tool results first and records `github_limit` (GitHub's rate limit), `disk` (`No space left on device`), or `error` (a network failure). The first two drop their hand and count no attempt; `github_limit` and `disk` pause every gate on the host through `$XDG_STATE_HOME/shipmill/host/<cause>.json` until `gh api rate_limit` shows room (else its reset, or an hour on) or the checkout's file system has 2 GiB free, shown as `GATE_PAUSED` in `shipmill status` and the watch; a tool a headless session was denied sends one notification per tool, its command's first line cut at 120 characters, recorded in the gate's `denied.json`, and changes neither the session's end nor the gate's launches (#1644)
+
 ## [0.177.0] - 2026-11-25
 
 ### Fixed
@@ -3157,7 +3163,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.177.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.178.0...HEAD
+[0.178.0]: https://github.com/shipmill/shipmill/compare/v0.177.0...v0.178.0
 [0.177.0]: https://github.com/shipmill/shipmill/compare/v0.176.0...v0.177.0
 [0.176.0]: https://github.com/shipmill/shipmill/compare/v0.175.0...v0.176.0
 [0.175.0]: https://github.com/shipmill/shipmill/compare/v0.174.0...v0.175.0
