@@ -6,11 +6,14 @@ marker (spec 050, `marked_args`), and those an edit writes, which carry it exact
 record's current body does (`body_edit`). Only the repo gh's `-R`/`--repo` names is read from them
 besides, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
 holds when the pull request has a `never` zone. shipmill's own `--decided-in <n>` of `issue
-create` is taken out (spec 051, `decided_in`). A write's text gh would read from stdin is read
+create` is taken out (spec 051, `decided_in`), and so is its `--status` of `issue|pr comment`,
+which turns the comment into a create or an edit of the item's one status comment (spec 090,
+`status_write`). A write's text gh would read from stdin is read
 first by the leak check and fed to gh's stdin, its args unchanged (spec 081, `sent_texts`,
 `feed_gh`). The token goes to gh in GH_TOKEN, never to output.
 """
 
+import datetime as dt
 import io
 import json
 import re
@@ -1867,3 +1870,228 @@ def hold_decided(
         "(D-104, spec 030). Ask it instead: a comment whose first line is `<!-- shipmill:needs-decision -->`, then "
         "the needs-decision label (github-issue-triage's needs-decision.md, Asking)"
     )
+
+
+# -- Spec 090: a session's progress on an item goes in its one status comment ---------------------
+
+STATUS = "--status"  # shipmill's own flag of `gh issue comment` and `gh pr comment`, never passed to gh
+STATUS_MARKER = "<!-- shipmill:status -->"  # the status comment's first line, exactly
+_STATUS_REFUSED = ("--edit-last", "--delete-last", "--create-if-none", "--web", "-w", "--editor", "-e")
+_STATUS_WHY = "it writes the item's one status comment, creating it once and editing it after (spec 090)"
+# a login as GitHub allows one, bare: not inside a word, an email, a path, or a mention's own text
+_LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+_BARE_MENTION = re.compile(rf"(?<![A-Za-z0-9_`@/.+-])@(?P<login>{_LOGIN})(?![A-Za-z0-9_-])(?!\[bot\])")
+_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)", re.DOTALL)
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# every page of an item's comments, oldest first, one JSON line each: (id, author's login, body)
+_STATUS_JQ = '.[] | [.id, (.user.login // "ghost"), (.body // "")] | @json'
+
+
+@dataclass(frozen=True, slots=True)
+class StatusWrite:
+    """S-090-1: a status write `gh issue|pr comment <n> --status` asks for: the command as a
+    refusal names it, the item's repo as the args name it (a URL's, else -R's; None for the repo gh
+    picks), its number, and the text the session gave"""
+
+    what: str  # such as `gh issue comment`
+    repo: str | None
+    number: int
+    text: str
+
+    def target(self, default: str | None) -> str:
+        """The item's repo: the one the args name, else default, the repo gh works on; exit 2
+        without one"""
+        repo = self.repo or default
+        if repo is None:
+            raise ReleaseError(
+                f"{self.what} {self.number} {STATUS} is refused: {_STATUS_WHY}, and its repo can't be told here; "
+                "name it with -R owner/name"
+            )
+        return repo
+
+
+def bare_mention(text: str) -> str | None:
+    """The first login text mentions bare, outside a code span, a fenced block, and an HTML
+    comment, as GitHub notifies it (D-61); None when it mentions nobody. An email, a path, and an
+    App's `@<slug>[bot]` mention nobody"""
+    kept: list[str] = []
+    fenced: str | None = None
+    for line in text.splitlines():
+        fence = _FENCE_LINE.match(line)
+        closes = fenced is not None and fence is not None and fence.group(1)[0] == fenced[0]
+        if fence is not None and (fenced is None or closes and len(fence.group(1)) >= len(fenced)):
+            fenced = fence.group(1) if fenced is None else None
+            continue
+        if fenced is None:
+            kept.append(line)
+    plain = _CODE_SPAN.sub(" ", _HTML_COMMENT.sub(" ", "\n".join(kept)))
+    found = _BARE_MENTION.search(plain)
+    return None if found is None else found["login"]
+
+
+def status_write(args: Sequence[str], read: BodyRead) -> tuple[StatusWrite | None, list[str]]:
+    """S-090-1, S-090-4: the status write shipmill's `--status` asks for, and gh's args without
+    it; None and args as given without the flag (one that is another flag's value, such as a
+    body, is no flag). It exits 2 before anything is read or written: on any command but `issue
+    comment` and `pr comment`; given twice or with a value; with no --body or --body-file, or both;
+    with --edit-last, --delete-last, --create-if-none, --web, or --editor; naming no one item by
+    its number or URL; and when the text has a line that is the status marker or mentions a login
+    bare. With --help gh prints its help and writes nothing. Nothing after `--` is a flag"""
+    head = list(args[: args.index("--")]) if "--" in args else list(args)
+    if not any(arg == STATUS or arg.startswith(f"{STATUS}=") for arg in head):
+        return None, list(args)
+    group = head[0] if head else ""
+    sub = None
+    if group in _GROUP_FLAGS:
+        positional, _ = _scan(args[1:], _GROUP_FLAGS[group].long, _GROUP_FLAGS[group].short)
+        sub = positional[0] if positional else None
+    if sub != "comment":
+        named = " ".join(a for a in head[:2] if not a.startswith(STATUS))
+        raise ReleaseError(
+            f"{STATUS} is refused on gh {named}: only `gh issue comment <n>` and `gh pr comment <n>` take it, since "
+            f"{_STATUS_WHY}"
+        )
+    what = f"gh {group} comment"
+    kept, taken, tail = _split(args, _COMMENT_FLAGS, lambda name, _: name == STATUS)
+    if not taken:  # only another flag's value, such as a body
+        return None, list(args)
+    if len(taken) > 1 or taken[0][1]:
+        how = f"given {len(taken)} times" if len(taken) > 1 else f"given a value ({taken[0][1]!r})"
+        raise ReleaseError(f"{what} {STATUS} is {how}; it is a switch: pass it once, alone")
+    rest = [*kept, *tail]
+    positional, flags = _scan(rest[1:], _COMMENT_FLAGS.long, _COMMENT_FLAGS.short)
+    if _helped(flags):
+        return None, rest
+    given = next((name for name in _STATUS_REFUSED if _on(flags, name)), None)
+    if given is not None:
+        raise ReleaseError(
+            f"{what} {STATUS} with {given} is refused: {_STATUS_WHY}; pass its text with --body or --body-file alone"
+        )
+    bodies = [(name, value) for name, value in flags if name in _BODY_FLAGS]
+    if not bodies:
+        raise ReleaseError(
+            f"{what} {STATUS} with no --body or --body-file is refused: {_STATUS_WHY}, from the text given; write "
+            "it to a file and pass --body-file"
+        )
+    names = {name for name, _ in bodies}
+    if names & {"--body", "-b"} and names & {"--body-file", "-F"}:
+        raise ReleaseError(f"{what} takes --body or --body-file, not both")
+    targets = positional[1:]
+    url = _ITEM_URL.fullmatch(targets[0]) if len(targets) == 1 else None
+    numbered = _NUMBER.fullmatch(targets[0]) if len(targets) == 1 else None
+    repo: str | None
+    if url is not None:
+        repo, number = url.group(1), int(url.group(2))
+    elif numbered is not None:
+        repo, number = named_repo(rest), int(numbered.group(1))
+    else:
+        named = "names none" if not targets else f"names {' '.join(targets)}"
+        raise ReleaseError(
+            f"{what} {STATUS} {named}: {_STATUS_WHY}, and needs one item by its number or URL to find that comment"
+        )
+    name, value = bodies[-1]
+    text = value if name in ("--body", "-b") else read(name, value)
+    if any(line.strip() == STATUS_MARKER for line in text.splitlines()):
+        raise ReleaseError(
+            f"{what} {number} {STATUS} is refused: its text has a line `{STATUS_MARKER}`, the line shipmill gh puts "
+            "first; give the text alone"
+        )
+    login = bare_mention(text)
+    if login is not None:
+        raise ReleaseError(
+            f"{what} {number} {STATUS} is refused: its text mentions @{login} bare, which emails them for progress "
+            f"that doesn't wait on them (D-61); write the login in a code span: `@{login}`"
+        )
+    return StatusWrite(what, repo, number, text), rest
+
+
+def status_body(text: str, now: dt.datetime) -> str:
+    """S-090-2: the status comment's whole body: the status marker, `Updated <YYYY-MM-DD HH:MM>
+    UTC` at now in UTC, a blank line, the text without any agent marker, and the agent marker as
+    its last line, once"""
+    when = now.astimezone(dt.UTC).strftime("%Y-%m-%d %H:%M")
+    return marked(f"{STATUS_MARKER}\nUpdated {when} UTC\n\n{stripped(text).strip()}")
+
+
+def is_status(body: str) -> bool:
+    """Whether a comment's first line is exactly the status marker"""
+    return body.partition("\n")[0].removesuffix("\r") == STATUS_MARKER
+
+
+def own_status(comments: Sequence[tuple[int, str, str]], login: str) -> int | None:
+    """S-090-3: the id of the writer's status comment among comments (id, author's login, body),
+    oldest first: the oldest whose first line is exactly the status marker, whose author is login
+    (case ignored), and whose body carries the agent marker; None when there is none. A marker
+    comment by anyone else, or without the agent marker, is a person's text (D-62)"""
+    return next(
+        (
+            comment_id
+            for comment_id, author, body in comments
+            if is_status(body) and author.lower() == login.lower() and carries(body)
+        ),
+        None,
+    )
+
+
+def status_comments(
+    capture: GhCapture, binary: Path, env: Mapping[str, str], write: StatusWrite, repo: str
+) -> list[tuple[int, str, str]]:
+    """S-090-3: every comment of the item, every page, oldest first, as (id, author's login,
+    body), read through gh with env, the identity the write goes out as. Comments that can't be
+    read exit 2, since creating then could leave a second status comment (S-090-4)"""
+    path = f"repos/{repo}/issues/{write.number}/comments"
+
+    def refused(why: str) -> ReleaseError:
+        return ReleaseError(
+            f"{write.what} {write.number} {STATUS} is refused: {repo}#{write.number}'s comments can't be read ({why}), "
+            "and writing without them could leave a second status comment (spec 090); nothing was written"
+        )
+
+    code, out = capture([str(binary), "api", "--paginate", path, "--jq", _STATUS_JQ], env)
+    if code != 0:
+        raise refused(f"gh api {path} exited {code}")
+    found: list[tuple[int, str, str]] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            raise refused("gh's answer isn't JSON") from None
+        if (
+            not isinstance(row, list)
+            or len(row) != 3
+            or not isinstance(row[0], int)
+            or isinstance(row[0], bool)
+            or not all(isinstance(part, str) for part in row[1:])
+        ):
+            raise refused(f"gh printed {line[:80]!r}, not a comment")
+        found.append((row[0], row[1], row[2]))
+    return found
+
+
+def status_login(capture: GhCapture, binary: Path, env: Mapping[str, str], write: StatusWrite) -> str:
+    """S-090-3: the host's gh login, `gh api user --jq .login`, which a status write as the host
+    goes out as; exit 2 when it can't be read"""
+    code, out = capture([str(binary), "api", "user", "--jq", ".login"], env)
+    login = out.strip()
+    if code != 0 or re.fullmatch(_LOGIN, login) is None:
+        why = f"gh api user exited {code}" if code != 0 else f"gh printed {login[:80]!r}"
+        raise ReleaseError(
+            f"{write.what} {write.number} {STATUS} is refused: the host's gh login, whose status comment it edits, "
+            f"can't be read ({why}); nothing was written"
+        )
+    return login
+
+
+def status_args(
+    write: StatusWrite, repo: str, login: str, comments: Sequence[tuple[int, str, str]], body: str
+) -> list[str]:
+    """S-090-1: gh's args for the status write: a PATCH of the writer's status comment among
+    comments when there is one, else a create on the item's comments, each with body as its one
+    `body` field"""
+    found = own_status(comments, login)
+    if found is None:
+        return ["api", f"repos/{repo}/issues/{write.number}/comments", "-f", f"body={body}"]
+    return ["api", "-X", "PATCH", f"repos/{repo}/issues/comments/{found}", "-f", f"body={body}"]

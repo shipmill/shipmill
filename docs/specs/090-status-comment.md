@@ -1,6 +1,6 @@
 # S-090: A session writes its progress on an item by editing one status comment
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -180,10 +180,16 @@ comment.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-090-1, S-090-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1591: S-090-1, S-090-2, S-090-3, S-090-4, S-090-5, S-090-6, S-090-7, S-090-8, S-090-9
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-090-1: read `_gh` in `src/shipmill/cli.py`: `status_write` takes `--status` out right after `decided_in`, and `_status_args` turns the call into `gh api repos/<r>/issues/<n>/comments -f body=` or `gh api -X PATCH repos/<r>/issues/comments/<id> -f body=` before `body_edit` and `marked_args` read it, as the App and as the host; holds
+- S-090-2: `status_body` builds the marker, `Updated %Y-%m-%d %H:%M UTC` from `dt.datetime.now(dt.UTC)`, a blank line, the text with any agent marker stripped, and the agent marker once; an edit goes through `edited_args`, which keeps the marker once; holds
+- S-090-3: `own_status` takes the first (oldest) comment of `gh api --paginate`'s every page whose first line is exactly the marker, whose login is the writer's (`app_login`'s bot as the App, `gh api user` as the host), and which carries the agent marker; holds
+- S-090-4: ran `shipmill gh issue comment 1591 --status --edit-last -b x`, `shipmill gh pr comment 1591 --status -b "Thanks @romamo"`, and `shipmill gh issue create --status -t x -b y` in this checkout: each exited 2 naming why, before any token or write; a comments read that fails raises before the write; holds
+- S-090-5: the status write becomes a `gh api` create or PATCH whose `body` field `_sized` checks against 65,536 characters and `_leak_check` reads as every write's text, both before gh runs; holds
+- S-090-6: `hold_refs` in `triage_state.py` skips a comment whose first line is the status marker, which `watch_state.py`'s `open_hold` reads through; every other reader keys on a comment's first line or on the agent marker, which a status comment's first line and its agent marker keep it out of; holds
+- S-090-7: grepped the four readers: none names `lastEditedAt`, and no GraphQL comments selection asks for `updatedAt`; they date a comment by `createdAt` and order it by its place; holds
+- S-090-8: read `skills/github-issue-triage/references/comments.md`: its "Status comment" section lists the posts that stay new comments and the progress that goes in the status comment, says a person's draft gets none (D-67), and "The fix is in #{PR}" and both Follow-ups post with `--status`; holds
+- S-090-9: read the four `SKILL.md` files: each has a "Progress goes in the status comment (spec 090)" rule posting progress with `--status` and saying a progress step is never a new comment; holds
