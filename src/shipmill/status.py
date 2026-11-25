@@ -176,6 +176,7 @@ ISSUE_LINES = (
             "SPEC_REFUSED",
             "UNFILLED",
             "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
+            "HOLD_UNLINKED",  # spec 041 (#1645): an agent's hold comment that no link records
             "CYCLE",  # spec 041: on a cycle of the repo's open issues, ask which link is wrong
             "DONE_NOT_CLOSED",
             "STALE_HANDOFF",  # #1313: a person's item whose parent closed: close it or say why it waits
@@ -915,32 +916,46 @@ def to_land(rows: Sequence[Row]) -> list[int]:
 
 PARKED_PULL = re.compile(r" #(\d+) \((@[^()]+)\)")
 PARKED_MERGE = re.compile(r"TO_MERGE((?: #\d+)+)")
+# spec 041 (#1645): a pull request whose Depends on lines name items still open, and those items
+PARKED_WAIT = re.compile(r" #(\d+) \(([\w.-]+/[\w.-]+#\d+(?: [\w.-]+/[\w.-]+#\d+)*)\)")
+PARKED_PARTS = ("WITH_PERSON ", "TO_MERGE ", "WAITS_ON ")  # the order watch_state.py writes them in
 
 
 @dataclass(frozen=True, slots=True)
 class Parked:
     """The PRS_PARKED rows' pull requests, newest first: a person's, each with whom it waits on
-    (#853), and under land = "propose" the ones labelled shipmill-ready, to merge (S-061-11)"""
+    (#853), under land = "propose" the ones labelled shipmill-ready, to merge (S-061-11), and
+    the ones whose Depends on lines name an open item, each with those items (spec 041)"""
 
     people: list[tuple[int, str]]
     merge: list[int]
+    waits: list[tuple[int, tuple[str, ...]]] = field(default_factory=list)
 
 
 def parked(rows: Sequence[Row]) -> Parked:
     """The PRS_PARKED rows as watch_state.py writes them: `WITH_PERSON #N (@login ...) ...`,
-    `TO_MERGE #N ...`, or both in that order joined by `; `, and nothing else"""
+    `TO_MERGE #N ...`, and `WAITS_ON #N (owner/repo#M ...) ...`, each at most once, in that
+    order, joined by `; `, and nothing else"""
     people: list[tuple[int, str]] = []
     merge: list[int] = []
+    waits: list[tuple[int, tuple[str, ...]]] = []
     for r in rows:
         if r.state != PRS_PARKED:
             continue
         parts = r.detail.split("; ")
-        ordered = len(parts) == 1 or parts[0].startswith("WITH_PERSON ") and parts[1].startswith("TO_MERGE ")
-        if len(parts) > 2 or not ordered:
+        kinds = [next((i for i, k in enumerate(PARKED_PARTS) if part.startswith(k)), -1) for part in parts]
+        if -1 in kinds or kinds != sorted(set(kinds)):
             raise ReleaseError(f"watch_state.py's {PRS_PARKED} row is unreadable: {r.detail!r}")
         for part in parts:
             if (to_merge := PARKED_MERGE.fullmatch(part)) is not None:
                 merge += [int(n) for n in re.findall(r"#(\d+)", to_merge.group(1))]
+                continue
+            if part.startswith("WAITS_ON "):
+                rest = part.removeprefix("WAITS_ON")
+                held = PARKED_WAIT.findall(rest)
+                if not held or "".join(f" #{n} ({on})" for n, on in held) != rest:
+                    raise ReleaseError(f"watch_state.py's {PRS_PARKED} row is unreadable: {r.detail!r}")
+                waits += [(int(n), tuple(on.split(" "))) for n, on in held]
                 continue
             rest = part.removeprefix("WITH_PERSON")
             pulls = PARKED_PULL.findall(rest)
@@ -948,7 +963,7 @@ def parked(rows: Sequence[Row]) -> Parked:
             if rest == part or not pulls or "".join(f" #{n} ({p})" for n, p in pulls) != rest or not named:
                 raise ReleaseError(f"watch_state.py's {PRS_PARKED} row is unreadable: {r.detail!r}")
             people += [(int(n), who) for n, who in pulls]
-    return Parked(sorted(people, reverse=True), sorted(set(merge), reverse=True))
+    return Parked(sorted(people, reverse=True), sorted(set(merge), reverse=True), sorted(waits, reverse=True))
 
 
 def parked_pulls(rows: Sequence[Row]) -> list[tuple[int, str]]:
@@ -1541,6 +1556,8 @@ def item_lines(facts: Facts) -> list[str]:
         values = [issue_value(repo, i) for i in found]
         if name == "parked":  # #853: a person's pull requests wait on their assignees, as an issue does
             values += [f"{item(repo, n, True)} ({people})" for n, people in parked_pulls(rows)]
+            # spec 041 (#1645): a pull request whose Depends on lines name an item still open
+            values += [f"{item(repo, n, True)} (waits on {', '.join(on)})" for n, on in parked(rows).waits]
         lines += _group(name, values)
         if name == "in progress":  # S-009-24: the pull requests waiting to land follow the work
             merge = to_merge(facts)  # S-040-11: shipmill-ready ones under propose are yours to merge

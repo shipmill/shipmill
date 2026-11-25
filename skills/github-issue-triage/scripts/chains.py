@@ -5,6 +5,8 @@ Usage:
   chains.py link <owner/repo#N> --blocked-by <owner/repo#M> [--no-text]
   chains.py link <owner/repo#P> --child <owner/repo#C> [--no-text]
   chains.py link --product <owner/repo#P> --child <owner/repo#C> [--no-text]
+  chains.py unlink <owner/repo#N> --blocked-by <owner/repo#M>
+  chains.py unlink <owner/repo#P> --child <owner/repo#C>
   chains.py show <owner/repo#N>... [--json] [--trusted-only] [--bot-login LOGIN]
   chains.py impact [<owner/repo#N>...] [--repo OWNER/NAME]... [--json] [--trusted-only] [--bot-login LOGIN]
   chains.py stalled [<owner/repo#N>...] [--repo OWNER/NAME]... [--days N] [--json] [--trusted-only]
@@ -24,6 +26,14 @@ link  writes a link in both forms triage_state.py reads:
       repos/<owner>/<repo>/issues/<n>` (never GraphQL's updateIssue, which `shipmill gh`
       refuses, spec 050). When both are there it prints
       "already linked" and changes nothing.
+
+      `shipmill link` runs this command with the same arguments (spec 041, #1645), `#N` made
+      whole against the checkout's origin: a hold is recorded only as a link.
+
+      N may be a pull request with --blocked-by (spec 041): GitHub has no relation for one,
+      so its link is the strict "Depends on owner/repo#M" line appended to its body through
+      the same REST edit, "already linked" when a line holds on M already; --no-text on one
+      exits 2. A pull request as M, or on either side of --child, still exits 2.
 
       When the forge refuses the native relation (no issue dependencies or sub-issues
       there, a cross-owner link it doesn't allow, a child that has another parent), the
@@ -76,6 +86,15 @@ link  writes a link in both forms triage_state.py reads:
       checkout has no [product] repos or a reference is in neither a listed repo nor the
       home repo. Without a [product] table, link is as above.
 
+unlink removes both forms link writes (spec 041, #1645): the native relation when the forge
+      records it (GraphQL removeBlockedBy, or removeSubIssue for --child; a refusal prints
+      "text only: <error>" and the line still goes), and M from every strict "Depends on" line
+      of N's body that holds on it: a line naming M alone is dropped with its line break, one
+      naming others keeps them in their spelling with its note, the rest byte for byte. A
+      malformed line naming M exits 2 before any write. On a pull request, the line alone.
+      With neither form there it prints "not linked" and writes nothing. Its writes go
+      through link's gh command, and it exits 2 where link does, save the cycle check.
+
 show prints the chain an issue belongs to, one row per item, each once (by owner/repo#N,
       whatever case it is spelled in), so a cycle ends where it closes:
       - every issue it waits on, recursively: a "Depends on" line of its body (as
@@ -87,7 +106,9 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       from the assignees of a person's item, an issue labelled human or role:<name> in any
       case; with no assignee, its role:<name> labels, sorted and joined by commas, or
       "person: none" for one labelled human alone; "pull request" for a
-      pull request a "Depends on" line names), and the state: CLOSED (an issue closed in
+      pull request a "Depends on" line names; an open one's own Depends on lines are its holds,
+      read from a trusted author's body with --trusted-only, and the walk follows them, spec
+      041), and the state: CLOSED (an issue closed in
       any way, a pull request merged or closed), CYCLE (<loop>) for an open issue on a
       cycle, BLOCKED with the holds still open, READY (an open issue nothing open holds),
       or OPEN (a pull request still open). A hold that can't be read counts as open.
@@ -193,11 +214,14 @@ from typing import Any, NoReturn
 # triage_state.py reads them
 from triage_state import (
     DECISION_LABEL,
+    DEPENDENCY,
     DEPENDS,
     MAINTAINER,
+    STRICT_REF,
     TRUSTED,
     UPSTREAM_LABEL,
     dependency_refs,
+    depends_lines,
     item_roles,
     login,
     malformed_dependencies,
@@ -239,7 +263,7 @@ ORIGIN = re.compile(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$")  # an origin 
 RESOLVE = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    issueOrPullRequest(number: $number) { __typename ... on Issue { id body } }
+    issueOrPullRequest(number: $number) { __typename ... on Issue { id body } ... on PullRequest { id body } }
   }
 }
 """
@@ -263,6 +287,16 @@ mutation($issue: ID!, $blocking: ID!) {
 ADD_SUB_ISSUE = """
 mutation($issue: ID!, $sub: ID!) {
   addSubIssue(input: {issueId: $issue, subIssueId: $sub}) { issue { id } }
+}
+"""
+REMOVE_BLOCKED_BY = """
+mutation($issue: ID!, $blocking: ID!) {
+  removeBlockedBy(input: {issueId: $issue, blockingIssueId: $blocking}) { issue { id } }
+}
+"""
+REMOVE_SUB_ISSUE = """
+mutation($issue: ID!, $sub: ID!) {
+  removeSubIssue(input: {issueId: $issue, subIssueId: $sub}) { issue { id } }
 }
 """
 
@@ -302,7 +336,9 @@ def item_fields(native: bool) -> str:
         assignees(first: {LINKS}) {{ pageInfo {{ hasNextPage }} nodes {{ login }} }}
         {CLOSERS}(first: {LINKS}) {{ {CLOSING} }}{NATIVE_ITEM if native else ""}
       }}
-      ... on PullRequest {{ number title state repository {{ nameWithOwner }} }}
+      ... on PullRequest {{
+        number title state body author {{ __typename login }} authorAssociation repository {{ nameWithOwner }}
+      }}
 """
 
 
@@ -347,9 +383,12 @@ class Ref:
 
 @dataclass(frozen=True)
 class Issue:
+    """An issue, or with pull True a pull request, as link and unlink resolve it"""
+
     ref: Ref
     id: str
     body: str
+    pull: bool = False
 
 
 class Refused(Exception):
@@ -596,8 +635,10 @@ def errors_of(response: dict[str, Any]) -> list[Any]:
     return list(errors)
 
 
-def resolve(run: Runner, ref: Ref) -> Issue:
-    """The issue ref names; exits 2 naming it when it doesn't exist or is a pull request"""
+def resolve(run: Runner, ref: Ref, pull: bool = False) -> Issue:
+    """The issue ref names, or with pull a pull request too (spec 041: the item that waits on a
+    --blocked-by link); exits 2 naming it when it doesn't exist or is a pull request pull
+    doesn't allow"""
     response = run(RESOLVE, {"owner": ref.owner, "name": ref.name, "number": ref.number})
     errors = errors_of(response)
     if errors and all(isinstance(e, dict) and e.get("type") == "NOT_FOUND" for e in errors):
@@ -607,9 +648,10 @@ def resolve(run: Runner, ref: Ref) -> Issue:
     node = ((response.get("data") or {}).get("repository") or {}).get("issueOrPullRequest")
     if node is None:
         fail(f"no issue {ref}")
-    if node.get("__typename") != "Issue":
+    kind = node.get("__typename")
+    if kind != "Issue" and not (pull and kind == "PullRequest"):
         fail(f"{ref} is a pull request, not an issue")
-    return Issue(ref, str(node["id"]), str(node["body"]))
+    return Issue(ref, str(node["id"]), str(node["body"] or ""), kind == "PullRequest")
 
 
 def refusal(error: object) -> bool:
@@ -703,14 +745,25 @@ def link(
     reads each item through read_for(its ref), run for each when None; the relation's mutation
     through write, and the body edit through edit. Without text (--no-text), only the
     relation: no body edit, and a refusal exits 2. A link that would close a cycle exits 2
-    before any write"""
+    before any write. A pull request that waits (--blocked-by, spec 041) has no native
+    relation: its Depends on line, in its body, is the link"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
     read_other = run if run_other is None else run_other
-    issue, upstream = resolve(run, target), resolve(read_other, other)
+    issue, upstream = resolve(run, target, pull=not child), resolve(read_other, other)
     loop = closed_loop(read_for or (lambda ref: run), target, other)
     if loop is not None:
         fail(f"linking {target} to {other} closes a cycle: {' -> '.join(str(ref) for ref in loop)}")
+    if issue.pull:
+        if not text:
+            fail(f"{target} is a pull request: its link is a Depends on line alone, which --no-text never writes")
+        if names(issue.body, target, other):
+            print("already linked")
+        else:
+            line = f"Depends on {other}"
+            edit(target, appended(issue.body, line))
+            print(f"added to {target}: {line}")
+        return 0
     lines: list[str] = []
     refused: str | None = None
     try:
@@ -742,6 +795,96 @@ def link(
     if have_native and have_text:
         lines.append("already linked")
     print("\n".join(lines))
+    return 0
+
+
+LINE_BREAK = re.compile(r"(\r?\n)")
+
+
+def without(body: str, home: Ref, target: Ref) -> tuple[str, list[str]]:
+    """body with target taken off every Depends on line that holds on it (depends_lines, as
+    dependency_refs reads them): the line rewritten with the references it keeps, in their
+    own spelling and with its note, or dropped with its line break when it keeps none; the
+    rest byte for byte. Also the lines removed or rewritten, "<old> -> <new>" or "<old>". A
+    malformed line naming target exits 2 before any write: which of its references hold is
+    a decision (spec 041)"""
+    parts = LINE_BREAK.split(body)  # texts at even indexes, each followed by its break
+    changed: list[str] = []
+    drop: set[int] = set()
+    for n, line, refs, malformed in depends_lines(body):
+        named = [
+            m.group(0)
+            for m in DEPENDENCY.finditer(refs)
+            if target.same_repo(m["owner"] or home.owner, m["name"] or home.name) and int(m["num"]) == target.number
+        ]
+        if not named:
+            continue
+        if malformed:
+            fail(f"line {n} of {home}'s body is malformed, so which of its references hold is unclear: {line}")
+        kept = [r for r in re.findall(STRICT_REF, refs) if not any(r == spelled for spelled in named)]
+        index = 2 * (n - 1)
+        if not kept:
+            drop.add(index)
+            changed.append(line)
+            continue
+        start = line.index(refs, len(line) - len(line.lstrip()))
+        rewritten = line[:start] + ", ".join(kept) + line[start + len(refs) :]
+        parts[index] = rewritten
+        changed.append(f"{line} -> {rewritten}")
+    if not drop:
+        return "".join(parts), changed
+    out: list[str] = []
+    for i in range(0, len(parts), 2):
+        brk = parts[i + 1] if i + 1 < len(parts) else ""
+        if i in drop:
+            if not brk and out:  # the last line: the break before it goes with it
+                out.pop()
+            continue
+        out += [parts[i], brk]
+    return "".join(out), changed
+
+
+def unlink(
+    run: Runner,
+    target: Ref,
+    other: Ref,
+    child: bool,
+    write: Runner,
+    edit: Edit,
+    run_other: Runner | None = None,
+) -> int:
+    """Removes the link link writes, both forms of it (spec 041): the native relation (GraphQL
+    removeBlockedBy, or removeSubIssue for --child) when the forge records it, and other from
+    each Depends on line of target's body that holds on it. A pull request's link is its line
+    alone. Idempotent: with neither form there it prints "not linked" and writes nothing"""
+    if target.same(other):
+        fail(f"{target} can't be linked to itself")
+    read_other = run if run_other is None else run_other
+    issue, upstream = resolve(run, target, pull=not child), resolve(read_other, other)
+    body, changed = without(issue.body, target, other)  # a malformed line exits 2 before any write
+    lines: list[str] = []
+    refused: str | None = None
+    if not issue.pull:
+        try:
+            if child:
+                have_native = is_child(read_other, issue, upstream)
+                relation = f"{other} is no longer a sub-issue of {target}"
+                mutation, variables = REMOVE_SUB_ISSUE, {"issue": issue.id, "sub": upstream.id}
+            else:
+                have_native = blocked_by(run, issue, upstream)
+                relation = f"{target} is no longer blocked by {other}"
+                mutation, variables = REMOVE_BLOCKED_BY, {"issue": issue.id, "blocking": upstream.id}
+            if have_native:
+                native(write, mutation, dict(variables))
+                lines.append(f"unlinked: {relation}")
+        except Refused as exc:
+            refused = str(exc)
+    if changed:
+        edit(target, body)
+        lines += [f"removed from {target}: {line}" for line in changed]
+    if refused is not None:
+        lines.append(f"text only: {refused}")
+    print("\n".join(lines) if lines else "not linked")
     return 0
 
 
@@ -844,10 +987,15 @@ def connection(node: dict[str, Any], field: str, ref: Ref) -> list[dict[str, Any
 def parse_item(node: dict[str, Any], reader: Reader) -> Item:
     ref = ref_of(node)
     title = str(node["title"])
-    if node["__typename"] == "PullRequest":
-        return Item(ref, "PullRequest", title, ref_state(node), "pull request")
     association = str(node.get("authorAssociation") or "NONE")
-    if reader.trusted_only and not reader.trusts(ref, login(node.get("author")), association):
+    trusted = not reader.trusted_only or reader.trusts(ref, login(node.get("author")), association)
+    if node["__typename"] == "PullRequest":
+        # spec 041: a pull request's Depends on lines are its holds, read as an issue's are,
+        # and only from a trusted author's body with --trusted-only (D-16)
+        held = dependency_refs({"body": node.get("body") or ""}, (ref.owner, ref.name)) if trusted else []
+        holds_of = {r.key: (r, None) for r in (Ref(*h) for h in held) if r.key != ref.key}
+        return Item(ref, "PullRequest", title, ref_state(node), "pull request", tuple(holds_of.values()))
+    if not trusted:
         return Item(ref, UNTRUSTED, state=ref_state(node))  # nothing it says is read or followed
     labels = {n["name"] for n in connection(node, "labels", ref)}
     logins = [str(n["login"]) for n in connection(node, "assignees", ref)]
@@ -1210,7 +1358,7 @@ def waiting_for(item: Item, row: dict[str, Any]) -> str | None:
     if item.state != "OPEN":
         return None
     if item.kind == "PullRequest":
-        return "pull request"
+        return "items" if row["holds"] else "pull request"
     if DECISION_LABEL in item.labels:
         return "decision"
     if row["cycle"] is not None:
@@ -1279,6 +1427,8 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents, now
             row["state"] = item.kind
         elif item.kind == "PullRequest":
             row["state"] = "OPEN" if item.state == "OPEN" else "CLOSED"
+            if item.state == "OPEN":  # spec 041: the open items its Depends on lines name
+                row["holds"] = [str(named(hold)) for hold, state in item.holds if state_of(hold, state) in OPEN_HOLDS]
         elif item.state != "OPEN":
             row["state"] = "CLOSED"
         else:
@@ -1535,10 +1685,14 @@ def main(
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     link_parser = commands.add_parser("link", help="write a link as a native relation and a Depends on line")
-    link_parser.add_argument("issue", help="owner/repo#N: the issue that waits (or the parent)")
-    how = link_parser.add_mutually_exclusive_group(required=True)
-    how.add_argument("--blocked-by", metavar="OWNER/REPO#M", help="the issue it waits on")
-    how.add_argument("--child", metavar="OWNER/REPO#C", help="the issue to put under it as a sub-issue")
+    unlink_parser = commands.add_parser("unlink", help="remove both forms of a link that link writes (spec 041)")
+    for linking in (link_parser, unlink_parser):
+        linking.add_argument(
+            "issue", help="owner/repo#N: the issue or pull request that waits (or the parent, an issue)"
+        )
+        how = linking.add_mutually_exclusive_group(required=True)
+        how.add_argument("--blocked-by", metavar="OWNER/REPO#M", help="the issue it waits on")
+        how.add_argument("--child", metavar="OWNER/REPO#C", help="the issue to put under it as a sub-issue")
     link_parser.add_argument(
         "--product",
         action="store_true",
@@ -1588,7 +1742,7 @@ def main(
     path_parser.add_argument("issues", nargs="*", help=argparse.SUPPRESS)  # none: refused below
     path_parser.add_argument("--milestone", required=True, metavar="TITLE", help="the open milestone's exact title")
     args = parser.parse_args(argv)
-    if args.command != "link":
+    if args.command not in ("link", "unlink"):
         if args.bot_login is not None and not args.bot_login.strip():
             parser.error("--bot-login must not be empty")
         starts = [parse_ref(issue) for issue in args.issues]
@@ -1620,22 +1774,25 @@ def main(
         return stalled(reader, contents, starts, args.json, moment, args.days)
     target = parse_ref(args.issue)
     other = parse_ref(args.child if args.child is not None else args.blocked_by)
-    if args.product and args.child is None:
+    product_flag = getattr(args, "product", False)  # unlink takes no --product
+    if product_flag and args.child is None:
         fail("--product routes a report to a child: use it with --child, never --blocked-by")
     here = checkout if checkout is not None else Path.cwd()
     product = product_of(here, execute)
-    refuse_outside(product, (target, other), args.product)
+    refuse_outside(product, (target, other), product_flag)
     run_other: Runner | None = None
     read_for: Callable[[Ref], Runner] | None = None
     if (write is None) != (edit is None):
         raise ValueError("main takes write and edit together, or neither")
-    if args.product and product is not None:  # refuse_outside exited 2 for --product without [product] repos
+    if product_flag and product is not None:  # refuse_outside exited 2 for --product without [product] repos
         read_for = product_walker(product, run, execute)
         run_other = product_reader(product, other, run, execute)
         run = product_reader(product, target, run, execute)
     if write is None or edit is None:  # neither, as the check above has it
-        command = product_writer(product, target, other) if args.product and product is not None else writer(here)
+        command = product_writer(product, target, other) if product_flag and product is not None else writer(here)
         write, edit = gh_runner(command, execute), gh_editor(command, execute)
+    if args.command == "unlink":
+        return unlink(run, target, other, args.child is not None, write, edit)
     return link(
         run,
         target,

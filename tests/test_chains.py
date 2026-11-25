@@ -80,8 +80,9 @@ class Forge:
         repo, _, number = found["ref"].partition("#")
         base = {"__typename": found["type"], "number": int(number), "title": "t", "state": found["state"]}
         base["repository"] = {"nameWithOwner": repo}
-        if found["type"] != "Issue":
-            return base
+        if found["type"] != "Issue":  # a pull request: its body's Depends on lines hold it (spec 041)
+            author = {"author": {"__typename": "User", "login": "alice"}, "authorAssociation": "OWNER"}
+            return base | {"body": found["body"]} | author
         none = {"pageInfo": {"hasNextPage": False}, "nodes": []}
         fields = base | {"stateReason": None, "body": found["body"], "labels": none, "assignees": none}
         fields |= {"author": {"__typename": "User", "login": "alice"}, "authorAssociation": "OWNER"}
@@ -126,6 +127,7 @@ class Forge:
 
     def writes(self) -> list[str]:
         mutations = {self.ch.ADD_BLOCKED_BY: "addBlockedBy", self.ch.ADD_SUB_ISSUE: "addSubIssue"}
+        mutations |= {self.ch.REMOVE_BLOCKED_BY: "removeBlockedBy", self.ch.REMOVE_SUB_ISSUE: "removeSubIssue"}
         mutations[EDIT] = "PATCH"
         return [mutations[q] for q, _ in self.calls if q in mutations]
 
@@ -145,15 +147,14 @@ class Forge:
             if found is None:
                 missing = f"Could not resolve to an issue or pull request with the number of {variables['number']}."
                 return {"data": {"repository": {"issueOrPullRequest": None}}, "errors": [error(missing, "NOT_FOUND")]}
-            node = {"__typename": found["type"]}
-            if found["type"] == "Issue":
-                node |= {"id": found["id"], "body": found["body"]}
+            node = {"__typename": found["type"], "id": found["id"], "body": found["body"]}
             return {"data": {"repository": {"issueOrPullRequest": node}}}
         if query == EDIT:
             owner, name, number = variables["ref"]
             self.issues[(owner.lower(), name.lower(), number)]["body"] = edited(variables)
             return {"data": {}}
-        reads, writes = (ch.BLOCKED_BY, ch.PARENT), (ch.ADD_BLOCKED_BY, ch.ADD_SUB_ISSUE)
+        reads = (ch.BLOCKED_BY, ch.PARENT)
+        writes = (ch.ADD_BLOCKED_BY, ch.ADD_SUB_ISSUE, ch.REMOVE_BLOCKED_BY, ch.REMOVE_SUB_ISSUE)
         if self.relation_error and query in {"read": reads, "write": writes}[self.relation_error[0]]:
             return {"data": None, "errors": [self.relation_error[1]]}
         if query in reads and self.refuse_read:
@@ -172,7 +173,7 @@ class Forge:
         if query == ch.PARENT:
             parent = self.parents.get(str(variables["id"]))
             return {"data": {"node": {"parent": {"id": parent} if parent else None}}}
-        if query in (ch.ADD_BLOCKED_BY, ch.ADD_SUB_ISSUE) and self.refuse_write:
+        if query in writes and self.refuse_write:
             return {"data": None, "errors": [error(self.refuse_write, "UNPROCESSABLE")]}
         if query == ch.ADD_BLOCKED_BY:
             self.blocked.add((str(variables["issue"]), str(variables["blocking"])))
@@ -180,6 +181,12 @@ class Forge:
         if query == ch.ADD_SUB_ISSUE:
             self.parents[str(variables["sub"])] = str(variables["issue"])
             return {"data": {"addSubIssue": {"issue": {"id": variables["issue"]}}}}
+        if query == ch.REMOVE_BLOCKED_BY:
+            self.blocked.discard((str(variables["issue"]), str(variables["blocking"])))
+            return {"data": {"removeBlockedBy": {"issue": {"id": variables["issue"]}}}}
+        if query == ch.REMOVE_SUB_ISSUE:
+            self.parents.pop(str(variables["sub"]), None)
+            return {"data": {"removeSubIssue": {"issue": {"id": variables["issue"]}}}}
         return self.items(query, variables)
 
 

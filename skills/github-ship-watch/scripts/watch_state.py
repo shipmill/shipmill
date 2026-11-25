@@ -231,7 +231,10 @@ Intake (github-issue-triage's triage_state.py):
                   no assignee stays in PRS_OPEN, for a session to assign. Under [autonomy]
                   land = "propose", the ones labelled shipmill-ready wait on a person's merge
                   and follow as TO_MERGE #N, after a "; " when both parts are there:
-                  WITH_PERSON #4 (@a); TO_MERGE #12 (spec 061); --tier 3 prints this row too
+                  WITH_PERSON #4 (@a); TO_MERGE #12 (spec 061). One whose body's Depends on
+                  lines name an item still open, or one whose state can't be read, follows
+                  as WAITS_ON #N (owner/repo#M ...), never in PRS_OPEN or the land window's
+                  queue (spec 041, #1645); --tier 3 prints this row too
   AGENT_DRAFT     open draft pull requests the --bot-login authored (D-67, #914) with nothing
                   open on them: no needs-decision question waiting on a reply and no hold
                   comment naming an item still open. An agent's row: a session marks each
@@ -677,6 +680,7 @@ TRIAGE_ACTION = {
     "UNBLOCKED",
     "UNFILLED",
     "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
+    "HOLD_UNLINKED",  # spec 041 (#1645): an agent's hold comment that no link records
     "CYCLE",  # spec 041: on a cycle of the repo's open issues, ask which link is wrong
     "SPEC_REFUSED",
     "REVISIT",
@@ -3677,6 +3681,8 @@ def intake(
     held: list[tuple[int, str]] = []  # and the ones still held, with what holds each
     queued: list[int] = []  # spec 056: the ones in the land window's queue, out of PRS_OPEN
     to_merge: list[int] = []  # S-061-11: under land = "propose", the ones labelled shipmill-ready
+    waits: list[tuple[int, list[str]]] = []  # spec 041: held by a Depends on line naming an open item
+    linked = depends_holds([p for p in prs if not (trusted_only and p["isCrossRepository"])], repo, hold_states)
     for pr in prs:
         number = int(pr["number"])
         labels = {label["name"] for label in pr["labels"]}
@@ -3690,13 +3696,15 @@ def intake(
         elif TRIAGE.DECIDED_LABEL in labels and TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
         elif mine:
-            hold = open_hold(comments_of(number), repo, number, hold_states)
+            hold = linked[number][0] if number in linked else open_hold(comments_of(number), repo, number, hold_states)
             if hold is None:
                 drafts.append(number)
             else:
                 held.append((number, hold))
         elif pr["isDraft"]:
             continue  # a person's draft is theirs until marked ready: it starts no session (D-67)
+        elif number in linked:
+            waits.append((number, linked[number]))  # spec 041: never handed to land while it waits
         elif people := pr_people(pr):
             parked.append((number, people))
         elif queue is not None and number in queue.entries:
@@ -3721,6 +3729,8 @@ def intake(
         parts.append("WITH_PERSON " + " ".join(f"#{n} ({' '.join(people)})" for n, people in sorted(parked)))
     if to_merge:
         parts.append("TO_MERGE " + " ".join(f"#{n}" for n in sorted(to_merge)))
+    if waits:
+        parts.append("WAITS_ON " + " ".join(f"#{n} ({' '.join(on)})" for n, on in sorted(waits)))
     if parts:
         rows.append(Row("PRS_PARKED", repo, "; ".join(parts)))
     if drafts:
@@ -3794,6 +3804,33 @@ def own_draft(pr: dict[str, Any], bot_login: str | None) -> bool:
     nothing on it is open; a person's draft, or any draft without --bot-login, is its author's.
     The author is read only for a draft"""
     return bot_login is not None and pr["isDraft"] is True and TRIAGE.same_login(pr_author(pr), bot_login)
+
+
+def depends_holds(
+    prs: Sequence[dict[str, Any]], repo: str, hold_states: HoldStates | None = None
+) -> dict[int, list[str]]:
+    """Spec 041: each pull request whose body's Depends on lines (triage_state.py's
+    dependency_refs, a plain #N of the repo itself) name an item still open, with those items
+    as owner/repo#N, sorted; the states read once for every pull request, only when one names
+    an item. One whose state can't be read holds, so a failed read never hands it to land"""
+    owner, _, name = repo.partition("/")
+    named: dict[int, set[Ref]] = {}
+    for pr in prs:
+        number = int(pr["number"])
+        refs = {r for r in TRIAGE.dependency_refs({"body": pr.get("body") or ""}, (owner, name))}
+        refs = {r for r in refs if TRIAGE.fold(r) != TRIAGE.fold((owner, name, number))}
+        if refs:
+            named[number] = refs
+    if not named:
+        return {}
+    wanted = set().union(*named.values())
+    states = (hold_states or (lambda asked: TRIAGE.upstream_states(asked)[0]))(wanted)
+    found = {}
+    for number, refs in named.items():
+        still = sorted(r for r in refs if states.get(r) not in HOLD_CLOSED)
+        if still:
+            found[number] = [f"{o}/{n}#{k}" for o, n, k in still]
+    return found
 
 
 def open_hold(comments: Comments, repo: str, number: int, hold_states: HoldStates | None = None) -> str | None:
@@ -6181,8 +6218,8 @@ ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
 COMMENTS_CHUNK = 50  # items one batched comment query reads, so a long list never asks too much of one query
 # the open pull requests' fields gh pr list reads, and --known holds; assignees: whom a person's one waits on
-# (#853); author: whether a draft is the App's own (D-67, #914)
-PR_FIELDS = "number,isDraft,isCrossRepository,labels,headRefOid,assignees,author"
+# (#853); author: whether a draft is the App's own (D-67, #914); body: its Depends on lines (spec 041)
+PR_FIELDS = "number,isDraft,isCrossRepository,labels,headRefOid,assignees,author,body"
 
 
 @dataclass(frozen=True)
@@ -6266,6 +6303,7 @@ def known_pr(pr: dict[str, Any]) -> bool:
         and (author is None or (isinstance(author, dict) and isinstance(author.get("login"), str)))
         and isinstance(pr["isDraft"], bool)
         and isinstance(pr["isCrossRepository"], bool)
+        and isinstance(pr["body"], str)
         and isinstance(pr["labels"], list)
         and all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in pr["labels"])
         and isinstance(pr["assignees"], list)

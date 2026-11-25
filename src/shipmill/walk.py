@@ -79,6 +79,7 @@ TIERS: dict[int, tuple[str, ...]] = {
             "NO_ASSIGNEE",
             "UNFILLED",
             "MALFORMED_DEPENDS",
+            "HOLD_UNLINKED",
             "CYCLE",
             "SPEC_REFUSED",
             "RELAY_REFUSED",  # #1302: a relay out of its grammar with the label off, triage asks again
@@ -687,7 +688,7 @@ CONNECTIONS = {
     ),
     "pulls": (
         "pullRequests(states: OPEN, first: {page}{after}, orderBy: {{field: CREATED_AT, direction: DESC}})",
-        f"number updatedAt isDraft isCrossRepository headRefOid {LABELS} {ASSIGNEES} author {{ __typename login }}"
+        f"number updatedAt isDraft isCrossRepository headRefOid body {LABELS} {ASSIGNEES} author {{ __typename login }}"
         " commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }",
     ),
     "incidents": (
@@ -948,6 +949,7 @@ def changes_of(
                 "headRefOid": p["headRefOid"],
                 "assignees": [{"login": login} for login in assignee_logins(p)],
                 "author": pr_author(p),
+                "body": str(p.get("body") or ""),  # spec 041: its Depends on lines hold it
             }
             for p in pulls
         ],

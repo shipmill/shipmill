@@ -181,7 +181,8 @@ ITEMS: dict[str, tuple[dict[str, Any], dict[str, Any], tuple[str, str]]] = {
     "new": (issue(said("Thanks for the report", day(2), "eve", "NONE")), {}, ("NEW", "")),
     "needs a pull request": (issue(by_bot("Triage: **implement**", day(2))), {}, ("NEEDS_PR", "")),
     "held on an open issue": (
-        issue(by_bot("Triage: **implement**\n\nOn hold: waits on #12.", day(2))),
+        # the hold line beside the link it records (spec 041, #1645): a hold is a link
+        issue(by_bot("Triage: **implement**\n\nOn hold: waits on #12.", day(2)), body="Depends on #12"),
         {"states": HOLDS},
         ("BLOCKED", "o/r#12:open"),
     ),
