@@ -7,6 +7,30 @@ bot.
 
 ## [Unreleased]
 
+## [0.170.0] - 2026-11-25
+
+### Fixed
+
+- `shipmill gh` no longer lets every write to a public repo through on a machine without `~/.config/shipmill/private.toml`: a write naming an `owner/name` repo the token at hand reads as private exits 2 (`private-repo`), with or without the file, and in a checkout with `[agents]` a write to a public repo exits 2 until the file exists, an empty one being enough; doctor's `terms` row names the `touch` step (D-102, S-081-18, S-081-19) (#1480)
+- `pr_gate.py` stops with exit 2 when it can't read the permission of the maintainer a relayed veto names (no `[agents.roles]` maintainer listed), instead of dropping the veto and letting the pull request land; a 404 still reads as no maintainer, and an answer's failed read keeps its safe side (#1569)
+- `pr_gate.py` no longer lets an issue's allowed files widen after an agent's pull request opened: a `Triage: **implement**` or `Proposed plan:` comment edited since holds the pull request with `files: the allowance on #N changed after this pull request opened` until the maintainer's answer lifts it (#1570)
+- Spec 090's S-090-7 names S-085-13 (D-106) as the one read of a comment's `lastEditedAt`, the allowed-files hold in `pr_gate.py`, so the two specs agree and `main` is green again (#1597)
+
+### Changed
+
+- A person's item links each precondition of its step as a hold (`chains.py link <item> --blocked-by <precondition>`, filing the precondition first when it has no issue) and never states one in prose, so it is handed off only once every precondition holds (#1487)
+- Spec 087 follows the macOS sandbox probe (D-105): a sandboxed session gets its own `GH_CONFIG_DIR` while `~/.config/gh/hosts.yml` stays denied, its uv cache moves outside the git dir, a `permissions.allow` entry widening Edit or Write fails the launch (S-087-13), and tunnels (S-087-10, #1589) wait for a probe of local ports (#1588) (#1524)
+- The skills write and keep to an issue's allowed files: triage's Implement verdict carries a `- Files:` line with paths in backticks (a spec's build issue lists its spec file), a `Proposed plan:` writes its `Files:` paths in backticks, the implementer brief passes the allowed files and calls a file outside them a decision for you, github-issue-resolve's plan stays within them, landing asks a `files:` hold with the needs-decision question naming each file outside, and `pr_gate.py`'s docstring names the `files:` lines, their exit 5, and how the answer lifts them (#1527)
+
+### Added
+
+- The maintainer's accepting answer lifts `pr_gate.py`'s `files:` lines under spec 055's rules for the head it covers, so CI decides; a head whose own change differs since keeps them, a new verdict on the issue after the pull request opened doesn't widen them, and `shipmill gh pr merge` on a pull request they hold exits 2 before gh runs, now proven by tests (#1525)
+- `chains.py impact`, `stalled`, and `path`, three read-only views of `show`'s one walk: `impact` prints the items open work waits on, most held first; `stalled` prints the heads of chains idle for `--days N` or more (7 by default) and exits 1 when it prints one; `path --repo R --milestone T` prints a milestone's open issues and every open item they wait on, `decision` and `maintainer` items first. `impact` and `stalled` take `--repo OWNER/NAME` to start from every open issue of a repo, paged past 100, and each view takes `--json`, `--trusted-only`, and `--bot-login` (spec 086) (#1529)
+- The watch's full report gives each chain's head idle 7 days or more (an open issue that holds 1 or more and waits for neither `items` nor `cycle`) a report-only `CHAIN_STALLED` row, `holds K open issue(s), no event for D day(s), waits for <waiting_for>`, with `chains.py show` on it as its fix, from the walk it already makes; no `--tier` or `--sweep` read prints it, it changes no exit code, and `shipmill status` lists it on a `stalled chains` line without changing the verdict (spec 086) (#1530)
+- `shipmill decide record [--json]` prints the production record of each area (a changed path's parent directory) that a failed release touched: an incident `shipmill operate` opened, by a bot or a trusted author, raises the areas of the failed tag's diff from its rollback's tag (or, for `to=-`, the newest earlier tag by version), and the area reads `RAISED` until `[decisions] clean_releases` later tags that reached `success` in the same environment, had no incident, and touched it clear it; a read that fails, a tag the checkout lacks, or a trusted incident whose hidden line doesn't read exits 2 and prints no area (spec 083) (#1545)
+- `src/shipmill/earned.py` holds spec 083's earned landing level as a pure function: a path that puts `protected` or `security` in takes the zone's `[decisions.earned]` bound when the four pieces of evidence (a required check that proves, at most `max_lines` changed, no raised area, no path of a ceiling kind: `controls`, `infrastructure`, `dependencies`) hold, never for a path at `never` or below the zone's floor; `tests/landing/seeded.toml` holds 18 seeded cases the rule is scored on, and a miss fails CI naming `MISS L-n: expected <level>, got <level>`; nothing calls the rule yet (spec 083) (#1547)
+- `shipmill gh issue comment <n> --status` and `pr comment <n> --status` write a session's progress into the item's one status comment, creating it once and editing it after, so a maintainer a question subscribed gets no email per step; `triage_state.py` reads no hold from a status comment, and the four skills post their progress this way (spec 090) (#1591)
+
 ## [0.169.0] - 2026-11-25
 
 ### Added
@@ -3043,7 +3067,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.169.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.170.0...HEAD
+[0.170.0]: https://github.com/shipmill/shipmill/compare/v0.169.0...v0.170.0
 [0.169.0]: https://github.com/shipmill/shipmill/compare/v0.168.0...v0.169.0
 [0.168.0]: https://github.com/shipmill/shipmill/compare/v0.167.0...v0.168.0
 [0.167.0]: https://github.com/shipmill/shipmill/compare/v0.166.0...v0.167.0

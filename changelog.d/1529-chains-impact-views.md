@@ -1,3 +1,0 @@
-### Added
-
-- `chains.py impact`, `stalled`, and `path`, three read-only views of `show`'s one walk: `impact` prints the items open work waits on, most held first; `stalled` prints the heads of chains idle for `--days N` or more (7 by default) and exits 1 when it prints one; `path --repo R --milestone T` prints a milestone's open issues and every open item they wait on, `decision` and `maintainer` items first. `impact` and `stalled` take `--repo OWNER/NAME` to start from every open issue of a repo, paged past 100, and each view takes `--json`, `--trusted-only`, and `--bot-login` (spec 086) (#1529)
