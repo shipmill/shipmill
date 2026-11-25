@@ -3817,8 +3817,9 @@ def depends_holds(
     named: dict[int, set[Ref]] = {}
     for pr in prs:
         number = int(pr["number"])
-        refs = {r for r in TRIAGE.dependency_refs({"body": pr.get("body") or ""}, (owner, name))}
-        refs = {r for r in refs if TRIAGE.fold(r) != TRIAGE.fold((owner, name, number))}
+        spelled = TRIAGE.dependency_refs({"body": pr.get("body") or ""}, (owner, name))
+        folded = {TRIAGE.fold(r): r for r in spelled}  # one spelling per item, case ignored
+        refs = {r for f, r in folded.items() if f != TRIAGE.fold((owner, name, number))}
         if refs:
             named[number] = refs
     if not named:

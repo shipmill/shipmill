@@ -269,7 +269,7 @@ def test_s041_21_a_pull_request_whose_line_names_an_open_item_is_parked_not_hand
         asked.append(set(refs))
         return {("x", "y", 116): "OPEN", ("o", "r", 9): "MERGED"}
 
-    prs = [pr(115, "Depends on x/y#116, #9 and #7"), pr(120, "Depends on #9"), pr(121)]
+    prs = [pr(115, "Depends on x/y#116, #9 and #7\nDepends on X/Y#116"), pr(120, "Depends on #9"), pr(121)]
     rows = {r.state: r.detail for r in ws.intake("o/r", 0, "", prs, no_comments, BOT, hold_states=states)}
     assert rows["PRS_OPEN"] == "#120 #121"  # every item #120 names closed
     assert rows["PRS_PARKED"] == "WAITS_ON #115 (o/r#7 x/y#116)"  # #7's state unread: it holds
@@ -330,10 +330,14 @@ def test_s041_22_status_and_queue_hold_a_pull_request_by_what_it_waits_on() -> N
 HOLD = "Triage: **implement**\n\nOn hold: waits on #12."
 
 
-def unlinked(ts: ModuleType, item: dict[str, Any], states: dict[Any, str], issues: Any = None) -> tuple[str, str]:
+def unlinked(
+    ts: ModuleType, item: dict[str, Any], states: dict[Any, str], issues: Any = None, home: str | None = None
+) -> tuple[str, str]:
     """As triage_state.py's main reads an open issue, the holds GitHub gave as issues passed on"""
     known = frozenset(states) if issues is None else issues
-    found: tuple[str, str] = ts.classify_open(item, "Triage:", "postponed", states, None, ("o", "r"), BOT, issues=known)
+    found: tuple[str, str] = ts.classify_open(
+        item, "Triage:", "postponed", states, None, ("o", "r"), BOT, issues=known, home=home
+    )
     return found
 
 
@@ -354,6 +358,20 @@ def test_s041_23_an_agents_hold_comment_with_no_link_reads_hold_unlinked(ts: Mod
     person = issue(by_bot("Triage: **implement**", day(2)), said("On hold: waits on #12.", day(3), "amy", "OWNER"))
     assert unlinked(ts, person, HOLDS)[0] == "BLOCKED"
     assert unlinked(ts, issue(by_bot(HOLD, day(2))), {("o", "r", 12): "CLOSED"})[0] != "HOLD_UNLINKED"
+
+    # only the agent's newest word counts: a later comment, such as the one after an unlink or a
+    # cycle's answer, takes the hold up, and a question's options name no hold
+    later = by_bot("Unlinked: #12 holds nothing now.", day(3))
+    assert unlinked(ts, issue(by_bot(HOLD, day(2)), later), HOLDS)[0] == "BLOCKED"
+    asked = "<!-- shipmill:needs-decision -->\n@amy Decision needed: which link?\n\n1. o/r#7 waits on #12"
+    question = by_bot(asked, day(3))
+    assert unlinked(ts, issue(by_bot("Triage: **implement**", day(2)), question), HOLDS)[0] != "HOLD_UNLINKED"
+
+    # in a component, another repo's item takes no link there (S-038-11): its hold stays a comment
+    other = {("x", "home", 12): "OPEN"}
+    elsewhere = issue(by_bot("Triage: **implement**\n\nOn hold: waits on x/home#12.", day(2)))
+    assert unlinked(ts, elsewhere, other, home="x/home")[0] == "BLOCKED"
+    assert unlinked(ts, elsewhere, other)[0] == "HOLD_UNLINKED"
 
     # read after MALFORMED_DEPENDS
     malformed = issue(by_bot(HOLD, day(2)), body="Depends on the thing and #13")

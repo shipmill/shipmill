@@ -89,7 +89,9 @@ For each open issue:
                    each, then the holds. Read right after UNFILLED, before CYCLE,
                    SPEC_REFUSED, BLOCKED, UNBLOCKED, and HANDOFF_DUE: rewrite the line
   HOLD_UNLINKED    once triaged (or a person's item), a comment with the agent marker, or
-                   by the --bot-login, names a hold on an issue still open (GitHub gave it
+                   by the --bot-login (its newest such comment, neither a status comment nor
+                   a question; in a component, of the repo itself), names a hold on an issue
+                   still open (GitHub gave it
                    as an issue: never a pull request, S-017-9) that no Depends on line and
                    no native relation records (spec 041, #1645): it still
                    holds on it, and its note is "unlinked <owner/repo#M>" for each, then
@@ -1629,25 +1631,36 @@ def unlinked_holds(
     native: Mapping[Ref, Any],
     states: Mapping[Ref, str],
     issues: Container[Ref],
+    home: str | None = None,
 ) -> list[Ref]:
-    """Spec 041 (#1645): the issues an agent's comment (the agent marker, or the --bot-login's)
-    names as a hold (hold_refs) that are still open and that neither a Depends on line of the
-    body nor a native relation records, sorted. Only an item read as an issue (issues) counts:
-    a pull request takes no link from an issue (S-017-9), so a hold on one, such as a spec
-    pull request's, stays its comment. A person's comment is theirs to word: never unlinked"""
+    """Spec 041 (#1645): the issues the agent's newest word on the issue (its newest comment with
+    the agent marker, or by the --bot-login, that is neither a status comment nor a
+    needs-decision question) names as a hold (hold_refs) that are still open and that neither a
+    Depends on line of the body nor a native relation records, sorted. Only the newest counts,
+    so a hold a later comment or an unlink took up, or a question's options, never ask for the
+    link again. Only an item read as an issue (issues) counts: a pull request takes no link from
+    an issue (S-017-9), so a hold on one, such as a spec pull request's, stays its comment. In a
+    component (home names another repo), only an issue of the repo itself, the only link
+    chains.py writes there (S-038-11). A person's comment is theirs to word: never unlinked"""
     agents = [
         c
         for c in issue["comments"]["nodes"]
-        if by_agent(c["body"]) or (bot_login is not None and same_login(login(c.get("author")), bot_login))
+        if (by_agent(c["body"]) or (bot_login is not None and same_login(login(c.get("author")), bot_login)))
+        and first_line(c["body"]) not in (STATUS_MARKER, DECISION_MARKER)
     ]
     if not agents:
         return []
     recorded = {fold(r) for r in (*body, *native)}
-    named = hold_refs({"number": issue["number"], "comments": {"nodes": agents}}, repo)
+    named = hold_refs({"number": issue["number"], "comments": {"nodes": agents[-1:]}}, repo)
+    component = home is not None and home.lower() != "/".join(repo).lower()
+    own = (repo[0].lower(), repo[1].lower())
     return sorted(
         r
         for r in named
-        if r in issues and fold(r) not in recorded and states.get(r) not in (*CLOSED_STATES, "CLOSED_UNMERGED")
+        if r in issues
+        and fold(r) not in recorded
+        and states.get(r) not in (*CLOSED_STATES, "CLOSED_UNMERGED")
+        and not (component and fold(r)[:2] != own)
     )
 
 
@@ -2538,7 +2551,7 @@ def classify_open(
         # Which of its references are holds is unclear, so nothing starts on it: a session
         # rewrites the line (spec 041). CYCLE is read right after this, before SPEC_REFUSED
         return "MALFORMED_DEPENDS", " | ".join([*malformed, shown] if shown else malformed)
-    unlinked = unlinked_holds(issue, repo, bot_login, body, native, states, issues) if held else []
+    unlinked = unlinked_holds(issue, repo, bot_login, body, native, states, issues, home) if held else []
     if unlinked:
         # A hold is recorded only as a link (#1645): an agent wrote one as prose, so a session
         # runs `shipmill link` for it. It still holds meanwhile, so nothing starts early
@@ -3450,7 +3463,7 @@ def main() -> int:
             home=args.home,
             revisits=revisits,
             window=windows.get(issue["number"]),
-            issues=read_issues,
+            issues=read_issues | frozenset(native),
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before
