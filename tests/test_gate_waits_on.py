@@ -17,7 +17,19 @@ from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
 from shipmill.gate import Action, StateRead, WatchState, state_dir
 from shipmill.gitrepo import Git
-from shipmill.walk import HANDED, Hand, Handed, Head, Pull, Waited, waited_updates, waits, waits_on
+from shipmill.walk import (
+    HANDED,
+    Hand,
+    Handed,
+    Head,
+    Marker,
+    Pull,
+    Waited,
+    WaitedItem,
+    waited_items,
+    waits,
+    waits_on,
+)
 
 from .test_gate import checkout
 from .test_gate_walk import NOW, REPO, Source, cfg, handed, tick
@@ -75,10 +87,16 @@ def test_s089_12_a_subject_within_retry_reads_no_marker(checkout: Git) -> None:
 
 
 class GraphQL:
-    """Answers the waits-on queries: each subject's comments, and each named item's updatedAt"""
+    """Answers the waits-on queries: each subject's comments, and each named item's updatedAt
+    and closed (closed when listed in shut)"""
 
-    def __init__(self, comments: Mapping[int, list[dict[str, Any]]], updated: Mapping[str, str | None]) -> None:
-        self.comments, self.updated = comments, updated
+    def __init__(
+        self,
+        comments: Mapping[int, list[dict[str, Any]]],
+        updated: Mapping[str, str | None],
+        shut: frozenset[str] = frozenset(),
+    ) -> None:
+        self.comments, self.updated, self.shut = comments, updated, shut
         self.queries: list[str] = []
 
     def __call__(self, query: str, variables: Mapping[str, str]) -> dict[str, Any]:
@@ -92,7 +110,8 @@ class GraphQL:
         data: dict[str, Any] = {}
         for alias, repo, number in found:
             at = self.updated.get(f"{repo}#{number}")
-            data[alias] = None if at is None else {"updatedAt": at}
+            named = f"{repo}#{number}"
+            data[alias] = None if at is None else {"updatedAt": at, "closed": named in self.shut}
         return {"data": data}
 
 
@@ -117,8 +136,8 @@ def test_s089_12_the_newest_marker_by_the_bot_names_the_waited_item() -> None:
 
 def test_s089_12_the_waited_items_are_read_across_repos_and_a_gone_one_wakes_nothing() -> None:
     graphql = GraphQL({}, {"romamo/demo#7": "2026-11-23T06:40:00Z", "other/lib#12": None})
-    found = waited_updates([Waited("romamo/demo", 7), Waited("other/lib", 12)], graphql)
-    assert found == {Waited("romamo/demo", 7): dt.datetime(2026, 11, 23, 6, 40, tzinfo=dt.UTC)}
+    found = waited_items([Waited("romamo/demo", 7), Waited("other/lib", 12)], graphql)
+    assert found == {Waited("romamo/demo", 7): WaitedItem(dt.datetime(2026, 11, 23, 6, 40, tzinfo=dt.UTC), False)}
     assert len(graphql.queries) == 1
 
 
@@ -127,7 +146,8 @@ def test_s089_12_a_subject_waiting_on_an_answer_elsewhere_wakes_once_it_comes() 
     comments = {1441: [{"author": APP, "body": marker("shipmill/shipmill#1253")}]}
     graphql = GraphQL(comments, {"shipmill/shipmill#1253": "2026-11-23T06:40:00Z"})
     found = waits("romamo/demo", [1441], BOT, graphql)
-    assert found == {1441: dt.datetime(2026, 11, 23, 6, 40, tzinfo=dt.UTC)}
+    item = WaitedItem(dt.datetime(2026, 11, 23, 6, 40, tzinfo=dt.UTC), False)
+    assert found == {1441: Marker(Waited("shipmill/shipmill", 1253), item)}
     assert waits("romamo/demo", [1441], "someone-else[bot]", graphql) == {}
 
 
@@ -152,4 +172,5 @@ def test_s089_12_a_marker_naming_an_item_the_token_cant_read_wakes_nothing_and_f
         return json.dumps({"data": {"w0": None}})
 
     read = StateRead(bot_login=BOT)
-    assert WatchState(REPO, checkout.root, read, state_dir(checkout), NOW, gh).waited([3]) == {}
+    found = WatchState(REPO, checkout.root, read, state_dir(checkout), NOW, gh).waited([3])
+    assert found == {3: Marker(Waited("other/private", 12), None)}  # named, but nothing read: no wake

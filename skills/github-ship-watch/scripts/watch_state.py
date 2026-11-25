@@ -5090,7 +5090,9 @@ PULL_KEYS = frozenset({"head", "rollup"})
 SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")
 # shipmill's walk.End: how a hand's session ended (spec 089, spec 095)
 ENDS = ("ok", "limit", "auth", "error", "github_limit", "disk")
-HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})  # walk.HAND_EXTRA; errors and until: the backoff
+HAND_EXTRA = frozenset({"idle", "waits", "ended", "errors", "until"})  # walk.HAND_EXTRA; errors and until: the backoff
+# shipmill's walk.WAITED: the item an idle hand waits on, `<owner/repo>#<N>` (spec 092)
+WAITED_ITEM = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+#[1-9]\d*")
 
 
 def gate_state(folder: Path) -> Path | None:
@@ -5125,7 +5127,8 @@ def idle_hand(path: Path, key: object, entry: object) -> tuple[str, dt.datetime]
     where = f"error: {path}: {key}"
     if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | HAND_EXTRA:
         raise Refused(
-            f"{where}: expected session and at, head and rollup or neither, and idle, ended, errors, until or not"
+            f"{where}: expected session and at, head and rollup or neither,"
+            " and idle, waits, ended, errors, until or not"
         )
     if "ended" in entry and entry["ended"] not in ENDS:
         raise Refused(f"{where}: ended must be one of {', '.join(ENDS)}, got {entry['ended']!r}")
@@ -5144,6 +5147,10 @@ def idle_hand(path: Path, key: object, entry: object) -> tuple[str, dt.datetime]
             raise Refused(f"{where}: rollup must be a string or null")
     if not isinstance(idle, bool):
         raise Refused(f"{where}: idle must be true or false")
+    if "waits" in entry and (not isinstance(entry["waits"], str) or WAITED_ITEM.fullmatch(entry["waits"]) is None):
+        raise Refused(f"{where}: waits must be <owner/repo>#<N>, got {entry['waits']!r}")
+    if "waits" in entry and not idle:
+        raise Refused(f"{where}: only an idle hand has waits")
     try:
         when = dt.datetime.fromisoformat(at) if isinstance(at, str) else None
     except ValueError:

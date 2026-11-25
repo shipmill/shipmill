@@ -26,6 +26,9 @@ _MAX_WAIT_MINUTES = 15
 _STALL_MINUTES = 30  # a headless session whose log is silent this long is stopped (spec 048)
 _MAX_STALL_MINUTES = 24 * 60  # a day
 _MAX_WIP = 100
+_IDLE_DAYS = 3  # an idle subject that names nothing to wait on is handed once more after this (spec 092)
+_PARKED_DAYS = 7  # a TRIAGED issue with nothing new on it goes back to triage after this (spec 092)
+_MAX_DAYS = 90
 # deprecated and ignored in 0.60.0 (S-031-21), refused since: dropped on load, it turns nothing
 # off (spec 052, D-64)
 PLUGIN_UPDATE_REMOVED = catalogue.PLUGIN_UPDATE.removed
@@ -328,6 +331,8 @@ class AgentsConfig:
     retry_hours: int  # unchanged findings start a new session after this
     prune_hours: int = _PRUNE_HOURS  # the gate prunes landed worktrees this often; 0: every tick (spec 045)
     sweep_hours: int = _SWEEP_HOURS  # the gate reads the timed sections this often (spec 046)
+    idle_days: int = _IDLE_DAYS  # an idle subject naming nothing to wait on is handed again after this; 0: never
+    parked_days: int = _PARKED_DAYS  # a TRIAGED issue with nothing new goes back to triage after this; 0: never
     catch_up: bool = True  # each tick fast-forwards the local default branch when it can't lose work (#886, D-66)
     notify: bool = True  # a desktop notification when a session waits on you
     remind_hours: int = _REMIND_HOURS  # repeat it while the session still waits
@@ -365,6 +370,8 @@ class AgentsConfig:
             "retry_hours",
             "prune_hours",
             "sweep_hours",
+            "idle_days",
+            "parked_days",
             "catch_up",
             "notify",
             "remind_hours",
@@ -407,14 +414,19 @@ class AgentsConfig:
         remind = table.integer("remind_hours", default=_REMIND_HOURS, low=1, high=_MAX_HOURS)
         max_wait = table.integer("max_wait_minutes", default=_MAX_WAIT_MINUTES, low=0, high=_MAX_HOURS * 60)
         stall = table.integer("stall_minutes", default=_STALL_MINUTES, low=0, high=_MAX_STALL_MINUTES)
+        idle_days = table.integer("idle_days", default=_IDLE_DAYS, low=0, high=_MAX_DAYS)
+        parked_days = table.integer("parked_days", default=_PARKED_DAYS, low=0, high=_MAX_DAYS)
         assert retry is not None and prune_hours is not None and sweep_hours is not None  # defaults were given
         assert remind is not None and max_wait is not None and stall is not None
+        assert idle_days is not None and parked_days is not None
         return cls(
             prompt=prompt,
             prs=table.boolean("prs", default=False) if "prs" in table.raw else None,
             retry_hours=retry,
             prune_hours=prune_hours,
             sweep_hours=sweep_hours,
+            idle_days=idle_days,
+            parked_days=parked_days,
             catch_up=table.boolean("catch_up", default=True),
             notify=table.boolean("notify", default=True),
             remind_hours=remind,

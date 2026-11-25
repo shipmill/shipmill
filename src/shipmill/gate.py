@@ -107,9 +107,12 @@ from shipmill.walk import (
     Hand,
     Handed,
     Landed,
+    Marker,
     Rows,
     Source,
     Swept,
+    Waited,
+    WaitedItem,
     Walked,
     base_read,
     base_reading,
@@ -120,6 +123,7 @@ from shipmill.walk import (
     malformed,
     queued,
     tier_of,
+    waited_items,
     waits,
     walk,
     watched,
@@ -1104,11 +1108,17 @@ class WatchState:
         """The issue subjects' updatedAt (spec 061): one GraphQL query per 100 of them"""
         return issue_updates(self._repo, numbers, self._graphql)
 
-    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, Marker]:
         """Spec 089 (S-089-12): for each subject whose newest waits-on marker is by the bot, the
-        updatedAt of the item it names; none without an App's bot, since only its marker counts"""
+        item it names and what GitHub says of it; none without an App's bot, since only its
+        marker counts"""
         bot = self._read.bot_login
         return {} if bot is None else waits(self._repo, numbers, bot, self._graphql)
+
+    def waited_items(self, items: Sequence[Waited]) -> Mapping[Waited, WaitedItem]:
+        """Spec 092 (S-092-4): the updatedAt and closed of the items idle hands wait on, one
+        GraphQL query per 100 of them by URL"""
+        return waited_items(items, self._graphql)
 
 
 def as_source(found: Source | Sequence[Finding]) -> Source:
@@ -2336,7 +2346,8 @@ def tick_walk(
     found idle stays past retry_hours, marked so, and is no change by itself (S-061-8). Once
     the last session ended, its hand of a pull request now labelled needs-decision and updated
     since the hand comes off, so an answer that came in while it ran is handed on the next tick
-    (#1447)"""
+    (#1447). An idle hand with waits whose item the change check reads updated after the hand
+    loses its idle mark and waits, a change, so the walk hands its subject again (spec 092)"""
     cursor = Cursor.load(state / CURSOR)
     recorded = (state / HANDED).is_file()
     handed = Handed.load(state / HANDED)
@@ -2371,6 +2382,11 @@ def tick_walk(
     asked = handed if last is None or dead is not None else handed.unasked(last.session, changes.pulls)
     dropped = len(asked.hands) < len(handed.hands)
     handed = asked
+    # spec 092 (S-092-3, S-092-4): the items idle hands wait on, read only when one names one; an
+    # idle hand whose item was updated since it loses its mark, so the walk reads its subject again
+    named = handed.waiting()
+    stirred = handed.stirred(source.waited_items(named)) if named else []
+    handed = handed.unmarked(stirred)
     sweeping = sweep_now or known is None or known.due(now, sweep_hours)
     change = (
         walk_now
@@ -2383,6 +2399,7 @@ def tick_walk(
         or unseen  # a capped one holds its item: its expiry is the change
         or dropped  # #1447: an ended session's question on a pull request
         or ended  # spec 089: a hand dropped on its session's end, its item handed again
+        or bool(stirred)  # spec 092: an item an idle subject waits on changed
     )
     if cursor is not None and not change and not sweeping:
         since = cursor.at.isoformat(timespec="minutes")
