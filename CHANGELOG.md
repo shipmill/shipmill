@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.175.0] - 2026-11-25
+
+### Added
+
+- `.github/shipmill.toml` takes `[agents.sandbox]`, the hosts, paths, and tunnels a repo declares for spec 087's sandboxed headless sessions: `domains`, `read`, `write`, and `[[agents.sandbox.tunnels]]` are read and checked now, and a malformed key is dropped, so sessions run without it, with a `refused` row in `shipmill doctor`, a `refused:` note on the gate's tick line and in `tick.json` (its record gaining a `why`), and a stderr line from every command that loads the config; `shipmill decide classify --pr` reports a pull request that adds an entry under `[agents.sandbox]` as `security` at `ask`, whatever `[decisions] security` sets and whatever level `[decisions.earned]` would earn (D-110) (#1528)
+- `shipmill gate --sandbox` runs each headless session in Claude Code's sandbox (spec 087), and `shipmill launchd --sandbox` writes the flag into the job: the launch's one inline `--settings` JSON gains `sandbox` and `permissions.deny`, so a session's commands and file tools can't read the host's keys and logins (`~/.ssh`, `~/.aws`, `~/.config/gh/hosts.yml`, other Apps' keys, other projects' transcripts, and the rest of the spec's list, less each `[agents.sandbox] read` entry), write only its checkout, the git common dir, the main working tree's `.claude/worktrees`, its own uv cache at `~/.cache/shipmill/<owner>-<repo>/uv` and each `[agents.sandbox] write` entry (never git's `config` or `hooks`, the gate's records, or a settings file), and reach only GitHub, PyPI, astral.sh, and each `[agents.sandbox] domains` entry read from origin's default branch; its env sets `UV_CACHE_DIR` and `GH_CONFIG_DIR`, the allowlist's `Edit` and `Write` are narrowed to the write scope, and a `--claude-arg` of `--settings` or `--add-dir` exits 2. Without `--sandbox` a launch is as before (#1531)
+
 ## [0.174.0] - 2026-11-25
 
 ### Changed
@@ -3126,7 +3133,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.174.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.175.0...HEAD
+[0.175.0]: https://github.com/shipmill/shipmill/compare/v0.174.0...v0.175.0
 [0.174.0]: https://github.com/shipmill/shipmill/compare/v0.173.1...v0.174.0
 [0.173.1]: https://github.com/shipmill/shipmill/compare/v0.173.0...v0.173.1
 [0.173.0]: https://github.com/shipmill/shipmill/compare/v0.172.0...v0.173.0
