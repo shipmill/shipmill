@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill status --item G-3` names a goal's state, who holds it, and what moves it, and `--item N` does so for a goal plan (`answer due <date>, overdue` past its date) and a project's head (a held one names what it waits for: `plan #P overdue`, `a free slot: K of N active`, or `held by the maintainer`); the watch runs product intake with `--goals` and `--projects` and lists GOAL_OVERDUE, PLAN_REPLACED, PROJECT_START_DUE, PROJECT_IDLE, PROJECT_STOP_DUE, GOAL_PROPOSAL_DUE, and NEEDS_GOAL on the PLANS row, so the gate starts a session for each; `fleet.py queue` shows an overdue plan as an overdue `PLAN` row and an opportunity that names no goal as an `OPPORTUNITY` row; docs/flow.md gives the states, labels, and markers, and spec 106 is built (#1743)

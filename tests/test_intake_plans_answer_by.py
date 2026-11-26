@@ -122,10 +122,12 @@ def test_s106_8_the_watch_reads_an_overdue_plan_as_waiting_on_the_maintainer() -
 
 
 def test_s106_8_the_queue_still_lists_an_overdue_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """fleet.py queue lists a PLAN_OVERDUE plan as a PLAN row, as it did while it read PLAN_OPEN;
-    its overdue look is #1743's (S-106-26)"""
+    """fleet.py queue lists a PLAN_OVERDUE plan as a PLAN row, as it did while it read PLAN_OPEN,
+    with its overdue look (S-106-26)"""
     queue = load_script("fleet")
-    lines = [{"autonomy": "propose"}, intake_line(32, "PLAN_OVERDUE", "plan")]
+    overdue = {**intake_line(32, "PLAN_OVERDUE", "plan"), "answer_by": "2026-11-20"}
+    lines = [{"autonomy": "propose"}, overdue]
     github = {"o/r": {32: plan_item(32, 9)}}
     code, out = run_queue(queue, tmp_path, capsys, FakeGh(intake={"o/r": lines}, github=github), "--bot-login", BOT)
-    assert code == 1 and out.splitlines() == ["o/r PLAN          #32    answer the goal plan: Plan 32 (9d 0h)"]
+    expected = "o/r PLAN          #32    answer the goal plan, answer due 2026-11-20, overdue: Plan 32 (9d 0h)"
+    assert code == 1 and out.splitlines() == [expected]

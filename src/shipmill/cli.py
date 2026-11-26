@@ -39,7 +39,8 @@
                   on one factory line; --rows for github-ship-watch's table, --json for its JSON
                   lines and an AUTONOMY line with every stage's level; --item REF (a number or
                   a GitHub URL) says why one open issue or pull request is not closed: its
-                  bucket and each condition that keeps it open, with who clears it (spec 088);
+                  bucket and each condition that keeps it open, with who clears it (spec 088),
+                  and a goal id (G-3) a goal's state, who holds it, and what moves it (spec 106);
                   --summary says in a few lines whether the gate works and who holds the open
                   work: you, the agent, needs attention, or nobody (spec 091)
   queue           read-only: who holds each open issue and pull request, why, and what clears
@@ -796,7 +797,8 @@ def _parser() -> argparse.ArgumentParser:
         metavar="REF",
         help=(
             "say why one open issue or pull request is not closed: its bucket and every condition that keeps"
-            " it open, with who clears it (spec 088); REF is its number or its GitHub URL"
+            " it open, with who clears it (spec 088); REF is its number or its GitHub URL, or a goal id,"
+            " such as G-3, for the goal's state, who holds it, and what moves it (spec 106)"
         ),
     )
     p.add_argument(
@@ -3703,7 +3705,7 @@ def _status(
         raise ReleaseError("--item explains one item and can't be combined with --rows; use --item REF [--json]")
     if args.summary and (args.rows or args.item is not None):  # S-091-1: before any read
         raise ReleaseError("--summary can't be combined with --rows or --item; use --summary [--json]")
-    ref = None if args.item is None else item_status.parse_ref(args.item, slug)  # S-088-2: before any read
+    ref = None if args.item is None else item_status.parse_item(args.item, slug)  # S-088-2: before any read
     picture = ref is not None or not (args.rows or args.json)
     resolved = roles.resolve(roles.configured(top), login, gate_maintainer)
     # S-040-10: the picture and --json show the levels; a malformed [autonomy] exits 2 first
@@ -3729,6 +3731,10 @@ def _status(
     if args.summary:  # spec 091: the gate's state and who holds the open work, in a few lines
         return _status_summary(
             top, slug, args.json, run, resolved, autonomy, environments, home, platform, when, bot_login
+        )
+    if isinstance(ref, item_status.GoalRef):  # S-106-25: a goal's state, from the watch's rows alone
+        return _status_goal(
+            top, slug, ref, args.json, run, resolved, autonomy, environments, home, platform, when, bot_login
         )
     if ref is not None:  # spec 088: one item's explanation, from the readings it uses (#1469)
         return _status_item(
@@ -3802,6 +3808,55 @@ def _status(
     )
     sys.stdout.write(status.report(facts).text(slug))
     return code  # S-009-14: spec 008's code, whatever the verdict
+
+
+def _status_goal(
+    top: Path,
+    slug: str,
+    ref: item_status.GoalRef,
+    as_json: bool,
+    run: StateRunner,
+    resolved: tuple[roles.ResolvedRole, ...],
+    autonomy: AutonomyPolicy,
+    environments: tuple[EnvironmentName, ...],
+    home: Path,
+    platform: str,
+    when: dt.datetime,
+    bot_login: Callable[[int, Path], str | None],
+) -> int:
+    """S-106-25: one goal's state, its holder, and what moves it, from watch_state.py --item
+    G-<n>'s rows (its GOAL_STATE row, a hold, the gate's pause, the PLANS row naming it) and
+    [agents]; a goal is no issue, so no issue, pull request, or link is read"""
+    bot = status.read_login(slug, top, home, platform, bot_login)
+    gate = status.agents_gate(top, platform)
+    read = StateRead(bot_login=bot, roles=resolved)
+    proc = run(watch_command(slug, top, read, json=True, host=False, item=ref.goal))
+    sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
+    if state_failed(proc):
+        print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
+        return 2
+    git = Git(top)
+    main = status.read_main(git, status.landing_branch(slug, top, run))
+    facts = status.Facts(
+        repo=slug,
+        rows=status.parse_rows(proc.stdout),
+        issues=(),
+        pulls=(),
+        main=main,
+        version=status.describe(git, main.remote),
+        gate=gate,
+        cli=importlib.metadata.version("shipmill"),
+        now=when,
+        checkout=top,
+        command=cli_command(),
+        autonomy=autonomy,
+        environments=environments,
+        maintainer=status.maintainer_of(resolved),
+    )
+    why = item_status.explain_goal(facts, ref)
+    record = {"schema": queue_mod.SCHEMA, **why.record()}
+    sys.stdout.write(json.dumps(record) + "\n" if as_json else why.text())
+    return 0
 
 
 def _status_item(

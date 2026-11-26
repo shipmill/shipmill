@@ -182,6 +182,8 @@ def test_s028_13_the_watch_runs_intake_state_in_the_checkout(ws: ModuleType, tmp
         str(ws.INTAKE_STATE),
         "o/r",
         "--plans",
+        "--goals",  # S-106-26: each goal's state and the project heads, whose actions are PLANS'
+        "--projects",
         "--json",
         "--tool",
         "shipmill==1.2.3",
@@ -194,7 +196,7 @@ def test_s028_13_the_watch_runs_intake_state_in_the_checkout(ws: ModuleType, tmp
     assert "--wip" not in asked[-1][0] and "--bot-login" not in asked[-1][0]
     # without --tool (the watch's default since spec 031) intake_state.py runs the plugin's pin
     ws.intake_run("o/r", tmp_path, True, None, None, None, execute)
-    assert asked[-1][0][1:] == [str(ws.INTAKE_STATE), "o/r", "--plans", "--json"]
+    assert asked[-1][0][1:] == [str(ws.INTAKE_STATE), "o/r", "--plans", "--goals", "--projects", "--json"]
     with pytest.raises(ws.Refused, match="exit 2: boom"):
         ws.intake_run("o/r", tmp_path, True, "t", execute=lambda cmd, cwd, env: completed(2, err="boom"))
 
@@ -211,6 +213,8 @@ def test_s028_18_the_watch_passes_the_role_flags_to_intake_state(ws: ModuleType,
         str(ws.INTAKE_STATE),
         "o/r",
         "--plans",
+        "--goals",  # S-106-26: each goal's state and the project heads, whose actions are PLANS'
+        "--projects",
         "--json",
         "--bot-login",
         BOT,
