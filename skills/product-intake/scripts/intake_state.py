@@ -121,12 +121,16 @@ answer, read from its first non-blank line after the relay line (D-68):
                     period, the ids those of the body's Work section; and a kept feature or
                     fix item has no issue carrying its plan-item marker (as `plans.py items`
                     reads it), or the Milestone names a title and a kept filed item or a
-                    kept existing item of this repo isn't in it; the note names them, then
-                    `dropped: <ids>` after a partial accept
-  PLAN_FILED        accepted, and neither holds, and a kept item's issue of this repo (a
+                    kept existing item of this repo isn't in it, or a kept existing item of
+                    this repo, open or closed, has no parent, so it isn't yet the plan's
+                    sub-issue (D-114, "not linked: #n"); the note names them, then
+                    "another parent: #n" for a kept existing item whose parent is another
+                    issue (named, never holding the plan), then `dropped: <ids>` after a
+                    partial accept
+  PLAN_FILED        accepted, and none holds, and a kept item's issue of this repo (a
                     filed item's, or an existing item here) is still open; the note names
-                    the dropped ids too
-  PLAN_DONE         (spec 097) accepted, neither holds, and every such issue is closed,
+                    "another parent: #n" and the dropped ids too
+  PLAN_DONE         (spec 097) accepted, none holds, and every such issue is closed,
                     noted "work closed: W-1 #a completed, W-2 #b not planned, ..." (an
                     existing item of another repo is not read, and a dropped item never
                     counts; the note names the dropped ids too); or the goal's newest plan
@@ -1431,6 +1435,32 @@ def existing_milestones(run: Runner, owner: str, name: str, numbers: list[int]) 
     return found
 
 
+def existing_parents(run: Runner, owner: str, name: str, numbers: list[int]) -> dict[int, tuple[str, int] | None]:
+    """The parent of each issue of this repo, as (owner/name in lower case, number), or None
+    with none, 50 to a query (D-114)"""
+    found: dict[int, tuple[str, int] | None] = {}
+    for start in range(0, len(numbers), 50):
+        chunk = numbers[start : start + 50]
+        parts = " ".join(
+            f"p{n}: issue(number: {n}) {{ parent {{ number repository {{ nameWithOwner }} }} }}" for n in chunk
+        )
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = repository(run, query, {"owner": owner, "name": name})
+        for n in chunk:
+            node = data.get(f"p{n}")
+            if node is None:
+                fail(f"no issue #{n} in {owner}/{name}, which a plan names as an existing item")
+            parent = node.get("parent")
+            if parent is None:
+                found[n] = None
+                continue
+            repo = str((parent.get("repository") or {}).get("nameWithOwner") or "")
+            if not repo or not isinstance(parent.get("number"), int):
+                fail(f"#{n} in {owner}/{name} has a parent with no repository or number")
+            found[n] = (repo.lower(), int(parent["number"]))
+    return found
+
+
 def closed_states(run: Runner, owner: str, name: str, numbers: list[int]) -> dict[int, str | None]:
     """How each issue of this repo closed, 50 to a query (spec 097): `completed`, `not
     planned`, `duplicate`, or `closed` with no reason given; None while it is open"""
@@ -1450,8 +1480,8 @@ def closed_states(run: Runner, owner: str, name: str, numbers: list[int]) -> dic
 
 
 def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
-    """The default filing reader: plans.py's items query, and the existing items' milestones;
-    once the plan reads filed, how its items' issues closed (spec 097)"""
+    """The default filing reader: plans.py's items query, and the existing items' milestones and
+    parents (D-114); once the plan reads filed, how its items' issues closed (spec 097)"""
     owner, name = split_repo(repo)
 
     def read(issue: dict[str, Any], plan: Any) -> tuple[str, str]:
@@ -1481,18 +1511,28 @@ def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
             outside += [c.number for c in carried if c.milestone != plan.milestone]
             titles = existing_milestones(run, owner, name, sorted(set(here)))
             outside += [n for n in sorted(set(here)) if titles[n] != plan.milestone]
+        # D-114: each existing item of this repo becomes the plan's sub-issue, open or closed; one
+        # with another parent is named and holds nothing, as GitHub gives an issue one parent
+        parents = existing_parents(run, owner, name, sorted(set(here))) if here else {}
+        ours = (f"{owner}/{name}".lower(), int(issue["number"]))
+        unlinked = [n for n, parent in parents.items() if parent is None]
+        elsewhere = [n for n, parent in parents.items() if parent is not None and parent != ours]
         notes = []
         if unfiled:
             notes.append(f"not filed: {', '.join(unfiled)}")
         if outside:
             notes.append(f"not in milestone {plan.milestone}: {', '.join(f'#{n}' for n in sorted(set(outside)))}")
+        if unlinked:
+            notes.append(f"not linked: {', '.join(f'#{n}' for n in unlinked)}")
+        other = f"another parent: {', '.join(f'#{n}' for n in elsewhere)}" if elsewhere else ""
         if notes:
-            return "PLAN_ACCEPTED", "; ".join(notes)
+            return "PLAN_ACCEPTED", "; ".join([*notes, other] if other else notes)
         closed = closed_states(run, owner, name, sorted({n for _, n in work}))
         if all(closed[n] is not None for _, n in work):
             listed = ", ".join(f"{ident} #{n} {closed[n]}" for ident, n in work)
             return "PLAN_DONE", f"work closed: {listed}" if listed else "work closed: no item of this repository"
-        return "PLAN_FILED", f"filed: {', '.join(f'#{c.number}' for c in carried)}" if carried else "nothing to file"
+        filed_note = f"filed: {', '.join(f'#{c.number}' for c in carried)}" if carried else "nothing to file"
+        return "PLAN_FILED", "; ".join([filed_note, other] if other else [filed_note])
 
     return read
 
