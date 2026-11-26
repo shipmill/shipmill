@@ -15,7 +15,8 @@ from .test_intake_outcomes import FAKE_GH, FAKE_UVX, Checkout, ist, via
 
 BOT = "shipmill-app[bot]"
 NOW = dt.datetime(2026, 11, 26, 12, tzinfo=dt.UTC)
-RECORD = "<!-- shipmill:project-stopped -->\nStopped: the outcome moved to #9.\n<!-- shipmill:agent -->"
+FRESH = "2026-11-25T10:00:00Z"  # a day before NOW: no tree is idle unless a test says so
+RECORD = "<!-- shipmill:project-stopped -->\nThe outcome moved to #9.\n<!-- shipmill:agent -->"
 CHECK = "## Check\n\nRun the release and see the page.\n"
 CLEANUP = (
     CHECK
@@ -30,12 +31,13 @@ def sub(
     number: int, state: str = "OPEN", title: str = "Part", body: str = "", parts: tuple[str, ...] = ()
 ) -> dict[str, Any]:
     """A sub-issue of a head, with its own sub-issues' states"""
-    nodes = [{"number": 900 + i, "state": s} for i, s in enumerate(parts)]
+    nodes = [{"number": 900 + i, "state": s, "updatedAt": FRESH} for i, s in enumerate(parts)]
     return {
         "number": number,
         "title": title,
         "body": body,
         "state": state,
+        "updatedAt": FRESH,
         "subIssues": {"totalCount": len(nodes), "nodes": nodes},
     }
 
@@ -69,7 +71,12 @@ def head(
         "authorAssociation": association,
         "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
         "timelineItems": {"nodes": events},
-        "comments": {"nodes": [{"author": who(a), "body": b} for a, b in comments]},
+        "createdAt": FRESH,
+        "comments": {
+            "nodes": [
+                {"author": who(a), "authorAssociation": "NONE", "body": b, "createdAt": FRESH} for a, b in comments
+            ]
+        },
         "subIssues": {"totalCount": len(subs), "nodes": list(subs)},
     }
 
@@ -140,7 +147,7 @@ def test_s106_12_a_closed_head_reads_closed_or_stopped_by_the_bots_record(ist: M
         "closed as completed",
     )
     stopped = head(state="CLOSED", reason="NOT_PLANNED", closed_at=at, comments=((BOT, RECORD),))
-    assert read(ist, stopped) == ("PROJECT_STOPPED", "stopped")
+    assert read(ist, stopped) == ("PROJECT_STOPPED", "stopped: The outcome moved to #9.")
     assert ist.project_row(stopped, BOT).holder is None
     # without the record, or with it by anyone else, a head closed as not planned reads nothing
     assert read(ist, head(state="CLOSED", reason="NOT_PLANNED", closed_at=at)) is None

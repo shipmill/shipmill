@@ -76,7 +76,13 @@ titled `Check: ` with a `## Check` section, open, and a part open or none filed)
 (active and labelled focus), PROJECT_CLOSING (its check issue open and every part, the head's
 other sub-issues and the check issue's, closed; the note its unchecked `## Cleanup` lines or
 `no cleanup listed`), PROJECT_CLOSED (closed as completed), PROJECT_STOPPED (closed as not
-planned with the --bot-login's `<!-- shipmill:project-stopped -->` comment); none an action.
+planned with the --bot-login's `<!-- shipmill:project-stopped -->` comment, its note the
+reason on the record's next line). Over an open head's state, two actions (exit 1):
+PROJECT_STOP_DUE when the newest trusted reply's first line is `stop: <reason>`, or `stop`
+answering the --bot-login's question with the reason on its next line (a relay naming a
+maintainer counts, with --role); PROJECT_IDLE for an active, in-focus, or closing head whose
+tree (its comments, check issue, parts, and the pull requests closing them) has had no update
+for 14 days and no needs-decision question by the --bot-login since.
 With --json each has kind "project", state, holder, check, and parts {"open", "closed"}. With
 [agents] projects = N, the product's heads reading active or in focus are counted, the product
 read as for [agents] outcomes; the text output then prints `projects active: K of N (product
@@ -2196,29 +2202,47 @@ PROJECT_HOLDERS = {
     "PROJECT_CLOSING": "checker",
     "PROJECT_CLOSED": None,
     "PROJECT_STOPPED": None,
+    "PROJECT_IDLE": "agent",  # S-106-17: a session asks the maintainer continue, hold, or stop
+    "PROJECT_STOP_DUE": "agent",  # S-106-18: a session stops it
 }
 PROJECT_COUNTED = ("PROJECT_ACTIVE", "PROJECT_FOCUS")  # S-106-28: held and closing heads count nothing
-HEAD_FIELDS = f"""
-number title body state stateReason closedAt author {{ __typename login }} authorAssociation
+PROJECT_ACTION = frozenset({"PROJECT_IDLE", "PROJECT_STOP_DUE"})  # each starts a session (exit 1)
+IDLE_DAYS = 14  # S-106-17: a tree with no update this long reads PROJECT_IDLE
+# S-106-18: a stop, `stop: <reason>` as a reply's first line, or `stop` answering the idle
+# question with the reason on its next line
+STOP_LINE = re.compile(r"^stop:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE)
+STOP_ANSWER = re.compile(r"^stop\.?$", re.IGNORECASE)
+# the pull requests that close an issue of the tree, read in the checkout's own pass only
+LINKED = "closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { updatedAt } }"
+
+
+def head_fields(linked: str) -> str:
+    """A head's fields, as GraphQL text; linked adds each issue's pull requests (the idle read)"""
+    return f"""
+number title body state stateReason createdAt closedAt author {{ __typename login }} authorAssociation {linked}
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
 timelineItems(itemTypes: [LABELED_EVENT], first: 20) {{
   nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ __typename login }} }} }}
 }}
-comments(last: 20) {{ nodes {{ author {{ __typename login }} body }} }}
+comments(last: 30) {{ nodes {{ author {{ __typename login }} authorAssociation body createdAt }} }}
 subIssues(first: {PROJECT_SUBS}) {{
   totalCount
   nodes {{
-    number title body state
-    subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state }} }}
+    number title body state updatedAt {linked}
+    subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state updatedAt {linked} }} }}
   }}
 }}
 """
+
+
+HEAD_FIELDS = head_fields("")  # a product count's: the states alone
+LOCAL_FIELDS = head_fields(LINKED)
 PROJECTS_QUERY = (
     "query($owner: String!, $name: String!, $since: DateTime, $cursor: String) {"
     " repository(owner: $owner, name: $name) {"
     f' issues(labels: ["{PROJECT_LABEL}"], states: STATES, first: {PROJECT_HEADS}, after: $cursor,'
     " filterBy: {since: $since}, orderBy: {field: CREATED_AT, direction: ASC}) {"
-    " pageInfo { hasNextPage endCursor } nodes { " + HEAD_FIELDS + " } } } }"
+    " pageInfo { hasNextPage endCursor } nodes { " + LOCAL_FIELDS + " } } } }"
 )
 
 
@@ -2233,10 +2257,16 @@ class ProjectRow:
     check: int | None
     parts_open: int
     parts_closed: int
+    base: str | None = None  # an action's state underneath it, PROJECT_IDLE's and PROJECT_STOP_DUE's
 
     @property
     def holder(self) -> str | None:
         return PROJECT_HOLDERS[self.state]
+
+    @property
+    def counted(self) -> bool:
+        """S-106-28: active or in focus, under an action too"""
+        return (self.base or self.state) in PROJECT_COUNTED
 
 
 @dataclass(frozen=True)
@@ -2312,15 +2342,22 @@ def cleanup_note(body: str) -> str:
     return "cleanup: " + "; ".join(lines) if lines else "no cleanup listed"
 
 
-def stopped(head: dict[str, Any], bot_login: str | None) -> bool:
-    """The --bot-login's stop record on the head: a comment whose first line is the marker"""
+def stopped(head: dict[str, Any], bot_login: str | None) -> str | None:
+    """The --bot-login's stop record on the head, a comment whose first line is the marker: its
+    reason, the first line after the marker that isn't the agent marker (S-106-21), or `stopped`
+    when it gives none; None without a record"""
     if bot_login is None:
-        return False
-    for comment in (head.get("comments") or {}).get("nodes") or []:
-        first = (comment.get("body") or "").lstrip().split("\n", 1)[0].strip()
-        if PLANS.login(comment.get("author")).lower() == bot_login.lower() and first == STOP_RECORD:
-            return True
-    return False
+        return None
+    for comment in reversed((head.get("comments") or {}).get("nodes") or []):
+        body = (comment.get("body") or "").strip()
+        first, _, rest = body.partition("\n")
+        if PLANS.login(comment.get("author")).lower() != bot_login.lower() or first.strip() != STOP_RECORD:
+            continue
+        reason = next(
+            (ln.strip() for ln in rest.splitlines() if ln.strip() and not AGENT_MARKER.fullmatch(ln.strip())), ""
+        )
+        return f"stopped: {reason}" if reason else "stopped"
+    return None
 
 
 def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | None:
@@ -2346,9 +2383,8 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
     if head["state"] != "OPEN":
         if head.get("stateReason") == "COMPLETED":
             return row("PROJECT_CLOSED", "closed as completed")
-        if head.get("stateReason") == "NOT_PLANNED" and stopped(head, bot_login):
-            return row("PROJECT_STOPPED", "stopped")
-        return None
+        record = stopped(head, bot_login) if head.get("stateReason") == "NOT_PLANNED" else None
+        return None if record is None else row("PROJECT_STOPPED", record)
     names = labels(head)
     if PROJECT_HELD_LABEL in names:
         return row("PROJECT_HELD", f"labelled {PROJECT_HELD_LABEL}")
@@ -2363,8 +2399,99 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
     return row("PROJECT_FOCUS" if focus else "PROJECT_ACTIVE", note)
 
 
-def fetch_projects(repo: str, bot_login: str | None, now: dt.datetime, run: Runner) -> list[ProjectRow]:
-    """S-106-12: a row per open head and per head closed within PROJECT_DAYS days, oldest first"""
+def is_question(comment: dict[str, Any], bot_login: str | None) -> bool:
+    """A needs-decision question by the --bot-login (its first line the marker)"""
+    by_bot = bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower()
+    return by_bot and PLANS.first_line(comment.get("body") or "") == DECISION_MARKER
+
+
+def stop_reason(head: dict[str, Any], bot_login: str | None, marker: str, maintainers: frozenset[str]) -> str | None:
+    """S-106-18: the reason of a stop, when the newest trusted reply on the head is one: a
+    first line `stop: <reason>`, or `stop` answering the --bot-login's question before it, the
+    reason on its next non-blank line. A reply is an OWNER's, MEMBER's, or COLLABORATOR's other
+    than the --bot-login, or the --bot-login's relay of a maintainer's answer (D-16, D-68); a
+    newer reply that is no stop lifts it, and an untrusted one changes nothing"""
+    comments = sorted((head.get("comments") or {}).get("nodes") or [], key=lambda c: timestamp(c["createdAt"]))
+    asked = False
+    newest: tuple[str, bool] | None = None  # the newest reply, and whether a question came before it
+    for comment in comments:
+        if is_question(comment, bot_login):
+            asked = True
+            continue
+        answer = relayed_answer(comment, bot_login, marker, maintainers)
+        if answer is None and answerer(comment, bot_login, marker):
+            answer = comment.get("body") or ""
+        if answer is not None:
+            newest = (answer, asked)
+    if newest is None:
+        return None
+    lines = [ln.strip() for ln in newest[0].strip().splitlines() if ln.strip()]
+    line = STOP_LINE.match(lines[0]) if lines else None
+    if line is not None:
+        return line.group(1)
+    if newest[1] and lines and STOP_ANSWER.match(lines[0]) and len(lines) > 1:
+        return lines[1]
+    return None
+
+
+def tree_updated(head: dict[str, Any], bot_login: str | None) -> dt.datetime:
+    """S-106-17: the tree's last update: its parts' and check issue's, the pull requests that
+    close any of them or the head, and the head's comments, the --bot-login's questions left
+    out (a question is no change), or its opening. The head's own updatedAt isn't read: the
+    question itself would move it"""
+    times = [timestamp(head["createdAt"])]
+    times += [timestamp(c["createdAt"]) for c in head["comments"]["nodes"] if not is_question(c, bot_login)]
+
+    def linked(node: dict[str, Any]) -> list[dt.datetime]:
+        refs = (node.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+        return [timestamp(p["updatedAt"]) for p in refs]
+
+    times += linked(head)
+    for sub in (head.get("subIssues") or {}).get("nodes") or []:
+        times += [timestamp(sub["updatedAt"]), *linked(sub)]
+        for part in (sub.get("subIssues") or {}).get("nodes") or []:
+            times += [timestamp(part["updatedAt"]), *linked(part)]
+    return max(times)
+
+
+def project_action(
+    head: dict[str, Any],
+    read: ProjectRow,
+    bot_login: str | None,
+    now: dt.datetime,
+    marker: str,
+    maintainers: frozenset[str],
+) -> ProjectRow:
+    """An open head's action over its state: PROJECT_STOP_DUE on a stop (S-106-18), else
+    PROJECT_IDLE for an active, in-focus, or closing head whose tree has had no update for
+    IDLE_DAYS days and no question by the --bot-login since (S-106-17); its state otherwise"""
+    if head["state"] != "OPEN":
+        return read
+    reason = stop_reason(head, bot_login, marker, maintainers)
+    if reason is not None:
+        return replace(read, state="PROJECT_STOP_DUE", note=f"stop: {reason}", base=read.state)
+    if read.state not in ("PROJECT_ACTIVE", "PROJECT_FOCUS", "PROJECT_CLOSING"):
+        return read
+    last = tree_updated(head, bot_login)
+    if now - last < dt.timedelta(days=IDLE_DAYS):
+        return read
+    comments = (head.get("comments") or {}).get("nodes") or []
+    if any(is_question(c, bot_login) and timestamp(c["createdAt"]) > last for c in comments):
+        return read  # the idle question waits for its answer
+    note = f"no change since {last.strftime('%Y-%m-%d')}"
+    return replace(read, state="PROJECT_IDLE", note=note, base=read.state)
+
+
+def fetch_projects(
+    repo: str,
+    bot_login: str | None,
+    now: dt.datetime,
+    run: Runner,
+    marker: str = "Triage:",
+    maintainers: frozenset[str] = frozenset(),
+) -> list[ProjectRow]:
+    """S-106-12: a row per open head and per head closed within PROJECT_DAYS days, oldest first,
+    an open head's action over its state (project_action)"""
     owner, name = split_repo(repo)
     since = (now - dt.timedelta(days=PROJECT_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     found: list[ProjectRow] = []
@@ -2377,7 +2504,7 @@ def fetch_projects(repo: str, bot_login: str | None, now: dt.datetime, run: Runn
                 continue
             read = project_row(head, bot_login)
             if read is not None:
-                found.append(read)
+                found.append(project_action(head, read, bot_login, now, marker, maintainers))
     return found
 
 
@@ -2403,7 +2530,7 @@ def projects_active(product: Product, local: list[ProjectRow], gh: ProductGh, bo
     owners: dict[str, list[str]] = {}
     for repo in product.repos[1:]:
         owners.setdefault(repo.partition("/")[0].lower(), []).append(repo)
-    total = sum(1 for r in local if r.state in PROJECT_COUNTED)
+    total = sum(1 for r in local if r.counted)
     for group in owners.values():
         via = next((r for r in group if r.lower() == product.home.lower()), group[0])
         step = f"counting the active projects of {', '.join(group)}"
@@ -2419,7 +2546,7 @@ def projects_active(product: Product, local: list[ProjectRow], gh: ProductGh, bo
                 fail(f"{step}: {repo} has {issues['totalCount']} open heads, more than intake_state.py reads")
             for head in issues.get("nodes") or []:
                 read = project_row(head, bot_login)
-                if read is not None and read.state in PROJECT_COUNTED:
+                if read is not None and read.counted:
                     total += 1
     return Projects(product.home, product.limit, total)
 
@@ -2527,8 +2654,10 @@ def main() -> int:
         "as triage_state.py's flag, e.g. '^\\d{4}\\.\\d{2}' for CalVer",
     )
     args = parser.parse_args()
-    if not args.plans and (args.wip is not None or args.role):
-        parser.error("--wip and --role go with --plans")
+    if not args.plans and args.wip is not None:
+        parser.error("--wip goes with --plans")
+    if not (args.plans or args.projects) and args.role:
+        parser.error("--role goes with --plans or --projects")
     if args.wip is not None and args.wip < 1:
         parser.error("--wip must be at least 1")
     if args.bot_login is not None and not args.bot_login.strip():
@@ -2575,7 +2704,8 @@ def main() -> int:
     heads: list[ProjectRow] = []
     projects = None
     if args.projects:  # spec 106: the heads, and with [agents] projects the product's active count
-        heads = fetch_projects(args.repo, args.bot_login, dt.datetime.now(UTC), gh_graphql)
+        now = dt.datetime.now(UTC)
+        heads = fetch_projects(args.repo, args.bot_login, now, gh_graphql, args.marker, maintainers)
         limits = product_of(args.repo, config, product_gh.home_config, "projects")
         projects = projects_active(limits, heads, product_gh, args.bot_login)
     if args.json:
@@ -2599,6 +2729,7 @@ def main() -> int:
         for h in heads:
             print(show_project(h))
     actions = any(r.state in ACTION for r in found) or any(p.state in PLAN_ACTION for p in planned)
+    actions = actions or any(h.state in PROJECT_ACTION for h in heads)
     return 1 if actions else 0
 
 
