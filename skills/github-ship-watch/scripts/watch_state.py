@@ -268,6 +268,12 @@ Intake (github-issue-triage's triage_state.py):
                   runs product intake. With --trusted-only, an open plan issue the
                   --bot-login didn't open is in none of these and in UNTRUSTED, and in no
                   other row (D-16)
+  PLAN_OPEN       from the same run (#1680): the plan issues intake_state.py reads
+                  PLAN_OPEN, as #N, each waiting on the maintainer's answer, as fleet.py
+                  queue lists them: one the --bot-login opened, or an OWNER, MEMBER, or
+                  COLLABORATOR (its "association"); with --trusted-only, the --bot-login's
+                  alone. Report-only, never an action or an agent's, and in no --tier or
+                  --sweep read: only the maintainer answers a plan
   SPEC_DUE        from the same intake_state.py run (spec 074): `ACCEPTED #N ...`, every
                   opportunity the maintainer accepted that triage hasn't taken, oldest first;
                   the session runs github-issue-triage's spec gate on each. An agent's row at
@@ -667,6 +673,11 @@ DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose
 # intake_state.py's plan states (spec 028): the ones that make it exit 1, in its order, and the rest
 PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED")
 PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_FILED", "PLAN_DECLINED"})
+# #1680: the report-only row of the plans waiting on the maintainer's answer, intake_state.py's
+# PLAN_OPEN, and the fix fleet.py queue asks of one (its ASKED[PLAN]; tests/test_status_plan_waits.py
+# keeps the two equal)
+PLAN_OPEN = "PLAN_OPEN"
+PLAN_OPEN_FIX = "answer the goal plan"
 GOAL_ID = re.compile(r"G-[1-9]\d*")
 # spec 074: intake_state.py's feedback lines the watch places, the kinds they come in, its intake
 # levels, the wait after triage's hand-off before an intake pass is due, and the trusted openers
@@ -4263,6 +4274,29 @@ def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only:
     return Plans(rows, frozenset(untrusted))
 
 
+def plans_waiting(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> list[Row]:
+    """#1680: PLAN_OPEN from intake_state.py --plans --json's lines, the plan issues it reads
+    PLAN_OPEN, as #N, whose answer is the maintainer's: fleet.py queue's PLAN items. Report-only:
+    no action, no agent's, and in no --tier or --sweep read, so no session starts for a plan
+    only the maintainer answers. Trusted as the queue trusts an item (D-16): one the --bot-login
+    opened, or an OWNER, MEMBER, or COLLABORATOR; with trusted_only, the --bot-login's alone, as
+    PLANS reads it. Numbers only, never an issue's text"""
+    waiting: list[str] = []
+    for line in text.splitlines():
+        row = plan_line(line)
+        if row is None or row["kind"] != "plan":
+            continue
+        association = row.get("association")
+        if association is not None and not isinstance(association, str):
+            raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+        if row["state"] != PLAN_OPEN:
+            continue
+        ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+        if ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS):
+            waiting.append(f"#{row['number']}")
+    return [Row(PLAN_OPEN, repo, " ".join(waiting), PLAN_OPEN_FIX)] if waiting else []
+
+
 # -- handed-over requests and accepted opportunities (spec 074) ------------------------------
 
 
@@ -7138,6 +7172,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
 
     plans = Plans([], frozenset())
     feedback = Feedback([], frozenset())
+    waiting: list[Row] = []  # #1680: the plans waiting on the maintainer's answer, report-only
     unplanned = None  # PyPI's wait for the plans' pinned shipmill (#597)
     planned = (repo_dir / DIRECTION).is_file()  # a goal's plan needs goals (spec 028)
     try:  # one intake_state.py run per repo, its plans only with goals (spec 074)
@@ -7145,10 +7180,12 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         roles = args.role if planned else ()
         lines = intake_run(args.repo, repo_dir, planned, args.tool, args.bot_login, wip, roles=roles)
         plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
+        waiting = plans_waiting(lines, args.repo, args.bot_login, args.trusted_only) if planned else []
         feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
     except PypiWait as wait:
         unplanned = wait
     rows += plans.rows
+    rows += waiting if host else []  # a --tier or --sweep read prints no report-only row
     # a --tier or --sweep read prints no report-only row: FEEDBACK_DUE under intake = "observe"
     rows += [r for r in feedback.rows if host or not r.report_only]
     if unplanned is not None and args.trusted_only:

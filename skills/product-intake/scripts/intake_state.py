@@ -121,7 +121,8 @@ answer, read from its first non-blank line after the relay line (D-68):
 A plan closed as completed or as a duplicate reads nothing. With --json, each plan row has
 goal, kind (goal for a goal's row, plan for a plan issue's), number, state, title, note, and
 author: the plan issue's opener, a Bot's login ending [bot] as --bot-login spells it, or
-null on a goal's row (watch_state.py's trust filter reads it, D-16).
+null on a goal's row (watch_state.py's trust filter reads it, D-16); and association: the
+opener's author association, null on a goal's row (#1680).
 
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
 OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, or PLAN_MALFORMED, 2 on bad input (an
@@ -755,6 +756,7 @@ class PlanRow:
     number: int | None = None  # the request issue for a requested plan, the plan issue for a plan's row
     kind: str = "goal"  # goal: a row per goal (PLAN_DUE, PLAN_WAITS); plan: a row per plan issue
     author: str | None = None  # a plan issue's opener, as --bot-login spells a login; None for a goal's row
+    association: str | None = None  # the opener's author association (#1680); None for a goal's row
 
 
 # Reads the direction's goals, in the direction's order
@@ -1180,7 +1182,8 @@ def plan_issue_rows(
                 issue, goals=goals, marker=marker, bot_login=bot_login, filing=filing, maintainers=maintainers
             )
             if row is not None:
-                found.append(replace(row, author=PLANS.login(issue.get("author"))))
+                opener = PLANS.login(issue.get("author"))
+                found.append(replace(row, author=opener, association=str(issue.get("authorAssociation") or "NONE")))
     return found
 
 
@@ -1411,6 +1414,13 @@ def json_row(row: Item) -> dict[str, Any]:
     return line
 
 
+def plan_json(row: PlanRow) -> dict[str, Any]:
+    """A plan row's --json line: its opener and their author association, which the watch's
+    trust reads (D-16, #1680), null on a goal's row"""
+    found = {"goal": row.goal, "kind": row.kind, "number": row.number, "state": row.state, "title": row.title}
+    return {**found, "note": row.note, "author": row.author, "association": row.association}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("repo", help="owner/name")
@@ -1480,8 +1490,7 @@ def main() -> int:
         for r in found:
             print(json.dumps(json_row(r), sort_keys=True))
         for p in planned:
-            row = {"goal": p.goal, "kind": p.kind, "number": p.number, "state": p.state, "title": p.title}
-            print(json.dumps({**row, "note": p.note, "author": p.author}, sort_keys=True))
+            print(json.dumps(plan_json(p), sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")
         for r in found:

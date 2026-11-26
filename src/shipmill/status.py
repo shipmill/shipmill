@@ -117,6 +117,10 @@ CLASS_ROWS = ("CLASS_CONFLICT", "FIXED_DATE_AT_RISK", "FIXED_DATE_NO_DATE")
 # spec 074: the accepted opportunities the spec gate owes, and the requests triage handed to
 # intake a day ago or more, each line its issues and the row's fix
 INTAKE_LINES = (("spec due", "SPEC_DUE"), ("feedback due", "FEEDBACK_DUE"))
+# #1680: watch_state.py's goal plans waiting on the maintainer's answer, `#N ...`, as fleet.py
+# queue lists them: each a WAITS ON YOU reason naming its link, on the goal plan line
+PLAN_OPEN = "PLAN_OPEN"
+PLAN_NUMBERS = re.compile(r"#[1-9]\d*(?: #[1-9]\d*)*")
 YOURS_ROWS = (
     "HOLD",
     "PROMOTION_DUE",
@@ -158,6 +162,7 @@ PLACED = {
     MILESTONE_MISSING,  # spec 068: the milestone lines say it with its create, the maintainer's (D-32)
     CHAIN_STALLED,  # spec 086: the stalled chains line says it, with its fix
     *(state for _, state in INTAKE_LINES),  # spec 074: their own lines, with their fix
+    PLAN_OPEN,  # #1680: the goal plan line says it, each plan a reason that waits on you
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
 RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED")
@@ -1003,6 +1008,18 @@ def parked_pulls(rows: Sequence[Row]) -> list[tuple[int, str]]:
     return parked(rows).people
 
 
+def open_plans(rows: Sequence[Row], repo: str) -> list[tuple[int, str]]:
+    """#1680: the goal plans watch_state.py's PLAN_OPEN rows name, each with its fix, the
+    maintainer's answer; numbers only, never a plan's text (D-16)"""
+    found = []
+    for r in rows:
+        if r.state == PLAN_OPEN:
+            if PLAN_NUMBERS.fullmatch(r.detail) is None:
+                raise ReleaseError(f"watch_state.py's {PLAN_OPEN} row is unreadable: {r.detail!r}")
+            found += [(int(n), row_fix(repo, r)) for n in re.findall(r"#(\d+)", r.detail)]
+    return found
+
+
 def land_stage(facts: Facts) -> StageLevel:
     """The land stage as `shipmill autonomy` lists it, under the hold (spec 040)"""
     for level in stage_levels(facts.autonomy, facts.environments, facts.rows):
@@ -1344,6 +1361,7 @@ def verdict(facts: Facts) -> tuple[Verdict, list[Reason], list[str]]:
         yours.append(Reason(f"issue {numbers(wait.issues)} waits on your decision", DECISION_FIX))
     if wait.pulls:
         yours.append(Reason(f"pull request {numbers(wait.pulls)} waits on your decision", DECISION_FIX))
+    yours += [Reason(f"goal plan {item(repo, n, False)} waits on your answer", f) for n, f in open_plans(rows, repo)]
     yours += [r for c in checks if c.check in GATE_CHECKS for r in c.yours]
     yours += [Reason(r.text(), row_fix(repo, r)) for r in rows if r.state in YOURS_ROWS]
     yours += [r for c in checks if c.check not in GATE_CHECKS for r in c.yours]
@@ -1551,6 +1569,7 @@ def item_lines(facts: Facts) -> list[str]:
     wait = waiting(facts)
     decide = [*(item(repo, n, False) for n in wait.issues), *(item(repo, n, True) for n in wait.pulls)]
     lines = _fixed("needs decision", [(v, DECISION_FIX) for v in decide])
+    lines += _fixed("goal plan", [(item(repo, n, False), f) for n, f in open_plans(rows, repo)])  # #1680
     lines += _fixed("hold", [(_subject_item(repo, r), fixed(r)) for r in of("HOLD")])
     lines += _fixed("incident", [(_subject_item(repo, r), fixed(r)) for r in of("INCIDENT_OPEN")])
     lines += _fixed("postmortem", [(_subject_item(repo, r), fixed(r)) for r in of("POSTMORTEM_DUE")])
