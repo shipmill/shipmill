@@ -274,11 +274,14 @@ would, else, with every hold closed, one of:
                    starts with "done" in any case, by one of its assignees or an OWNER,
                    MEMBER, or COLLABORATOR or the --bot-login
 
-An open issue, a parent or not (#1671), that isn't a person's item (an upstream one
-reads UPSTREAM) whose body has a "## Check" section (spec 042) reads, where it would read
-UNBLOCKED, one of these; so does one with no hold and no open PR where a merged "Part of
-#N" PR would leave it NEEDS_PR, TRIAGED, or NEW (not POSTPONED), those merges standing
-for its holds' closes. Without the section it reads as before:
+A parent (an open issue with a sub-issue, not a person's item; an upstream one reads
+UPSTREAM) whose body has a "## Check" section (spec 042) reads, where it would read
+UNBLOCKED, one of these. So does an issue with the section and no sub-issue, not a
+person's item, once its own work merged (#1671): a merged PR links it (a closer or "Part
+of #N") or one of its holds is a merged PR, where it would read UNBLOCKED, DONE_NOT_CLOSED,
+NEEDS_PR, TRIAGED, or NEW, its closed holds' closes and those PRs' merges dating its
+comments; labelled postponed, it reads POSTPONED. Held only by closed issues, it reads
+UNBLOCKED, work to build (#1027). Without the section it reads as before:
   VERIFY_DUE       no check-failed comment came after the newest close among its holds:
                    run its ## Check. Its note is the children's progress and its holds
                    (or its PRs), then "run its ## Check"
@@ -2556,12 +2559,26 @@ def classify_open(
     if children:
         closed = sum(1 for s in children if s in ("CLOSED", "NOT_PLANNED"))
         shown = f"children {closed}/{len(children)} closed {shown}"
+    checked = CHECK.search(issue.get("body") or "") is not None
+    # #1671: an issue with a ## Check and no sub-issue reads by it only once its own work merged:
+    # a linked PR merged, or a hold is a PR that merged. Held only by issues, it is work to build
+    # (#1027). Its comments are dated against its closed holds' closes and those PRs' merges
+    built = [n for n, s, _ in prs if s == "MERGED" and n not in standing]
+    own_work = checked and not human and not children and (bool(built) or any(states.get(r) == "MERGED" for r in waits))
+    own_ends = [
+        *(closes[r] for r in waits if r in closes and states.get(r) in CLOSED_STATES),
+        *merge_times(issue, built),
+    ]
+    told = " ".join(t for t in (shown, note) if t)
     if merged and not human and all(states.get(r) in (*CLOSED_STATES, "CLOSED_UNMERGED") for r in waits):
-        # #1492: a merged closer finishes the issue only once no hold is still open; an issue
-        # with a ## Check, a parent or not, runs it first (spec 042, #1671), with a hold open it
-        # reads as its holds say
-        if CHECK.search(issue.get("body") or ""):
+        # #1492: a merged closer finishes the issue only once no hold is still open; a parent
+        # with a ## Check runs it first (spec 042), with a hold open it reads as its holds say
+        if children and checked:
             return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
+        if own_work:
+            if postponed in labels:
+                return postponed_state(triaged, stable, note, revisits)
+            return parent_check(comments, bot_login, own_ends, told)
         return "DONE_NOT_CLOSED", note
     unfilled = unfilled_dependencies(issue)
     if unfilled:
@@ -2596,8 +2613,12 @@ def classify_open(
         if still or not waits:
             coordinator = home_hold_note(still, states, repo, home)
             return "BLOCKED", " | ".join([shown, coordinator]) if coordinator else (shown or "labelled blocked")
-        if not human and CHECK.search(issue.get("body") or ""):
+        if not human and children and checked:
             return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
+        if own_work:
+            if postponed in labels:
+                return postponed_state(triaged, stable, note, revisits)
+            return parent_check(comments, bot_login, own_ends, told)
         if not human:
             return "UNBLOCKED", shown
     if postponed in labels:
@@ -2616,11 +2637,10 @@ def classify_open(
         if refused is not None:
             return "RELAY_REFUSED", RELAY_NOT_COUNTED.format(reason=refused)
         return "DECIDED", f"answered by @{relay[1]}, {RELAYED}"
-    parts = [n for n, s, whole in prs if s == "MERGED" and not whole and n not in standing]
-    if parts and CHECK.search(issue.get("body") or ""):
+    if own_work:
         # #1671: nothing holds it and no PR is open, and a "Part of #N" PR merged: its ## Check
-        # is due, its comments dated against those merges, as a parent's against its holds'
-        return parent_check(comments, bot_login, merge_times(issue, parts), note)
+        # is due, its comments dated against those merges
+        return parent_check(comments, bot_login, own_ends, told)
     if not triage:
         return "NEW", note
     if PLAN_LABEL in labels and triage[-1].lstrip()[len(marker) :].lstrip().lower().startswith(PLAN_VERDICT):
@@ -3001,8 +3021,8 @@ def stale_handoff(issue: dict[str, Any], bot_login: str | None) -> tuple[str, st
 
 
 def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: list[str], shown: str) -> tuple[str, str]:
-    """An issue with a ## Check, a parent or not (#1671), whose holds all closed or whose
-    "Part of #N" PRs merged (spec 042): WITH_PERSON while a check waits on a person
+    """A parent with a ## Check whose holds all closed (spec 042), or an issue with one and no
+    sub-issue whose own work merged (#1671): WITH_PERSON while a check waits on a person
     (check_waiting, #740), else CHECK_FAILED when a trusted check-failed comment came after
     the newest close among its holds or merge among those PRs (``ends``), else VERIFY_DUE.
     ``shown`` is its holds' note, starting with the children's progress, or its PRs'"""
