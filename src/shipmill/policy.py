@@ -347,6 +347,7 @@ class Policy:
         product = ProductConfig.read(top, None if agents is None else agents.app_id)
         if product is not None and agents is not None:
             product.refuse_outcomes(agents.outcomes)  # S-101-2: the limit is set in the home
+            product.refuse_projects(agents.projects)  # S-106-28: so is the projects limit
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
         notices = NoticesConfig.parse(top.table("notices")) if "notices" in raw else None
         hooks = HooksConfig.parse(top.table("hooks", optional=True))

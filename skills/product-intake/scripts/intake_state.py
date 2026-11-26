@@ -68,6 +68,21 @@ A component whose home's config can't be read (no read token, a home that doesn'
 config on its default branch) has no limit either: output and exit code are as before, with
 one `note:` line on stderr naming the failed read and the home.
 
+With --projects (spec 106), a row per project head after the plan rows: an issue labelled
+project, opened by an OWNER, MEMBER, or COLLABORATOR or the --bot-login, or labelled project by
+someone other than its opener; one per open head and per head closed within 30 days.
+PROJECT_HELD (labelled held, or no check issue), PROJECT_ACTIVE (its check issue, the sub-issue
+titled `Check: ` with a `## Check` section, open, and a part open or none filed), PROJECT_FOCUS
+(active and labelled focus), PROJECT_CLOSING (its check issue open and every part, the head's
+other sub-issues and the check issue's, closed; the note its unchecked `## Cleanup` lines or
+`no cleanup listed`), PROJECT_CLOSED (closed as completed), PROJECT_STOPPED (closed as not
+planned with the --bot-login's `<!-- shipmill:project-stopped -->` comment); none an action.
+With --json each has kind "project", state, holder, check, and parts {"open", "closed"}. With
+[agents] projects = N, the product's heads reading active or in focus are counted, the product
+read as for [agents] outcomes; the text output then prints `projects active: K of N (product
+<owner/home>)` after the outcomes line, and --json's first line gains "projects": {"limit": N,
+"active": K, "room": R}.
+
 With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
 login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
 association, the opener's author association, null for a discussion; and handed, the
@@ -1954,7 +1969,7 @@ class Product:
 
     home: str  # owner/name: the repo whose config sets the limit, the checkout's own outside a component
     repos: tuple[str, ...]  # every repo of the product, the checkout's own first, none twice
-    limit: int | None  # [agents] outcomes; None without the key, and then nothing is counted
+    limit: int | None  # [agents] outcomes (or projects); None without the key, and then nothing is counted
 
 
 @dataclass(frozen=True)
@@ -1976,10 +1991,11 @@ class Outcomes:
         return f"outcomes in flight: {self.in_flight} of {self.limit} (product {self.home})"
 
 
-def outcomes_limit(value: object, where: Path | str) -> int:
-    """[agents] outcomes, checked as src/shipmill/agents.py reads it: an integer from 1 to wip's ceiling"""
+def outcomes_limit(value: object, where: Path | str, key: str = "outcomes") -> int:
+    """[agents] outcomes (or projects, spec 106), checked as src/shipmill/agents.py reads it: an
+    integer from 1 to wip's ceiling"""
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= OUTCOMES_CEILING:
-        fail(f"{where}: [agents] outcomes must be an integer from 1 to {OUTCOMES_CEILING}, got {value!r}")
+        fail(f"{where}: [agents] {key} must be an integer from 1 to {OUTCOMES_CEILING}, got {value!r}")
     return value
 
 
@@ -2010,14 +2026,14 @@ class Unreadable(Exception):
     """A `shipmill gh --product` read that failed, its message naming the step and the repo"""
 
 
-def unlimited(home: str, repo: str, reason: str) -> Product:
+def unlimited(home: str, repo: str, reason: str, key: str = "outcomes") -> Product:
     """A component whose home's config can't be read: no limit, as without the key (S-101-3),
     and one note on stderr naming the failed read so it isn't silent"""
-    sys.stderr.write(f"note: no [agents] outcomes limit, the home's config is unreadable: {reason}\n")
+    sys.stderr.write(f"note: no [agents] {key} limit, the home's config is unreadable: {reason}\n")
     return Product(home, (repo,), None)
 
 
-def product_of(repo: str, path: Path | None, read_home: HomeReader) -> Product:
+def product_of(repo: str, path: Path | None, read_home: HomeReader, key: str = "outcomes") -> Product:
     """The product the checkout's config places repo in (spec 101). A lone repo, or one whose
     [product] says standalone, is its own product; in the product's home ([product] repos), the
     home and the repos it lists; in a component ([product] home), the limit and the repos are
@@ -2025,33 +2041,35 @@ def product_of(repo: str, path: Path | None, read_home: HomeReader) -> Product:
     sets [agents] outcomes itself is refused, naming the home. A home whose config can't be read
     (read_home raises Unreadable, or the home has none) sets no limit: the run goes on as before
     with one note on stderr (S-101-3). [product] repos is read only with a limit, so a run without
-    one reads the config as before"""
+    one reads the config as before. key is the limit's: outcomes, or projects with --projects
+    (S-106-28), read the same way"""
     if path is None:
         return Product(repo, (repo,), None)
     product = config_values(path, "product", ("home", "standalone"))
-    local = config_values(path, "agents", ("outcomes",))
+    local = config_values(path, "agents", (key,))
     home = None if product.get("standalone") is True else product.get("home")
     if home is not None:
         if not isinstance(home, str) or not PLAIN_REPO.fullmatch(home):
             fail(f"{path}: [product] home must be owner/name, got {home!r}")
-        if "outcomes" in local:
-            fail(f"{path}: [agents] outcomes is the product's, set in its home {home}'s {CONFIG}, not in a component")
+        if key in local:
+            fail(f"{path}: [agents] {key} is the product's, set in its home {home}'s {CONFIG}, not in a component")
         where = f"{home}:{CONFIG}"
         try:
             text = read_home(home)
         except Unreadable as failed:
-            return unlimited(home, repo, str(failed))
+            return unlimited(home, repo, str(failed), key)
         if text is None:
-            return unlimited(home, repo, f"reading the product's limit: GitHub has no {where} on its default branch")
-        found = text_values(text, where, "agents", ("outcomes",))
-        if "outcomes" not in found:
+            reason = f"reading the product's limit: GitHub has no {where} on its default branch"
+            return unlimited(home, repo, reason, key)
+        found = text_values(text, where, "agents", (key,))
+        if key not in found:
             return Product(home, (repo,), None)
-        limit = outcomes_limit(found["outcomes"], where)
+        limit = outcomes_limit(found[key], where, key)
         listed = product_repos(text_values(text, where, "product", ("repos",)).get("repos", []), where)
         return Product(home, unique([repo, home, *listed]), limit)
-    if "outcomes" not in local:
+    if key not in local:
         return Product(repo, (repo,), None)
-    limit = outcomes_limit(local["outcomes"], path)
+    limit = outcomes_limit(local[key], path, key)
     listed = [] if product.get("standalone") is True else config_values(path, "product", ("repos",)).get("repos", [])
     return Product(repo, unique([repo, *product_repos(listed, path)]), limit)
 
@@ -2140,12 +2158,277 @@ def outcomes_in_flight(product: Product, local_open: int, label: str, gh: Produc
     return Outcomes(product.home, product.limit, total)
 
 
-def first_line(autonomy: str, outcomes: Outcomes | None) -> dict[str, Any]:
-    """--json's first line: the autonomy, and with a limit the outcomes (spec 101)"""
+def first_line(autonomy: str, outcomes: Outcomes | None, projects: Projects | None = None) -> dict[str, Any]:
+    """--json's first line: the autonomy, and with a limit the outcomes (spec 101) and the
+    projects (spec 106)"""
     line: dict[str, Any] = {"autonomy": autonomy}
     if outcomes is not None:
         line["outcomes"] = outcomes.json()
+    if projects is not None:
+        line["projects"] = projects.json()
     return line
+
+
+# -- spec 106: projects, a head issue labelled `project` with its `Check: ` issue and parts, and
+# [agents] projects, how many of the product's run at once
+
+PROJECT_LABEL = "project"
+PROJECT_HELD_LABEL = "held"
+PROJECT_FOCUS_LABEL = "focus"
+STOP_RECORD = "<!-- shipmill:project-stopped -->"  # the --bot-login's record on a stopped head
+PROJECT_DAYS = 30  # a head closed within this many days still prints its row
+CHECK_TITLE = "Check: "
+CHECK_SECTION = re.compile(r"^##[ \t]+Check[ \t]*$", re.MULTILINE)
+CLEANUP_SECTION = re.compile(r"^##[ \t]+Cleanup[ \t]*$", re.MULTILINE)
+UNCHECKED = re.compile(r"^[ \t]*[-*][ \t]+\[ \][ \t]+(.+?)[ \t]*$", re.MULTILINE)
+PROJECT_HEADS = 50  # heads per page, and per repo in a product count
+PROJECT_SUBS = 50  # sub-issues of a head
+PROJECT_PARTS = 20  # sub-issues of a head's sub-issue: the check issue's parts
+# the states a head reads, and who holds each (spec 106's table): its start, agents and the
+# maintainer's steps, the maintainer's steps first, the person who runs the check, none
+PROJECT_HOLDERS = {
+    "PROJECT_HELD": "start",
+    "PROJECT_ACTIVE": "agents",
+    "PROJECT_FOCUS": "maintainer",
+    "PROJECT_CLOSING": "checker",
+    "PROJECT_CLOSED": None,
+    "PROJECT_STOPPED": None,
+}
+PROJECT_COUNTED = ("PROJECT_ACTIVE", "PROJECT_FOCUS")  # S-106-28: held and closing heads count nothing
+HEAD_FIELDS = f"""
+number title body state stateReason closedAt author {{ login }} authorAssociation
+labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
+timelineItems(itemTypes: [LABELED_EVENT], first: 50) {{
+  nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ login }} }} }}
+}}
+comments(last: 20) {{ nodes {{ author {{ login }} body }} }}
+subIssues(first: {PROJECT_SUBS}) {{
+  totalCount
+  nodes {{
+    number title body state
+    subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state }} }}
+  }}
+}}
+"""
+PROJECTS_QUERY = (
+    "query($owner: String!, $name: String!, $since: DateTime, $cursor: String) {"
+    " repository(owner: $owner, name: $name) {"
+    f' issues(labels: ["{PROJECT_LABEL}"], states: STATES, first: {PROJECT_HEADS}, after: $cursor,'
+    " filterBy: {since: $since}, orderBy: {field: CREATED_AT, direction: ASC}) {"
+    " pageInfo { hasNextPage endCursor } nodes { " + HEAD_FIELDS + " } } } }"
+)
+
+
+@dataclass(frozen=True)
+class ProjectRow:
+    """One head's row (S-106-12): its state, note, holder, check issue, and parts"""
+
+    number: int
+    state: str
+    title: str
+    note: str
+    check: int | None
+    parts_open: int
+    parts_closed: int
+
+    @property
+    def holder(self) -> str | None:
+        return PROJECT_HOLDERS[self.state]
+
+
+@dataclass(frozen=True)
+class Projects:
+    """--json's first line's projects and the text output's projects line (S-106-28)"""
+
+    home: str
+    limit: int
+    active: int
+
+    @property
+    def room(self) -> int:
+        return max(self.limit - self.active, 0)
+
+    def json(self) -> dict[str, int]:
+        return {"limit": self.limit, "active": self.active, "room": self.room}
+
+    def line(self) -> str:
+        return f"projects active: {self.active} of {self.limit} (product {self.home})"
+
+
+def is_head(head: dict[str, Any], bot_login: str | None) -> bool:
+    """A head is labelled `project` and was opened by an OWNER, MEMBER, or COLLABORATOR or the
+    --bot-login, or labelled `project` by someone other than its opener: GitHub lets only a
+    person with triage access label another's issue, while a label an issue form adds on
+    opening is the opener's own (D-16)"""
+    if PROJECT_LABEL not in labels(head):
+        return False
+    author = (head.get("author") or {}).get("login")
+    if author is not None and bot_login is not None and author.lower() == bot_login.lower():
+        return True
+    if str(head.get("authorAssociation") or "NONE") in PLANS.TRUSTED:
+        return True
+    for event in (head.get("timelineItems") or {}).get("nodes") or []:
+        actor = (event.get("actor") or {}).get("login")
+        if (event.get("label") or {}).get("name") == PROJECT_LABEL and actor is not None and actor != author:
+            return True
+    return False
+
+
+def complete(connection: dict[str, Any], what: str) -> list[dict[str, Any]]:
+    """A sub-issue connection's nodes, refused when GitHub has more than the page read"""
+    nodes: list[dict[str, Any]] = connection.get("nodes") or []
+    if int(connection.get("totalCount") or 0) > len(nodes):
+        fail(f"{what} has {connection['totalCount']} sub-issues, more than intake_state.py reads ({len(nodes)})")
+    return nodes
+
+
+def is_check(sub: dict[str, Any]) -> bool:
+    """spec 042's check issue: a title starting `Check: ` and a `## Check` section"""
+    return (
+        str(sub.get("title") or "").startswith(CHECK_TITLE) and CHECK_SECTION.search(sub.get("body") or "") is not None
+    )
+
+
+def cleanup_note(body: str) -> str:
+    """The unchecked `- [ ]` lines of the check issue's `## Cleanup` section, or `no cleanup listed`"""
+    found = CLEANUP_SECTION.search(body)
+    if found is None:
+        return "no cleanup listed"
+    section = body[found.end() :]
+    following = re.search(r"^##[ \t]", section, re.MULTILINE)
+    lines = UNCHECKED.findall(section if following is None else section[: following.start()])
+    return "cleanup: " + "; ".join(lines) if lines else "no cleanup listed"
+
+
+def stopped(head: dict[str, Any], bot_login: str | None) -> bool:
+    """The --bot-login's stop record on the head: a comment whose first line is the marker"""
+    if bot_login is None:
+        return False
+    for comment in (head.get("comments") or {}).get("nodes") or []:
+        author = (comment.get("author") or {}).get("login")
+        first = (comment.get("body") or "").lstrip().split("\n", 1)[0].strip()
+        if author is not None and author.lower() == bot_login.lower() and first == STOP_RECORD:
+            return True
+    return False
+
+
+def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | None:
+    """S-106-12: the state a head reads, None for an issue that is no head (not labelled
+    `project`, or not by a trusted author) and for a head closed otherwise than completed or
+    stopped. Its check issue is the head's sub-issue titled `Check: ` with a `## Check` section,
+    an open one first; its parts are the head's other sub-issues and the check issue's"""
+    if not is_head(head, bot_login):
+        return None
+    number, title = int(head["number"]), str(head.get("title") or "")
+    subs = complete(head.get("subIssues") or {}, f"project #{number}")
+    checks = [sub for sub in subs if is_check(sub)]
+    check = next((c for c in checks if c["state"] == "OPEN"), checks[0] if checks else None)
+    parts = [sub for sub in subs if sub is not check]
+    if check is not None:
+        parts += complete(check.get("subIssues") or {}, f"check issue #{check['number']}")
+    open_parts = sum(1 for part in parts if part["state"] == "OPEN")
+    check_number = None if check is None else int(check["number"])
+
+    def row(state: str, note: str) -> ProjectRow:
+        return ProjectRow(number, state, title, note, check_number, open_parts, len(parts) - open_parts)
+
+    if head["state"] != "OPEN":
+        if head.get("stateReason") == "COMPLETED":
+            return row("PROJECT_CLOSED", "closed as completed")
+        if head.get("stateReason") == "NOT_PLANNED" and stopped(head, bot_login):
+            return row("PROJECT_STOPPED", "stopped")
+        return None
+    names = labels(head)
+    if PROJECT_HELD_LABEL in names:
+        return row("PROJECT_HELD", f"labelled {PROJECT_HELD_LABEL}")
+    if check is None:
+        return row("PROJECT_HELD", "no check issue")
+    if check["state"] != "OPEN":  # checked, but the head is still open: whoever closes it next
+        return row("PROJECT_CLOSING", f"check #{check_number} closed; the head is open")
+    if parts and open_parts == 0:
+        return row("PROJECT_CLOSING", cleanup_note(check.get("body") or ""))
+    focus = PROJECT_FOCUS_LABEL in names
+    note = f"{open_parts} of {len(parts)} parts open" if parts else "no part filed"
+    return row("PROJECT_FOCUS" if focus else "PROJECT_ACTIVE", note)
+
+
+def fetch_projects(repo: str, bot_login: str | None, now: dt.datetime, run: Runner) -> list[ProjectRow]:
+    """S-106-12: a row per open head and per head closed within PROJECT_DAYS days, oldest first"""
+    owner, name = split_repo(repo)
+    since = (now - dt.timedelta(days=PROJECT_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    found: list[ProjectRow] = []
+    for states, after in (("OPEN", None), ("CLOSED", since)):
+        query = PROJECTS_QUERY.replace("STATES", states)
+        variables: Variables = {"owner": owner, "name": name, **({"since": after} if after else {})}
+        heads, _ = paged(run, query, variables, "issues")
+        for head in heads:
+            if states == "CLOSED" and timestamp(str(head.get("closedAt"))) < now - dt.timedelta(days=PROJECT_DAYS):
+                continue
+            read = project_row(head, bot_login)
+            if read is not None:
+                found.append(read)
+    return found
+
+
+def heads_query(repos: list[str]) -> str:
+    """One query that reads each repo's open heads, as fetch_projects reads them"""
+    parts = []
+    for i, repo in enumerate(repos):
+        owner, name = split_repo(repo)
+        where = f"owner: {json.dumps(owner)}, name: {json.dumps(name)}"
+        connection = f'issues(labels: ["{PROJECT_LABEL}"], states: OPEN, first: {PROJECT_HEADS})'
+        parts.append(f"r{i}: repository({where}) {{ {connection} {{ totalCount nodes {{ {HEAD_FIELDS} }} }} }}")
+    return "query { " + " ".join(parts) + " }"
+
+
+def projects_active(product: Product, local: list[ProjectRow], gh: ProductGh, bot_login: str | None) -> Projects | None:
+    """S-106-28: the product's heads reading active or in focus: the checkout's own, local, and
+    every other repo's, read with one `shipmill gh --product` per owner (its repo the home when
+    the owner's repos include it, else the owner's first) and read as fetch_projects reads them.
+    A read that fails exits 2 naming the repos, never counted as empty. None without a limit,
+    and then nothing is read"""
+    if product.limit is None:
+        return None
+    owners: dict[str, list[str]] = {}
+    for repo in product.repos[1:]:
+        owners.setdefault(repo.partition("/")[0].lower(), []).append(repo)
+    total = sum(1 for r in local if r.state in PROJECT_COUNTED)
+    for group in owners.values():
+        via = next((r for r in group if r.lower() == product.home.lower()), group[0])
+        step = f"counting the active projects of {', '.join(group)}"
+        try:
+            data = gh.graphql(via, heads_query(group), {}, step)
+        except Unreadable as failed:
+            fail(str(failed))
+        for i, repo in enumerate(group):
+            issues = (data.get(f"r{i}") or {}).get("issues")
+            if not isinstance(issues, dict) or not isinstance(issues.get("totalCount"), int):
+                fail(f"{step}: GitHub returned no open heads for {repo}")
+            if issues["totalCount"] > len(issues.get("nodes") or []):
+                fail(f"{step}: {repo} has {issues['totalCount']} open heads, more than intake_state.py reads")
+            for head in issues.get("nodes") or []:
+                read = project_row(head, bot_login)
+                if read is not None and read.state in PROJECT_COUNTED:
+                    total += 1
+    return Projects(product.home, product.limit, total)
+
+
+def show_project(row: ProjectRow) -> str:
+    return f"{row.state:<16} #{row.number:<6} {row.note}  {row.title}"
+
+
+def project_json(row: ProjectRow) -> dict[str, Any]:
+    """A project row's --json line (S-106-12): state, holder, check (null without one), and parts"""
+    return {
+        "kind": "project",
+        "number": row.number,
+        "state": row.state,
+        "title": row.title,
+        "note": row.note,
+        "holder": row.holder,
+        "check": row.check,
+        "parts": {"open": row.parts_open, "closed": row.parts_closed},
+    }
 
 
 def show(row: Item) -> str:
@@ -2209,6 +2492,9 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")
     parser.add_argument("--plans", action="store_true", help="also report the goals a plan is due for (spec 028)")
     parser.add_argument("--wip", type=int, help="with --plans: no-work plans wait while N issues are in progress")
+    parser.add_argument(
+        "--projects", action="store_true", help="also report the projects, heads labelled project (spec 106)"
+    )
     parser.add_argument(
         "--bot-login", help="the login shipmill's sessions write as (<slug>[bot]); its triage comments count (D-16)"
     )
@@ -2275,20 +2561,32 @@ def main() -> int:
             maintainers=maintainers,
             holds=gh_holds(args.repo, gh_graphql_unreadable, dt.datetime.now(UTC), stable),
         )
+    heads: list[ProjectRow] = []
+    projects = None
+    if args.projects:  # spec 106: the heads, and with [agents] projects the product's active count
+        heads = fetch_projects(args.repo, args.bot_login, dt.datetime.now(UTC), gh_graphql)
+        limits = product_of(args.repo, config, product_gh.home_config, "projects")
+        projects = projects_active(limits, heads, product_gh, args.bot_login)
     if args.json:
-        print(json.dumps(first_line(autonomy, outcomes)))
+        print(json.dumps(first_line(autonomy, outcomes, projects)))
         for r in found:
             print(json.dumps(json_row(r), sort_keys=True))
         for p in planned:
             print(json.dumps(plan_json(p), sort_keys=True))
+        for h in heads:
+            print(json.dumps(project_json(h), sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")
         if outcomes is not None:
             print(outcomes.line())
+        if projects is not None:
+            print(projects.line())
         for r in found:
             print(show(r))
         for p in planned:
             print(show_plan(p))
+        for h in heads:
+            print(show_project(h))
     actions = any(r.state in ACTION for r in found) or any(p.state in PLAN_ACTION for p in planned)
     return 1 if actions else 0
 

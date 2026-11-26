@@ -192,6 +192,33 @@ def test_s101_2_the_home_and_a_lone_repo_keep_their_outcomes_limit(repo: Repo) -
         assert AgentsConfig.load(repo.root).outcomes == 3
 
 
+# -- S-106-28 --------------------------------------------------------------------------------
+
+
+def test_s106_28_a_component_that_sets_the_projects_limit_is_refused_naming_the_home(repo: Repo) -> None:
+    text = POLICY + AGENTS + "projects = 2\n" + COMPONENT
+    repo.write(repo.policy_file, text)
+    for read in (
+        lambda: Policy.parse(tomllib.loads(text), "shipmill.toml"),
+        lambda: main(["--repo", str(repo.root), "plan"], github=repo.github),
+        lambda: AgentsConfig.load(repo.root),
+    ):
+        with pytest.raises(ReleaseError, match=rf"\[agents\] projects is set in a component of {HOME}") as caught:
+            read()
+        assert f"set it in {HOME}'s .github/shipmill.toml" in str(caught.value)
+
+
+def test_s106_28_the_home_and_a_lone_repo_keep_their_projects_limit(repo: Repo) -> None:
+    for text in (
+        POLICY + AGENTS + "projects = 2\n",
+        POLICY + AGENTS + 'projects = 2\n\n[product]\nrepos = ["acme/api"]\n',
+    ):
+        repo.write(repo.policy_file, text)
+        policy = Policy.parse(tomllib.loads(text), "shipmill.toml")
+        assert policy.agents is not None and policy.agents.projects == 2
+        assert AgentsConfig.load(repo.root).projects == 2
+
+
 # -- S-065-7 (S-038-10 dropped) --------------------------------------------------------------
 
 OTHER = "romamo/api"

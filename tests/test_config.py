@@ -240,7 +240,7 @@ MESSAGES: dict[str, str] = {
     "autonomy deploy environment name": "an environment name is letters, digits, '.', '_', or '-'; got 'pro duction'",
     "autonomy deploy unknown environment": "shipmill.toml [autonomy]: deploy.qa names no environment in [environments]; known: staging",
     "autonomy a table": "shipmill.toml: autonomy must be a table, got 1",
-    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']",
+    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'projects', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']",
     "agents prompt required": "shipmill.toml [agents]: prompt is required",
     "agents prompt empty": "shipmill.toml [agents]: prompt must not be empty",
     "agents retry range": "shipmill.toml [agents]: retry_hours must be in 1..168, got 0",
@@ -395,7 +395,7 @@ def test_the_agents_section_alone_is_read_with_the_same_words(tmp_path: Path) ->
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == "shipmill.toml: agents must be a table, got 1"
     path.write_text('[agents]\nprompt = "/t"\nwhen = 1\n', encoding="utf-8")
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == (
-        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
+        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'projects', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
     )
 
 
@@ -472,6 +472,27 @@ def test_s101_1_a_bad_outcomes_limit_is_refused_naming_the_key(line: str, refuse
     assert refusal(lambda: agents(line + "\n")) == f"shipmill.toml [agents]: {refused}"
 
 
+def test_s106_13_the_projects_limit_reads_1_to_wips_ceiling_and_is_none_when_omitted() -> None:
+    assert agents("").projects is None
+    assert agents("projects = 2\n").projects == 2
+    assert (agents("projects = 1\n").projects, agents("projects = 100\n").projects) == (1, 100)
+
+
+@pytest.mark.parametrize(
+    ("line", "refused"),
+    [
+        ("projects = 0", "projects must be in 1..100, got 0"),
+        ("projects = -1", "projects must be in 1..100, got -1"),
+        ("projects = 101", "projects must be in 1..100, got 101"),
+        ('projects = "2"', "projects must be an integer, got '2'"),
+        ("projects = 2.5", "projects must be an integer, got 2.5"),
+        ("projects = true", "projects must be an integer, got True"),
+    ],
+)
+def test_s106_13_a_bad_projects_limit_is_refused_naming_the_key(line: str, refused: str) -> None:
+    assert refusal(lambda: agents(line + "\n")) == f"shipmill.toml [agents]: {refused}"
+
+
 def test_no_doc_or_skill_still_names_the_removed_roadmap_plan() -> None:
     """D-32 (#377): outside the history (CHANGELOG, fragments, decisions), nothing points at
     roadmap_state.py or a [roadmap] wip limit"""
@@ -501,12 +522,12 @@ WAIT_REFUSALS = {
     'max_wait_minutes = "4"': "max_wait_minutes must be an integer, got '4'",
     "max_wait_hours = 4": (
         "unknown keys ['max_wait_hours']; allowed: "
-        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
+        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'projects', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
         "'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
     ),
     "wait_hours = 4": (
         "unknown keys ['wait_hours']; allowed: "
-        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
+        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'outcomes', 'plugin', 'projects', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
         "'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
     ),
 }
