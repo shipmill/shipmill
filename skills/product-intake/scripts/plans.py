@@ -17,6 +17,9 @@ directory), the way `shipmill product ids` lists them:
     reference, #N or owner/repo#N; any item may end with `(after W-<k>[, W-<j>])`, naming
     items before it
   - Milestone holds one line: `none`, or a milestone title
+  - at most one `Follows: #<n>` line, in Goal after its `Measure:` line, naming the
+    finished plan this one follows (spec 097); any other line starting `Follows:`, a
+    second one, or one in another section is an error
 
 Exit 0 on a well-formed body; 2 with one `FILE:LINE: rule` line on stderr per problem, or
 when the direction is missing or malformed. check reads no forge: whether an `existing`
@@ -62,6 +65,11 @@ AFTER = re.compile(r"^(.*?)[ \t]*\(after (W-[1-9][0-9]*(?:, W-[1-9][0-9]*)*)\)$"
 AFTER_LIKE = re.compile(r"\(after\b[^()]*\)$")
 ISSUE_REF = re.compile(r"^(?:[\w.-]+/[\w.-]+)?#[1-9][0-9]*$")
 PLAN_REF = re.compile(r"^([\w.-]+)/([\w.-]+)#([1-9][0-9]*)$")
+# spec 097: the plan a goal's next plan follows, one line in Goal after `Measure:`
+FOLLOWS_START = "Follows:"
+FOLLOWS = re.compile(r"^Follows: #([1-9][0-9]*)$")
+FOLLOWS_FORM = "Follows: #<n>"
+MEASURE_START = "Measure:"
 
 # The direction (spec 024), read as `shipmill product ids` reads it: each list section's
 # `- <prefix>-<n>: <text>` items, a section moved to docs/product/<file>.md through its one
@@ -184,6 +192,7 @@ class Plan:
     rev: int
     items: tuple[Item, ...]
     milestone: str | None  # None for `none`
+    follows: int | None = None  # the plan its `Follows: #<n>` line names (spec 097), None without one
 
 
 def parse(body: str, goals: frozenset[str] | None) -> tuple[Plan | None, list[tuple[int, str]]]:
@@ -235,9 +244,38 @@ def parse(body: str, goals: frozenset[str] | None) -> tuple[Plan | None, list[tu
 
     items = work_items(found.get("Work"), end, problems)
     milestone = milestone_line(found.get("Milestone"), end, problems)
+    follows = follows_line(found, problems)
     if problems:
         return None, sorted(problems, key=lambda problem: problem[0])
-    return Plan(goal, rev, tuple(items), milestone), []
+    return Plan(goal, rev, tuple(items), milestone, follows), []
+
+
+def follows_line(found: dict[str, list[tuple[int, str]]], problems: list[tuple[int, str]]) -> int | None:
+    """The plan a plan follows (spec 097): at most one `Follows: #<n>` line in the Goal section,
+    after its `Measure:` line; any other `Follows:` line, one outside Goal included, is a
+    problem. None without one"""
+    follows: int | None = None
+    for heading, body in found.items():
+        measured = False
+        for number, line in body:
+            text = line.strip()
+            if heading == "Goal" and text.startswith(MEASURE_START):
+                measured = True
+            if not text.startswith(FOLLOWS_START):
+                continue
+            if heading != "Goal":
+                problems.append((number, f"a `{FOLLOWS_FORM}` line belongs in the Goal section, after `Measure:`"))
+                continue
+            line_form = FOLLOWS.match(text)
+            if line_form is None:
+                problems.append((number, f"a Follows line is `{FOLLOWS_FORM}`, the plan this one follows"))
+            elif not measured:
+                problems.append((number, f"`{FOLLOWS_FORM}` comes after the Goal section's `Measure:` line"))
+            elif follows is not None:
+                problems.append((number, f"a second `{FOLLOWS_FORM}` line; the Goal section holds one at most"))
+            else:
+                follows = int(line_form.group(1))
+    return follows
 
 
 def work_items(body: list[tuple[int, str]] | None, end: int, problems: list[tuple[int, str]]) -> list[Item]:

@@ -301,3 +301,37 @@ def test_s028_14_triage_reads_a_plan_with_intakes_comment_as_triaged(ts: ModuleT
     # a newer verdict of triage's own still counts, and only a goal-plan issue reads intake's verdict
     assert state(triage_item("Triage: **plan**. x", "Triage: **implement**. y")) == "NEEDS_PR"
     assert state(triage_item("Triage: **plan**. We implement it.", labels=())) == "NEEDS_PR"
+
+
+# -- a finished plan's outcome is an action of the PLANS row (spec 097, #1712)
+
+
+def test_s097_9_the_plans_row_lists_plan_done_as_an_action(ws: ModuleType) -> None:
+    text = intake_lines(
+        plan_row(22, "PLAN_ACCEPTED", note="not filed: W-2"),
+        plan_row(27, "PLAN_DONE", note="work closed: W-1 #212 completed"),
+        plan_row(28, "PLAN_DONE", note="closed without an outcome"),
+        plan_row(24, "PLAN_FILED"),
+    )
+    (row,) = ws.plans_rows(text, "o/r", BOT).rows
+    assert row.detail == "PLAN_ACCEPTED #22; PLAN_DONE #27 #28"
+    assert row.fix == "/shipmill:product-intake o/r" and row.json()["agent"] is True
+    # never the maintainer's to answer: no PLAN_OPEN row lists it
+    assert ws.plans_waiting(text, "o/r", BOT) == []
+
+
+def test_s097_9_shipmill_gate_starts_a_session_for_plan_done(ws: ModuleType) -> None:
+    (row,) = ws.plans_rows(intake_lines(plan_row(27, "PLAN_DONE")), "o/r", BOT).rows
+    findings = parse_findings(json.dumps(row.json(), sort_keys=True))
+    decision = decide(findings, [], None, NOW, dt.timedelta(hours=6))
+    assert decision.action is Action.LAUNCH and [f.state for f in decision.work] == ["PLANS"]
+    assert [f.detail for f in decision.work] == ["PLAN_DONE #27"]
+
+
+def test_s097_9_intakes_plan_done_row_reads_as_a_plan_line(ws: ModuleType, ist: ModuleType) -> None:
+    """intake_state.py's own PLAN_DONE --json line, as the watch reads it"""
+    row = ist.PlanRow("G-1", "PLAN_DONE", "Plan for G-1", "closed without an outcome", 27, "plan", BOT, "NONE")
+    line = json.dumps(ist.plan_json(row), sort_keys=True)
+    assert ws.plan_line(line)["state"] == "PLAN_DONE"
+    assert ws.plans_rows(intake_lines(line), "o/r", BOT).rows[0].detail == "PLAN_DONE #27"
+    assert set(ws.PLAN_ACTION) == ist.PLAN_ACTION  # the watch's actions are intake's

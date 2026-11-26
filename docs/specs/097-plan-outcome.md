@@ -163,5 +163,15 @@ the still-missing lines, after the plans filed.
 
 ## Verification
 
+- S-097-1: read `gh_filing` in `intake_state.py`: once no item is unfiled or outside the milestone, `closed_states` reads each filed carrier and each `existing` issue of this repository in one batched query, and every one closed reads PLAN_DONE `work closed: W-n #a <how>`, any open one PLAN_FILED; after a partial accept (spec 096) only the kept items are read and the note ends `dropped: <ids>`; PLAN_DONE is in `PLAN_ACTION`; holds
+- S-097-2: an `existing` item naming another repository adds no number to the state read nor to the note; holds
+- S-097-3: `plan_state` reads a plan closed as completed only when `newest_plans` names it its goal's newest and `plan_outcome` finds no outcome at or after its `closedAt`; any other completed plan reads nothing; holds
+- S-097-4: `plan_outcome` takes a comment whose first line is the marker from a `PLANS.trusted` author, drops a non-`--bot-login` author's comment carrying the agent marker, and drops one created before `closedAt`; holds
 - S-097-5: read `classify_open` in `skills/github-issue-triage/scripts/triage_state.py`: once every hold of an issue closed, `goal_plan` (labelled `goal-plan`, its newest triage comment by an OWNER, MEMBER, or COLLABORATOR or the `--bot-login` starting `Triage: **plan**`) returns TRIAGED `work closed; product intake reports the outcome` before the `## Check` and UNBLOCKED branches, and a hold still open returns BLOCKED before it; any other parent reaches UNBLOCKED as before; holds
+- S-097-6: `plan_rows` skips the `no-work` trigger for a goal in `finished` before reading the room, so neither PLAN_DUE nor PLAN_WAITS is read for it; a request still is; holds
+- S-097-7: `plan_rows` builds each goal's row through `row()`, which appends `; follows #P` and sets `follows` and `missing` (`still_missing` of the outcome, empty for `- nothing`), and `plan_json` prints both; holds
+- S-097-8: `plans.py` `follows_line` accepts one `Follows: #<n>` line in Goal after `Measure:` and reports any other `Follows:` line, a second one, or one in another section, with its line; `check` exits 2 on any; holds
+- S-097-9: `watch_state.py`'s `PLAN_ACTION` holds PLAN_DONE, so `plans_rows` lists it in the PLANS row and `plan_line` accepts it, and `plans_waiting` keeps reading PLAN_OPEN alone; `shipmill gate`'s `decide` launches for the PLANS row with no change to `gate.py`; holds
+- S-097-10: product-intake's SKILL.md lists PLAN_DONE and gives its step, and plan.md its outcome template with the marker first, the maintainer named, and the two lists; holds
+- S-097-11: product-intake's SKILL.md and plan.md tell the session proposing a plan for a `follows` row to write `Follows: #P` after `Measure:`, answer each `missing` line, and say in the Order what was left missing; holds
 - S-097-12: read `skills/github-issue-triage/references/comments.md` (A parent's close) and `triage-rubric.md` (the UNBLOCKED row): both say such a plan reads TRIAGED with that note, is product intake's to close with its outcome, and is never closed with the parent's close comment; holds

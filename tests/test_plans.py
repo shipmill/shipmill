@@ -427,3 +427,41 @@ def test_items_names_a_plan_as_owner_repo_number(plans: ModuleType, capsys: pyte
         plans.main(["items", "#300"], run=Fake(PLAN, [], []))
     assert stopped.value.code == 2
     assert "owner/repo#N" in capsys.readouterr().err
+
+
+# -- the plan a goal's next plan follows (spec 097, #1712)
+
+FOLLOWING = PLAN.replace("Measure: none yet\n", "Measure: none yet\nFollows: #752\n")
+
+
+def test_s097_8_one_follows_line_after_measure_passes(
+    plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert check(plans, root, FOLLOWING, capsys) == (0, "")
+    assert check(plans, root, PLAN, capsys) == (0, "")  # none: a goal's first plan, or one before spec 097
+    later = FOLLOWING.replace("Follows: #752\n", "\nFollows: #752\n")  # a blank line between is fine
+    assert check(plans, root, later, capsys) == (0, "")
+    plan, _ = plans.parse(FOLLOWING, frozenset({"G-3"}))
+    assert plan.follows == 752 and [i.id for i in plan.items] == ["W-1", "W-2", "W-3", "W-4"]
+    assert plans.parse(PLAN, frozenset({"G-3"}))[0].follows is None
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "line", "rule"),
+    [
+        ("no #", FOLLOWING.replace("#752", "752"), 8, "a Follows line is `Follows: #<n>`"),
+        ("a repo", FOLLOWING.replace("#752", "o/r#752"), 8, "a Follows line is `Follows: #<n>`"),
+        ("two plans", FOLLOWING.replace("#752", "#752, #800"), 8, "a Follows line is `Follows: #<n>`"),
+        ("words", FOLLOWING.replace("#752", "#752 (the last one)"), 8, "a Follows line is `Follows: #<n>`"),
+        ("before Measure", PLAN.replace("Trigger:", "Follows: #752\nTrigger:"), 6, "comes after the Goal section's"),
+        ("second", FOLLOWING.replace("#752\n", "#752\nFollows: #753\n"), 9, "a second `Follows: #<n>` line"),
+        ("in Order", PLAN.replace("then the feature", "then the feature\nFollows: #752\n"), 19, "belongs in the Goal"),
+        ("in Notes", PLAN + "Follows: #752\n", 27, "belongs in the Goal section"),
+    ],
+)
+def test_s097_8_any_other_follows_line_exits_2_naming_it(
+    plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str], name: str, body: str, line: int, rule: str
+) -> None:
+    code, err = check(plans, root, body, capsys)
+    assert code == 2, name
+    assert f"plan.md:{line}: " in err and rule in err, err
