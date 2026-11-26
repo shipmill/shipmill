@@ -1,0 +1,3 @@
+### Added
+
+- `intake_state.py --plans` reads a partial accept of a goal plan (spec 096): `accept W-1, W-3` keeps the items named and `accept except W-2` drops them, directly or relayed (D-68); an accepted row's `--json` line has `kept` and `dropped`, the filing reader looks at the kept items alone and the note names `dropped: <ids>`, any other first line starting with the word `accept` reads PLAN_ANSWERED `unclear accept: <rule>` until the --bot-login's needs-decision question makes it PLAN_OPEN `unclear accept asked`, and a PLAN_DUE row's `dropped` lists the items the goal's earlier plans dropped (#1708)

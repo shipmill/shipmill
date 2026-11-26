@@ -538,9 +538,9 @@ def test_s028_9_an_accept_reads_accepted(ist: ModuleType, association: str, firs
         ("decline", "decline"),
         ("Decline: not this quarter", "decline"),
         ("declined, too broad", "decline"),
-        ("accept.. but split W-2", "edit"),
+        ("accept.. but split W-2", "unclear accept: words past the ids"),  # spec 096: an unclear accept
         ("accepted", "edit"),
-        ("accept W-2 only", "edit"),
+        ("accept W-2 only", "unclear accept: words past the ids"),
         ("Please split W-2 in two", "edit"),
         ("I don't accept this", "edit"),
     ],
@@ -614,7 +614,7 @@ def test_s028_18_a_relayed_accept_naming_a_maintainer_reads_accepted(ist: Module
         ("decline: not this quarter", "decline"),
         ("Decline", "decline"),
         ("Split W-2 in two", "edit"),
-        ("accept W-2 only", "edit"),
+        ("accept W-2 only", "unclear accept: words past the ids"),  # spec 096: an unclear accept
     ],
 )
 def test_s028_18_a_relayed_decline_or_edit_reads_answered(ist: ModuleType, answer: str, note: str) -> None:
@@ -843,3 +843,235 @@ def test_a_plans_older_comments_are_paged_back(ist: ModuleType) -> None:
             return super().__call__(query, variables)
 
     assert plan_states(ist, Older(plans=[paged]))[20] == ("PLAN_ACCEPTED", "unfiled")
+
+
+# -- accepting part of a plan in one reply (spec 096, #1708)
+
+ALL = ["W-1", "W-2", "W-3", "W-4"]
+
+
+def plan_rows_of(ist: ModuleType, fake: Fake, *, filing: Any = None, **kwargs: Any) -> dict[Any, Any]:
+    """Each row's --json line, by plan number for a plan issue's row and by goal for a goal's"""
+    intake = ist.fetch(
+        "o/r",
+        label="opportunity",
+        accepted="planned",
+        marker="Triage:",
+        skip=set(ist.SKIP_LABELS),
+        categories=None,
+        autonomy="propose",
+        run=fake,
+    )
+    found = ist.fetch_plans(
+        "o/r",
+        intake,
+        goals=lambda: [ist.Goal(i, t) for i, t in GOALS],
+        marker="Triage:",
+        bot_login=kwargs.get("bot_login", BOT),
+        wip=None,
+        room=lambda limit: 1,
+        run=fake,
+        filing=filing if filing is not None else (lambda issue, plan: ("PLAN_ACCEPTED", "unfiled")),
+        maintainers=kwargs.get("maintainers", frozenset()),
+    )
+    return {(r.number if r.kind == "plan" else r.goal): ist.plan_json(r) for r in found}
+
+
+def answered(ist: ModuleType, *comments: str | dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    """The --json line of plan #20 (full_plan's W-1 to W-4) with these comments"""
+    found: dict[str, Any] = plan_rows_of(ist, Fake(plans=[open_plan(20, *comments)]), **kwargs)[20]
+    return found
+
+
+@pytest.mark.parametrize("first", ["accept W-1, W-3", "Accept w-1 w-3", "ACCEPT W-1,W-3.", "accept W-3 ,  W-1"])
+def test_s096_1_accept_naming_ids_keeps_them_and_drops_the_rest(ist: ModuleType, first: str) -> None:
+    row = answered(ist, owner(f"{first}\nW-2 can wait.", 10))
+    assert (row["state"], row["note"]) == ("PLAN_ACCEPTED", "unfiled; dropped: W-2, W-4")
+    assert (row["kept"], row["dropped"]) == (["W-1", "W-3"], ["W-2", "W-4"])
+
+
+@pytest.mark.parametrize("first", ["accept except W-2", "Accept EXCEPT w-2.", "accept except,W-2"])
+def test_s096_2_accept_except_drops_the_ids_and_keeps_the_rest(ist: ModuleType, first: str) -> None:
+    row = answered(ist, owner(first, 10))
+    assert (row["state"], row["note"]) == ("PLAN_ACCEPTED", "unfiled; dropped: W-2")
+    assert (row["kept"], row["dropped"]) == (["W-1", "W-3", "W-4"], ["W-2"])
+
+
+@pytest.mark.parametrize("first", ["accept", "Accept.", "accept W-1, W-2, W-3, W-4", "accept W-4 W-3 W-2 W-1."])
+def test_s096_3_a_full_accept_keeps_every_item_and_names_no_drop(ist: ModuleType, first: str) -> None:
+    row = answered(ist, owner(first, 10))
+    assert (row["state"], row["note"], row["kept"], row["dropped"]) == ("PLAN_ACCEPTED", "unfiled", ALL, [])
+
+
+def test_s096_3_only_an_accepted_row_has_kept_and_dropped(ist: ModuleType) -> None:
+    for comments in ((), (owner("Split W-2", 10),), (owner("accept W-9", 10),)):
+        row = answered(ist, *comments)
+        assert "kept" not in row and "dropped" not in row, row
+
+
+@pytest.mark.parametrize(
+    ("first", "rule"),
+    [
+        ("accept W-9", "W-9 is not in the plan"),
+        ("accept W-1, w-01", "W-01 is not in the plan"),
+        ("accept W-1, W-3, w-1", "W-1 is named twice"),
+        ("accept except", "no item named"),
+        ("accept except.", "no item named"),
+        ("accept ,", "no item named"),
+        ("accept except W-1 W-2, W-3, W-4", "drops every item"),
+        ("accept W-1 except W-2", "both a kept and a dropped list"),
+        ("accept W-1, W-3 for now", "words past the ids"),
+        ("accept: W-1", "words past the ids"),
+        ("accept-ish", "words past the ids"),
+    ],
+)
+def test_s096_4_an_unclear_accept_reads_answered_with_its_rule(ist: ModuleType, first: str, rule: str) -> None:
+    row = answered(ist, owner(f"{first}\nThanks.", 10))
+    assert (row["state"], row["note"]) == ("PLAN_ANSWERED", f"unclear accept: {rule}")
+    assert row["state"] in ist.PLAN_ACTION  # exit 1
+
+
+@pytest.mark.parametrize("first", ["accepted", "Accepted W-1, W-3", "acceptable", "Acceptable except W-2"])
+def test_s096_4_accepted_or_acceptable_is_still_an_edit(ist: ModuleType, first: str) -> None:
+    row = answered(ist, owner(first, 10))
+    assert (row["state"], row["note"]) == ("PLAN_ANSWERED", "edit")
+
+
+def asked(hour: int, *, bot: bool = True) -> dict[str, Any]:
+    """The needs-decision question on an unclear accept, by the --bot-login or by a maintainer"""
+    body = "<!-- shipmill:needs-decision -->\n@maintainer Decision needed: `accept W-9` names no item." + AGENT
+    if bot:
+        return comment(body, hour, author="shipmill-app", bot=True)
+    return comment(body, hour, author="maintainer", association="OWNER")
+
+
+def test_s096_5_the_bot_logins_question_makes_an_unclear_accept_wait(ist: ModuleType) -> None:
+    row = answered(ist, owner("accept W-9", 10), asked(11))
+    assert (row["state"], row["note"]) == ("PLAN_OPEN", "unclear accept asked")
+    assert row["state"] not in ist.PLAN_ACTION
+
+
+@pytest.mark.parametrize(
+    ("answer", "state", "note"),
+    [
+        ("accept W-1, W-3", "PLAN_ACCEPTED", "unfiled; dropped: W-2, W-4"),
+        ("decline: not now", "PLAN_ANSWERED", "decline"),
+        ("Split W-2", "PLAN_ANSWERED", "edit"),
+        ("accept W-8", "PLAN_ANSWERED", "unclear accept: W-8 is not in the plan"),  # newer than the question
+    ],
+)
+def test_s096_5_an_answer_after_the_question_is_read_anew(ist: ModuleType, answer: str, state: str, note: str) -> None:
+    row = answered(ist, owner("accept W-9", 10), asked(11), owner(answer, 12))
+    assert (row["state"], row["note"]) == (state, note)
+
+
+def test_s096_5_anyone_elses_or_an_older_question_changes_nothing(ist: ModuleType) -> None:
+    unclear = ("PLAN_ANSWERED", "unclear accept: W-9 is not in the plan")
+    for comments in (
+        (owner("accept W-9", 10), asked(11, bot=False)),  # a maintainer's marker
+        (asked(10), owner("accept W-9", 11)),  # older than the unclear accept
+        (owner("accept W-9", 10), comment("<!-- shipmill:needs-decision -->\nx", 11, author="drive-by")),
+    ):
+        row = answered(ist, *comments)
+        assert (row["state"], row["note"]) == unclear
+    no_login = answered(ist, owner("accept W-9", 10), asked(11), bot_login=None)
+    assert (no_login["state"], no_login["note"]) == unclear
+
+
+def partly(ist: ModuleType, first: str, milestone: str, carriers: list[dict[str, Any]], existing: str | None) -> Any:
+    accepted = open_plan(20, owner(first, 10), body=full_plan(milestone=milestone))
+    fake = Fake(plans=[accepted], carriers=carriers, milestones={212: existing})
+    row = plan_rows_of(ist, fake, filing=ist.gh_filing("o/r", BOT, fake))[20]
+    return (row["state"], row["note"]), fake
+
+
+def test_s096_6_the_filing_reads_the_kept_items_alone(ist: ModuleType) -> None:
+    kept_w2 = [carrier(301, "W-2", milestone="v1")]
+    assert partly(ist, "accept except W-3", "v1", kept_w2, "v1")[0] == ("PLAN_FILED", "filed: #301; dropped: W-3")
+    by_hand = [*kept_w2, carrier(302, "W-3", milestone="v0")]  # a dropped item someone filed by hand
+    assert partly(ist, "accept except W-3", "v1", by_hand, "v1")[0] == ("PLAN_FILED", "filed: #301; dropped: W-3")
+    expected = ("PLAN_ACCEPTED", "not filed: W-3; dropped: W-1, W-2, W-4")
+    assert partly(ist, "accept W-3", "v1", [], None)[0] == expected
+    _, fake = partly(ist, "accept W-3", "v1", [], None)
+    assert not any(re.search(r"\be\d+: issue\(", q) for q in fake.asked)  # the dropped W-1 is never read
+    outside = ("PLAN_ACCEPTED", "not filed: W-3; not in milestone v1: #212; dropped: W-2, W-4")
+    assert partly(ist, "accept W-1, W-3", "v1", [], None)[0] == outside
+    stray = ("PLAN_ACCEPTED", "not in milestone v1: #301; dropped: W-1, W-3, W-4")
+    assert partly(ist, "accept W-2", "v1", [carrier(301, "W-2", milestone="v0")], None)[0] == stray
+    assert partly(ist, "accept W-2", "none", [carrier(301, "W-2")], None)[0] == (
+        "PLAN_FILED",
+        "filed: #301; dropped: W-1, W-3, W-4",
+    )
+
+
+@pytest.mark.parametrize(
+    ("answer", "kept", "dropped"),
+    [("accept W-1, W-3", ["W-1", "W-3"], ["W-2", "W-4"]), ("accept except W-2", ["W-1", "W-3", "W-4"], ["W-2"])],
+)
+def test_s096_7_a_relayed_partial_accept_reads_the_same(
+    ist: ModuleType, answer: str, kept: list[str], dropped: list[str]
+) -> None:
+    row = answered(ist, relay(answer, 10), maintainers=MAINTAINERS)
+    assert (row["state"], row["kept"], row["dropped"]) == ("PLAN_ACCEPTED", kept, dropped)
+
+
+def test_s096_7_a_relayed_unclear_accept_is_unclear_and_anyone_elses_relay_nothing(ist: ModuleType) -> None:
+    row = answered(ist, relay("accept W-1 except W-2", 10), maintainers=MAINTAINERS)
+    assert (row["state"], row["note"]) == ("PLAN_ANSWERED", "unclear accept: both a kept and a dropped list")
+    other = answered(ist, relay("accept W-1, W-3", 10, named="`@someone`"), maintainers=MAINTAINERS)
+    assert (other["state"], other["note"]) == ("PLAN_OPEN", "")
+
+
+def test_s096_8_a_partial_accept_goes_stale_as_an_accept_does(ist: ModuleType) -> None:
+    edited = open_plan(20, owner("accept W-1, W-3", 10), edited="2026-10-01T10:00:01Z")
+    row = plan_rows_of(ist, Fake(plans=[edited]))[20]
+    assert (row["state"], row["note"]) == ("PLAN_OPEN", "edited after accept")
+    assert "kept" not in row
+    revision = answered(ist, owner("accept except W-2", 10), revised(2, 11))
+    assert (revision["state"], revision["note"]) == ("PLAN_OPEN", "")
+    by_person = answered(ist, owner("accept except W-2", 10), revised(2, 11, association="OWNER"))
+    assert by_person["state"] == "PLAN_ACCEPTED"  # only the --bot-login revises
+
+
+def closed_plan(number: int, first: str | None, reason: str, goal: str = "G-1") -> dict[str, Any]:
+    comments = [owner(first, 10)] if first else []
+    return open_plan(number, *comments, body=full_plan(goal=goal), state="CLOSED", reason=reason)
+
+
+def test_s096_9_a_due_plan_lists_what_earlier_plans_dropped(ist: ModuleType) -> None:
+    plans = [
+        closed_plan(24, "accept W-1, W-3", "COMPLETED"),
+        closed_plan(20, "accept except W-2", "COMPLETED"),
+        closed_plan(21, "accept", "COMPLETED"),  # fully accepted: none
+        closed_plan(22, "accept W-1", "NOT_PLANNED"),  # its decline holds: none
+        closed_plan(23, "accept W-9", "COMPLETED"),  # unclear: none
+        closed_plan(25, "accept W-2", "COMPLETED", goal="G-2"),
+    ]
+    rows = plan_rows_of(ist, Fake(plans=plans))
+    assert rows["G-1"]["state"] == "PLAN_DUE"
+    assert rows["G-1"]["dropped"] == [
+        {"plan": 20, "id": "W-2", "text": "A release cut"},
+        {"plan": 24, "id": "W-2", "text": "A release cut"},
+        {"plan": 24, "id": "W-4", "text": "other/x#5"},
+    ]
+    assert [d["id"] for d in rows["G-2"]["dropped"]] == ["W-1", "W-3", "W-4"]
+    assert rows["G-2"]["dropped"][1] == {"plan": 25, "id": "W-3", "text": "The lane stalls"}
+    assert rows["G-3"]["dropped"] == [] and "kept" not in rows["G-3"]
+
+
+def test_s096_9_an_open_plans_drop_counts_and_a_closed_plans_comments_are_paged(ist: ModuleType) -> None:
+    open_one = open_plan(20, owner("accept except W-2", 10))
+    found = ist.dropped_items([open_one], frozenset({"G-1"}), "Triage:", BOT, frozenset())
+    assert found == {"G-1": ({"plan": 20, "id": "W-2", "text": "A release cut"},)}
+    done = closed_plan(20, None, "COMPLETED")
+    done["comments"]["pageInfo"] = {"hasPreviousPage": True, "startCursor": "c1"}
+    older = {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [owner("accept W-2", 10)]}
+
+    class Older(Fake):
+        def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if "before: $cursor" in query:
+                return {"data": {"repository": {"issue": {"comments": older}}}}
+            return super().__call__(query, variables)
+
+    rows = plan_rows_of(ist, Older(plans=[done]))
+    assert [d["id"] for d in rows["G-1"]["dropped"]] == ["W-1", "W-3", "W-4"]
