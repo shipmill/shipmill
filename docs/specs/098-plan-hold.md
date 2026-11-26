@@ -184,6 +184,10 @@ plan-item marker is read and nothing is filed for it.
 
 ## Issues
 
+- shipmill/shipmill#1729: S-098-1, S-098-2, S-098-3, S-098-4, S-098-5, S-098-6, S-098-7, S-098-8, S-098-9, S-098-15, S-098-16
+- shipmill/shipmill#1732: S-098-10, S-098-11, S-098-14
+- shipmill/shipmill#1734: S-098-12, S-098-13
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was
