@@ -144,6 +144,7 @@ def test_s048_7_a_real_tick_writes_tick_json_and_a_dry_run_none(checkout: Git) -
         "failing": None,
         "running": None,
         "in_flight": None,
+        "reads_as": None,  # spec 093: no TickReads given, so none recorded
     }
     assert not any(p.name.endswith(".tmp") for p in state_dir(checkout).iterdir())  # written whole
 
@@ -254,6 +255,7 @@ def test_s048_9_a_release_error_records_error_its_first_line_and_the_dry_run_fix
         "failing": {"since": NOW.isoformat(), "count": 1},
         "running": None,
         "in_flight": None,
+        "reads_as": None,  # spec 093: no TickReads given, so none recorded
     }
 
 

@@ -64,7 +64,7 @@ from shipmill.findings import PRS_OPEN as PRS_OPEN
 from shipmill.findings import Finding as Finding
 from shipmill.findings import fingerprint as fingerprint
 from shipmill.findings import parse_findings as parse_findings
-from shipmill.github import UPGRADE_LABEL, GitHub
+from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
 from shipmill.github_auth import GH_MISSING_FIX, GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
@@ -87,6 +87,7 @@ from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import GATE_MAINTAINER, LoginReader, ResolvedRole, arguments
 from shipmill.sandbox import Sandbox, SandboxConfig, Where
 from shipmill.sandbox import launch as sandbox_launch
+from shipmill.tick_read import ReadsAs, TickReads
 from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
 from shipmill.verify import Planner, Verified
@@ -459,6 +460,7 @@ class Decision:
     verify: str | None = None  # the check of [agents] verify a launch ran (S-064-6); None: none ran
     verify_notice: str | None = None  # its one notification per failing fingerprint (S-064-8); None: none due
     denied: tuple[str, ...] = ()  # what the tick did about each tool the last session was denied (S-095-7)
+    reads_as: ReadsAs | None = None  # whose budget the tick's reads drew on (spec 093); None: it read nothing
 
 
 def refused_suffix(refusals: Iterable[Refusal]) -> str:
@@ -1011,14 +1013,19 @@ def state_failed(proc: subprocess.CompletedProcess[str]) -> bool:
     return proc.returncode not in (0, 1) or (proc.returncode == 1 and not proc.stdout.strip())
 
 
-def run_state(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+def run_state(cmd: list[str], env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """watch_state.py in the gate's own environment, or in env when given (the tick's read
+    token, S-093-2), which every script it runs in turn inherits"""
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=None if env is None else dict(env))
 
 
 StateRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
+# (command, env) -> its run; env None: the gate's own
+EnvStateRunner = Callable[[list[str], Mapping[str, str] | None], subprocess.CompletedProcess[str]]
 
 
 GhRunner = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout
+ReadRunner = Callable[[list[str], Path, Mapping[str, str] | None], str]  # (command, cwd, env) -> its stdout
 
 
 def incident_label(root: Path) -> str:
@@ -1109,6 +1116,52 @@ class WatchState:
         updatedAt of the item it names; none without an App's bot, since only its marker counts"""
         bot = self._read.bot_login
         return {} if bot is None else waits(self._repo, numbers, bot, self._graphql)
+
+
+def tick_state(
+    repo: str,
+    workspace: Path,
+    state: Path,
+    now: dt.datetime,
+    reads: TickReads,
+    gh: ReadRunner = run_command,
+    run: EnvStateRunner = run_state,
+) -> Callable[[StateRead], WatchState]:
+    """S-093-1, S-093-2: the tick's state read, whose every gh read (the change check's query,
+    each workflow's runs, the land window's last held merge, the subjects' updatedAt, the
+    waits-on markers) and every watch_state.py tier and sweep run in the environment reads
+    gives that one command: GH_TOKEN the tick's read token as the App, the gate's own as the
+    host"""
+
+    def source(read: StateRead) -> WatchState:
+        return WatchState(
+            repo,
+            workspace,
+            read,
+            state,
+            now,
+            lambda cmd, cwd: gh(cmd, cwd, reads.env()),
+            lambda cmd: run(cmd, reads.env()),
+        )
+
+    return source
+
+
+class OpenIssues(Protocol):
+    def open_issues(self, label: str) -> list[str]: ...
+
+
+def gh_in(workspace: Path, env: Mapping[str, str] | None) -> OpenIssues:
+    """gh in the checkout, in env; None: the gate's own"""
+    return GhCli(workspace, env=env)
+
+
+def tick_hold(
+    workspace: Path, reads: TickReads, cli: Callable[[Path, Mapping[str, str] | None], OpenIssues] = gh_in
+) -> Callable[[], Hold]:
+    """S-093-1: the hold check, the tick's first GitHub read, through gh in the environment reads
+    gives it; env None is the gate's own"""
+    return lambda: Hold.read(cli(workspace, reads.env()))
 
 
 def as_source(found: Source | Sequence[Finding]) -> Source:
@@ -2567,6 +2620,7 @@ TICK_KEYS = {"at", "action", "reason", "fix", "failing", "running", "in_flight"}
 # S-052-10: written only when the config sets a refused key, so a tick.json without a refusal
 # reads as before in a shipmill that predates the key
 REFUSED = "refused"
+READS_AS = "reads_as"  # spec 093: a tick.json written before it lacks the key, read as null (S-093-12)
 TICK_ACTIONS = frozenset({a.value for a in Action} | {ERROR})
 
 
@@ -2575,8 +2629,8 @@ class TickRecord:
     """tick.json (spec 048): when the tick started, its decision or ERROR, the reason or the
     error's first line, the fix, the run of failing ticks it belongs to (None on a tick that
     doesn't fail), the session a RUNNING or STALLED tick waits on, what a QUIET tick says is
-    in flight, and the refused keys the tick ran without (S-052-10), as `shipmill gate --json`
-    prints them"""
+    in flight, the refused keys the tick ran without (S-052-10), and whose budget its reads
+    drew on (spec 093, None when it read nothing), as `shipmill gate --json` prints them"""
 
     at: dt.datetime
     action: str
@@ -2586,6 +2640,7 @@ class TickRecord:
     running: Running | None = None
     in_flight: InFlight | None = None
     refused: tuple[Refusal, ...] = ()
+    reads_as: ReadsAs | None = None
 
     def __post_init__(self) -> None:
         if self.action not in TICK_ACTIONS:
@@ -2600,6 +2655,7 @@ class TickRecord:
             "failing": None if self.failing is None else self.failing.record(),
             "running": None if self.running is None else self.running.record(),
             "in_flight": None if self.in_flight is None else self.in_flight.record(),
+            READS_AS: None if self.reads_as is None else self.reads_as.record(),
         }
         if self.refused:
             found[REFUSED] = [r.record() for r in self.refused]
@@ -2736,8 +2792,10 @@ def load_tick(path: Path) -> TickRecord | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) - {REFUSED} != TICK_KEYS:
-            raise ValueError(f"expected exactly {', '.join(sorted(TICK_KEYS))}, and {REFUSED} with a refusal")
+        if not isinstance(data, dict) or set(data) - {REFUSED, READS_AS} != TICK_KEYS:
+            raise ValueError(
+                f"expected exactly {', '.join(sorted(TICK_KEYS))}, {READS_AS}, and {REFUSED} with a refusal"
+            )
         run = data["failing"]
         if run is not None and (not isinstance(run, dict) or set(run) != {"since", "count"}):
             raise ValueError("failing: expected exactly since and count, or null")
@@ -2752,6 +2810,7 @@ def load_tick(path: Path) -> TickRecord | None:
             _running(data["running"]),
             _in_flight(data["in_flight"]),
             _refused(data.get(REFUSED, [])),
+            ReadsAs.of(data.get(READS_AS)),  # S-093-12: absent in one written before spec 093
         )
     except ValueError as exc:  # json.JSONDecodeError is one
         raise malformed(path, exc) from None
@@ -2776,6 +2835,7 @@ def record_tick(
     running: Running | None,
     in_flight: InFlight | None = None,
     refused: tuple[Refusal, ...] = (),
+    reads_as: ReadsAs | None = None,
 ) -> TickRecord:
     """Spec 048: write this tick's tick.json after previous, the one load_tick read when the
     tick started. A failing tick after a failing one keeps its since and counts one more; one
@@ -2785,7 +2845,7 @@ def record_tick(
     if fails:
         before = None if previous is None else previous.failing
         run = Failing(now, 1) if before is None else Failing(before.since, before.count + 1)
-    record = TickRecord(now, action, reason, fix, run, running, in_flight, refused)
+    record = TickRecord(now, action, reason, fix, run, running, in_flight, refused, reads_as)
     save_tick(path, record)
     return record
 
@@ -3223,6 +3283,7 @@ def gate(
     usage: UsageProbe | None = None,
     sandbox: Sandboxer | None = None,
     host_seams: HostSeams | None = None,
+    reads: TickReads | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -3244,8 +3305,10 @@ def gate(
     any session is stopped or started, so a failure stops none and starts none (D-14). The
     decision then names the bot as its identity. app_key_named (`--app-key`) without app_id
     is refused where the config is read, after the refresh, so a checkout the app_id change
-    hasn't reached yet still moves. The gate never changes its own environment: its reads
-    (the findings, the hold, `claude agents`) keep the host's gh login (spec 004). A LAUNCH
+    hasn't reached yet still moves. The gate never changes its own environment: the findings and
+    the hold read through reads (spec 093), which gives each read command its own environment,
+    with the tick's read token as the App, and `claude agents` and the host's login keep the
+    gate's own. A LAUNCH
     in either mode reads the host's login with login, dry run or not, after the App check,
     and its prompt ends with the paragraph that names it: the gate paragraph, or in headless
     mode the headless one (D-21), so a failed read starts nothing. A real refresh_checkout
@@ -3377,7 +3440,12 @@ def gate(
     host_seams, the host's pause (spec 095, HostSeams), is read after the credential's: a github_limit
     or disk end writes it, and while it holds the tick reads PAUSED; None, as in tests that don't
     exercise it, reads none. After the decision, the last session that ended with a result sends
-    one notification per tool it was denied, whatever its end (denied_step)"""
+    one notification per tool it was denied, whatever its end (denied_step)
+
+    reads is the tick's reads (spec 093, TickReads), settled at its first GitHub read by the
+    findings and hold the CLI builds with it; the decision, tick.json, and an ERROR tick's
+    tick.json record whose budget they drew on, None when nothing was read (S-093-12). None, as
+    in tests that don't exercise it, records none"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -3427,18 +3495,21 @@ def gate(
             denied=denied_step(state_dir(git), ended_session(git, decision), config, notifier, repo, now, dry_run),
         )
     except ReleaseError as exc:
-        if not dry_run:
+        if not dry_run:  # S-093-11: the reads it made before it failed, as the App or the host
             found = read[0] if read else ()
-            record_tick(tick, previous, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None, None, found)
+            named = exc.fix or DRY_RUN_FIX
+            reads_as = None if reads is None else reads.reads_as
+            record_tick(tick, previous, now, ERROR, error_line(exc), named, True, None, None, found, reads_as)
         raise
     found = read[0] if read else ()
-    decision = replace(decision, refused=found)
+    decision = replace(decision, refused=found, reads_as=None if reads is None else reads.reads_as)
     if not dry_run:
         fix = decision_fix(decision)
         action = decision.action.value
         fails = failing(decision)
         flight = decision.in_flight
-        record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, flight, found)
+        reason, running = decision.reason, decision.running
+        record_tick(tick, previous, now, action, reason, fix, fails, running, flight, found, decision.reads_as)
     hours = (lambda: 0) if prune_hours is None else prune_hours
     run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
     caught = catch_up_step(git, catch_up, dry_run)
@@ -3738,7 +3809,8 @@ def tick_record(
     tick that launches nothing); auth, token-file or login (spec 035), preflight the Claude
     Code login preflight's verdict (#500), null when none ran, and in_flight what a QUIET tick
     says is in flight (S-048-25), null on any other decision; catch_up what the default
-    branch's catch-up did (#886), null when it is off. The CLI adds refused, the
+    branch's catch-up did (#886), null when it is off; reads_as whose budget the tick's reads drew
+    on, as tick.json records it (spec 093), null when it read nothing. The CLI adds refused, the
     checkout's refused keys (S-052-11); tick.json's refused is the tick's own (S-052-10)"""
     return {
         "action": decision.action.value,
@@ -3765,6 +3837,7 @@ def tick_record(
         "item": decision.work[0].brief() if len(decision.work) == 1 else None,
         "running": None if decision.running is None else decision.running.record(),  # S-048-16
         "in_flight": None if decision.in_flight is None else decision.in_flight.record(),  # S-048-25
+        READS_AS: None if decision.reads_as is None else decision.reads_as.record(),  # S-093-10
     }
 
 
@@ -3774,7 +3847,8 @@ def tick_lines(
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
     each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10, and its
     permission notice, S-060-8, then the
-    check of [agents] verify a launch ran, S-064-6), the
+    check of [agents] verify a launch ran, S-064-6, then `; reads as host: <why>` when an App's
+    reads fell back to the host, S-093-9), the
     branch the refresh detached the checkout from, one line
     per blocked session, the work and the launch, then one per pruned worktree, or the prune's
     failure (spec 045), then the default branch's catch-up when it moved, would, or failed (#886)"""
@@ -3784,7 +3858,10 @@ def tick_lines(
         who += " as token file"
     swept = "" if decision.upgrades is None else f"; {decision.upgrades}"  # S-047-10: a swept tick's proposal
     swept += "" if decision.permissions is None else f"; {decision.permissions}"  # S-060-8: then its notice
-    tail = "" if decision.verify is None else f"; verify: {decision.verify}"  # S-064-6: last on the line
+    tail = "" if decision.verify is None else f"; verify: {decision.verify}"  # S-064-6
+    reads_as = decision.reads_as
+    if reads_as is not None and reads_as.fell_back:  # S-093-9: an App's reads that went as the host, last
+        tail += f"; reads as host: {reads_as.why}"
     lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{swept}{tail}"]
     if decision.auth_notice is not None:
         lines.append(f"  {decision.auth_notice}")

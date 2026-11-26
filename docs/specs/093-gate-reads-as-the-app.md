@@ -1,6 +1,6 @@
 # S-093: A gate's ticks read GitHub as the App, not on the maintainer's budget
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -167,5 +167,21 @@ identity": the tests of S-004-12 change to this spec's.
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked on main plus #1654's pull request. Beyond the tests, `shipmill gate shipmill/shipmill
+--dry-run --json` on this repo's checkout, whose config sets `[agents] app_id`, read its hold
+check as the App and printed `"reads_as": {"identity": "app", "why": null}`, and the state
+folder held no `app-token-tick.json` after it.
+
+- S-093-1: read `tick_hold` and `tick_state` in `src/shipmill/gate.py`: the hold check's `GhCli` and every `gh` call of `WatchState` (the change check's query, each workflow's runs, the land window's last held merge, `issues`, `waited`) take `TickReads.env()` for that one command; `test_s093_1_*`, with a stand-in `gh` that saw the token, passing; holds
+- S-093-2: `run_state` passes the env to `watch_state.py`'s subprocess, which the scripts it runs inherit; `test_s093_2_*`, passing; holds
+- S-093-3: `host_login` and `ClaudeCli` keep running in the gate's own environment, and `TickReads` never writes `os.environ`; `test_s093_3_*` (interactive and headless launches, as the App and the host), passing; holds
+- S-093-4: by #1653's build (`mint_tick`), `test_s093_4_*`, passing; holds
+- S-093-5: by #1653's build (`tick_repos`); the other owner's `why` reaching `reads_as` by `test_s093_9_a_product_of_another_owner_reads_as_the_host_naming_it`, passing; holds
+- S-093-6: by #1653's build; the token kept out of `tick.json` and `repr` by `test_s093_10_*`, passing; holds
+- S-093-7: by #1653's build, and the dry run above wrote no cache; holds
+- S-093-8: `settle` in `src/shipmill/tick_read.py` returns no token without `app_id`, so each read's env is the gate's own; `test_s093_8_*`, passing; holds
+- S-093-9: a shipmill error anywhere in `settle` reads as the host with its first line, and `tick_lines` appends `; reads as host: <why>` only when an App's reads fell back; `test_s093_9_*`, passing; holds
+- S-093-10: `tick_record` and `TickRecord.record` write `reads_as`; the dry run above printed it as the App; `test_s093_10_*`, passing; holds
+- S-093-11: a failed read raises its `ReleaseError` as before, `gate()` records ERROR with the reads' `reads_as`, and `run` exits 2; nothing retries it; `test_s093_11_*`, passing; holds
+- S-093-12: `reads_as` stays None until the first `env()` call, and `load_tick` reads a missing key as null; `test_s093_12_*`, passing; holds
+- S-093-13: `docs/install.md`'s App section says it; `test_s093_13_*`, passing; holds

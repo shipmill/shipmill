@@ -53,6 +53,7 @@ KEYS = {
     "item",
     "running",  # S-048-16
     "in_flight",  # S-048-25
+    "reads_as",  # S-093-10: whose budget the tick's reads drew on
     "action",
     "reason",
     "work",

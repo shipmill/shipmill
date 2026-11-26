@@ -11,12 +11,20 @@ arguments, and a refusal never quotes it.
 
 In a component the home's `[product] repos` is read from the home's config on its default
 branch, with the cached token when it covers the gate's repo and the home, else with one minted
-over those two; the home's list widens the token only while it lists the component (D-84)."""
+over those two; the home's list widens the token only while it lists the component (D-84).
+
+A tick's reads take it through TickReads (S-093-1 to S-093-3): settled once, at the tick's
+first GitHub read, as the App with the token or as the host saying why, each read command gets
+its own environment from it, and the gate's own `os.environ` never holds the token."""
 
 import datetime as dt
+import os
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
-from shipmill.agents import ProductConfig
+from shipmill.agents import ProductConfig, app_id_of
 from shipmill.app import (
     REUSE_FOR,
     TICK_CACHE,
@@ -25,11 +33,129 @@ from shipmill.app import (
     ProductToken,
     Signer,
     contents,
+    default_key,
     load_product_token,
     mint_tick,
     save_product_token,
 )
 from shipmill.config import CONFIG_PATH
+from shipmill.errors import ReleaseError
+
+NO_APP = "no [agents] app_id"  # the why of a tick that reads as the host because no App is configured
+READS_AS_KEYS = {"identity", "why"}
+
+
+class Reader(StrEnum):
+    """Whose budget a tick's reads draw on"""
+
+    APP = "app"
+    HOST = "host"
+
+
+@dataclass(frozen=True, slots=True)
+class ReadsAs:
+    """Whose budget a tick's reads drew on (spec 093, What the tick records): the App's, with no
+    why, or the host's, with why: no [agents] app_id, a product repo of another owner, or the
+    mint's error's first line"""
+
+    identity: Reader
+    why: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.identity is Reader.APP and self.why is not None:
+            raise ValueError("reads_as app has no why")
+        if self.identity is Reader.HOST and not self.why:
+            raise ValueError("reads_as host must say why")
+
+    @property
+    def fell_back(self) -> bool:
+        """S-093-9: an App is configured, yet the reads went as the host"""
+        return self.identity is Reader.HOST and self.why != NO_APP
+
+    def record(self) -> dict[str, object]:
+        return {"identity": self.identity.value, "why": self.why}
+
+    @classmethod
+    def of(cls, value: object) -> ReadsAs | None:
+        """tick.json's reads_as, as record writes it, or null; a malformed one raises ValueError"""
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) != READS_AS_KEYS:
+            raise ValueError("reads_as: expected exactly identity and why, or null")
+        identity, why = value["identity"], value["why"]
+        if not isinstance(identity, str) or (why is not None and not isinstance(why, str)):
+            raise ValueError("reads_as: identity must be a string, why a string or null")
+        return cls(Reader(identity), why)  # Reader refuses anything but app or host
+
+
+AS_APP = ReadsAs(Reader.APP)
+WITHOUT_APP = ReadsAs(Reader.HOST, NO_APP)
+
+
+Settle = Callable[[], tuple[ReadsAs, str | None]]  # whose the reads are, and the token as the App
+
+
+class TickReads:
+    """One tick's reads (S-093-1 to S-093-3): settled at the first call of env, once a tick,
+    and the environment each read command runs with: as the App, the gate's own environment
+    with GH_TOKEN the tick's read token; as the host, None, the gate's own as it is. The token
+    lives here alone: no repr, record, or message shows it, and os.environ is never changed"""
+
+    __slots__ = ("_environ", "_reads_as", "_settle", "_token")
+
+    def __init__(self, settle: Settle, environ: Mapping[str, str] = os.environ) -> None:
+        self._settle = settle
+        self._environ = environ
+        self._reads_as: ReadsAs | None = None
+        self._token: str | None = None
+
+    def __repr__(self) -> str:
+        return f"TickReads(reads_as={self._reads_as!r})"
+
+    @property
+    def reads_as(self) -> ReadsAs | None:
+        """None until the tick's first GitHub read (S-093-12)"""
+        return self._reads_as
+
+    def env(self) -> dict[str, str] | None:
+        if self._reads_as is None:
+            self._reads_as, self._token = self._settle()
+        if self._token is None:
+            return None
+        return {**self._environ, "GH_TOKEN": self._token}
+
+
+def settle(
+    root: Path,
+    repo: str,
+    state: Path,
+    key: Path | None,
+    home: Path,
+    clock: Callable[[], dt.datetime],
+    signer: Signer,
+    api: Api,
+    write: bool,
+) -> Settle:
+    """The CLI's TickReads settle: with the checkout's [agents] app_id, the tick's read token
+    (tick_token) with the key `shipmill gate` uses (key, else the App's default path under
+    home), else the host, `no [agents] app_id`. Any shipmill error on the way, reading the
+    config included, reads as the host with its first line as why and never fails the tick
+    (S-093-9); a dry run passes write false"""
+
+    def settled() -> tuple[ReadsAs, str | None]:
+        try:
+            app_id = app_id_of(root)
+            if app_id is None:
+                return WITHOUT_APP, None
+            product = ProductConfig.load(root)
+            path = key if key is not None else default_key(app_id, home)
+            found = tick_token(state, repo, product, app_id, path, clock(), signer, api, write)
+        except ReleaseError as exc:
+            lines = str(exc).strip().splitlines()
+            return ReadsAs(Reader.HOST, lines[0] if lines else type(exc).__name__), None
+        return AS_APP, found.value
+
+    return settled
 
 
 def tick_repos(repo: str, product: ProductConfig | None, listed: tuple[str, ...] = ()) -> tuple[str, ...]:

@@ -624,7 +624,12 @@ Each launch then runs those checks again, writes a `gh` wrapper and
 first on its `PATH` and `<slug>[bot]` as its git author. Each `gh` or `git push` call mints
 or reuses a token through `shipmill app-token`, cached in `shipmill/app-token.json`
 (mode `0600`) while it has at least 10 minutes left. A failed check starts no session and
-never falls back to your login. The gate's own reads still use your `gh` login. Remove
+never falls back to your login. With `app_id` set, the gate's own reads go as the App with a
+read-only token too (the hold check, the change check, and each tier and sweep of the state),
+so they draw on the App's rate limit, not yours; without one, as your `gh` login. That token is
+cached apart in `shipmill/app-token-tick.json` (mode `0600`) and never reaches a session. When
+it can't be minted, the tick reads as your login, and its line ends `; reads as host: <why>`;
+`tick.json` and `shipmill gate --json` record `reads_as` either way (spec 093). Remove
 `app_id` and sessions launch as before, as your `gh` login
 
 ### Give the sessions a Claude token

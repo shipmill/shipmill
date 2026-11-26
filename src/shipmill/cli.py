@@ -382,7 +382,6 @@ from shipmill.gate import (
     StateRead,
     StateRunner,
     Upgrader,
-    WatchState,
     check_checkout,
     failing,
     gate,
@@ -399,8 +398,10 @@ from shipmill.gate import (
     state_dir,
     state_failed,
     stop_group,
+    tick_hold,
     tick_lines,
     tick_record,
+    tick_state,
     watch_command,
 )
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub, PullChange, find_gh
@@ -474,6 +475,8 @@ from shipmill.propose import close_released, propose, run_url
 from shipmill.roles import LoginReader
 from shipmill.ruleset import ruleset as branch_ruleset
 from shipmill.stamp import notes, sync
+from shipmill.tick_read import TickReads
+from shipmill.tick_read import settle as tick_settle
 from shipmill.upgrades import UpgradeId, apply, find, offers, pending
 from shipmill.upgrades import propose as propose_upgrades
 from shipmill.version import Version
@@ -1871,14 +1874,28 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         return GhCli(root, env=as_app(os.environ, token))
 
     now = dt.datetime.now(dt.UTC)
+    # spec 093: the tick's own reads go as the App with a read-only token, settled at its first read
+    reads = TickReads(
+        tick_settle(
+            root,
+            args.slug,
+            state_dir(git),
+            args.app_key,
+            Path.home(),
+            lambda: dt.datetime.now(dt.UTC),
+            Openssl(),
+            UrllibApi(),
+            write=not args.dry_run,
+        )
+    )
     decision, launched, waiting, pruned = gate(
         git,
         args.slug,
         lambda: AgentsConfig.load(root, args.slug),
         ClaudeCli(args.claude_arg),
-        lambda read: WatchState(args.slug, root, read, state_dir(git), now),
+        tick_state(args.slug, root, state_dir(git), now, reads),
         now,
-        lambda: Hold.read(GhCli(root)),
+        tick_hold(root, reads),
         Desktop.detect(),
         pruner(git, github, sessions),
         args.refresh,
@@ -1924,6 +1941,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
             host_dir(os.environ, Path.home()),
             rate_probe(os.environ, shutil.which("gh", path=os.environ.get("PATH", ""))),
         ),
+        reads=reads,
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11
