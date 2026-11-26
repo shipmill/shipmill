@@ -1,3 +1,0 @@
-### Added
-
-- `intake_state.py --plans` reads a finished goal plan (spec 097): an open accepted plan whose filed items and `existing` items of this repository have all closed reads PLAN_DONE, an action, its note naming each item, its issue, and how it closed, and a goal's newest plan closed as completed with no trusted `<!-- shipmill:plan-outcome -->` comment after its last close reads PLAN_DONE `closed without an outcome`, with no `no-work` row for its goal meanwhile; once the outcome is posted, the goal's PLAN_DUE and PLAN_WAITS notes end `; follows #P` and their `--json` rows carry `follows` and `missing`, the outcome's `Still missing:` items (#1710)

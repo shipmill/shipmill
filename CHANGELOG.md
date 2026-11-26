@@ -7,6 +7,26 @@ bot.
 
 ## [Unreleased]
 
+## [0.182.0] - 2026-11-26
+
+### Changed
+
+- Spec 097 (a finished plan says whether the goal moved) is marked built, its Verification naming the tests that check each criterion on the code (#1682)
+- A goal plan whose filed work has all closed now reads TRIAGED in `triage_state.py`, with the note `work closed; product intake reports the outcome`, instead of UNBLOCKED, so triage leaves it to product intake to close with its outcome rather than closing it with the parent's close comment (spec 097) (#1711)
+
+### Added
+
+- Decision D-114 records that an accepted goal plan's existing items of this repository become its sub-issues, so a plan of existing work waits on its items and closes like any plan, refining D-38 and spec 028 (#1706)
+- `intake_state.py --plans` reads a partial accept of a goal plan (spec 096): `accept W-1, W-3` keeps the items named and `accept except W-2` drops them, directly or relayed (D-68); an accepted row's `--json` line has `kept` and `dropped`, the filing reader looks at the kept items alone and the note names `dropped: <ids>`, any other first line starting with the word `accept` reads PLAN_ANSWERED `unclear accept: <rule>` until the --bot-login's needs-decision question makes it PLAN_OPEN `unclear accept asked`, and a PLAN_DUE row's `dropped` lists the items the goal's earlier plans dropped (#1708)
+- Product intake files only the items a partially accepted goal plan kept (`accept W-1, W-3` or `accept except W-2`), names the dropped ones in its filed line, asks once about an unclear accept, and never proposes a dropped item again unless the maintainer asks; the watch leaves a plan whose unclear accept was asked to its needs-decision question (#1709)
+- `intake_state.py --plans` reads a finished goal plan (spec 097): an open accepted plan whose filed items and `existing` items of this repository have all closed reads PLAN_DONE, an action, its note naming each item, its issue, and how it closed, and a goal's newest plan closed as completed with no trusted `<!-- shipmill:plan-outcome -->` comment after its last close reads PLAN_DONE `closed without an outcome`, with no `no-work` row for its goal meanwhile; once the outcome is posted, the goal's PLAN_DUE and PLAN_WAITS notes end `; follows #P` and their `--json` rows carry `follows` and `missing`, the outcome's `Still missing:` items (#1710)
+- A finished goal plan reports its outcome (spec 097): the watch lists PLAN_DONE in the PLANS row as an action, so `shipmill gate` starts product intake for it; product-intake's skill and plan.md give its step, checking the Order's end state against trusted text, closing an open plan as completed, and posting the `<!-- shipmill:plan-outcome -->` comment with its `Holds:` and `Still missing:` lists; the goal's next plan writes `Follows: #P` after `Measure:`, which `plans.py check` accepts once there and refuses anywhere else, and answers each missing line (#1712)
+
+### Fixed
+
+- An accepted goal plan whose items are all existing issues no longer stays on the maintainer's list: product intake links each existing item of the repository as a sub-issue of the plan (one with another parent is named instead) and posts the filed line, so the plan waits on its items and closes with its outcome once they close (#1706)
+- `shipmill status --item`, `shipmill queue` and `status --summary` read a goal plan the maintainer accepted, with items still to file (`PLAN_ACCEPTED`), as product intake's: it waits on an agent to file its items, not on the maintainer's answer (#1707)
+
 ## [0.181.0] - 2026-11-26
 
 ### Changed
@@ -3208,7 +3228,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.181.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.182.0...HEAD
+[0.182.0]: https://github.com/shipmill/shipmill/compare/v0.181.0...v0.182.0
 [0.181.0]: https://github.com/shipmill/shipmill/compare/v0.180.0...v0.181.0
 [0.180.0]: https://github.com/shipmill/shipmill/compare/v0.179.3...v0.180.0
 [0.179.3]: https://github.com/shipmill/shipmill/compare/v0.179.2...v0.179.3
