@@ -100,6 +100,13 @@ read as for [agents] outcomes; the text output then prints `projects active: K o
 <owner/home>)` after the outcomes line, and --json's first line gains "projects": {"limit": N,
 "active": K, "room": R}.
 
+With --goals (spec 106), a row per goal after those: GOAL_PROPOSED for an open goal-proposal
+issue by a trusted author or the --bot-login, then per goal of kind goal GOAL_MET, GOAL_DROPPED,
+GOAL_PLANNED (an accepted plan open, or a project head of one of its plans), or GOAL_WRITTEN;
+GOAL_OVERDUE, an action, for a written or planned goal past its date or with its release
+tagged, until the --bot-login's goal-review issue names that goal and horizon. With --json each
+has kind "goal-state", goal, number, state, holder, and by.
+
 With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
 login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
 association, the opener's author association, null for a discussion; and handed, the
@@ -1007,6 +1014,8 @@ class Goal:
     text: str
     kind: str | None = None  # spec 105: goal, measure, or None for neither form (or a shipmill before it)
     state: str | None = None  # spec 106: met, dropped, or None while open (or a shipmill before it)
+    by: str | None = None  # spec 105: a goal's horizon as written, a date or a release; None otherwise
+    past: bool | None = None  # spec 105: a date horizon has ended; None for a release or no horizon
 
 
 @dataclass
@@ -1061,7 +1070,16 @@ def parse_goals(text: str) -> list[Goal]:
         state = entry.get("state")
         if state is not None and state not in GOAL_ENDS:
             fail(f"shipmill product show --json listed a goal whose state isn't met, dropped, or null: {entry!r}")
-        goals.append(Goal(ident, text_, kind, state))
+        by, past = entry.get("by"), entry.get("past")
+        horizon = None
+        if by is not None:
+            values = list(by.values()) if isinstance(by, dict) and set(by) in ({"date"}, {"release"}) else []
+            if len(values) != 1 or not isinstance(values[0], str) or not values[0]:
+                fail(f"shipmill product show --json listed a goal whose by isn't a date or a release: {entry!r}")
+            horizon = values[0]
+        if past is not None and not isinstance(past, bool):
+            fail(f"shipmill product show --json listed a goal whose past isn't true, false, or null: {entry!r}")
+        goals.append(Goal(ident, text_, kind, state, horizon, past))
     return goals
 
 
@@ -1196,6 +1214,7 @@ def plan_rows(
     wip: int | None,
     room: RoomReader,
     maintainers: frozenset[str] = frozenset(),
+    checked: set[str] | None = None,
 ) -> list[PlanRow]:
     """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has; a
     PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096). After
@@ -1223,6 +1242,10 @@ def plan_rows(
         found = plan_outcome(issue, bot_login)
         if found is None:
             finished.add(goal)
+        elif goal_check_holds(found.get("body") or ""):  # spec 106: the Met pull request waits
+            finished.add(goal)
+            if checked is not None:
+                checked.add(goal)
         else:
             follows[goal] = (issue["number"], still_missing(found.get("body") or ""))
 
@@ -1346,6 +1369,15 @@ def plan_outcome(issue: dict[str, Any], bot_login: str | None) -> dict[str, Any]
         if at >= closed and (found is None or at >= timestamp(found["createdAt"])):
             found = comment
     return found
+
+
+GOAL_CHECK = re.compile(r"^Goal check:[ \t]*holds\b", re.IGNORECASE | re.MULTILINE)
+
+
+def goal_check_holds(body: str) -> bool:
+    """spec 106: a finished plan's trusted outcome says its goal's check holds; the goal reads
+    planned, and no plan is proposed for it, until the maintainer merges the goal met"""
+    return GOAL_CHECK.search(body) is not None
 
 
 def still_missing(body: str) -> tuple[str, ...]:
@@ -1940,6 +1972,7 @@ def fetch_plans(
     holds: HoldReader | None = None,
     now: dt.datetime | None = None,
     stable: re.Pattern[str] = STABLE,
+    checked: set[str] | None = None,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
@@ -1980,6 +2013,7 @@ def fetch_plans(
         bot_login=bot_login,
         wip=wip,
         room=room,
+        checked=checked,
     )
     found = by_goal + by_issue
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
@@ -2339,6 +2373,7 @@ def head_fields(linked: str, summary: bool = False) -> str:
     )
     return f"""
 number title body state stateReason createdAt closedAt author {{ __typename login }} authorAssociation {linked}
+parent {{ number }}
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
 timelineItems(itemTypes: [LABELED_EVENT], first: 20) {{
   nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ __typename login }} }} }}
@@ -2388,6 +2423,7 @@ class ProjectRow:
     parts_open: int
     parts_closed: int
     base: str | None = None  # an action's state underneath it, PROJECT_IDLE's and PROJECT_STOP_DUE's
+    parent: int | None = None  # the head's sub-issue parent, its plan for a filed item (spec 106's goal rows)
 
     @property
     def holder(self) -> str | None:
@@ -2512,8 +2548,11 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
         all_parts += int(counted["total"])
     check_number = None if check is None else int(check["number"])
 
+    parent = (head.get("parent") or {}).get("number")
+
     def row(state: str, note: str) -> ProjectRow:
-        return ProjectRow(number, state, title, note, check_number, open_parts, all_parts - open_parts)
+        closed = all_parts - open_parts
+        return ProjectRow(number, state, title, note, check_number, open_parts, closed, parent=parent)
 
     if head["state"] != "OPEN":
         if head.get("stateReason") == "COMPLETED":
@@ -2705,6 +2744,150 @@ def project_json(row: ProjectRow) -> dict[str, Any]:
     }
 
 
+# -- spec 106: a goal's state, read from the direction, its plans, and its projects
+
+GOAL_PROPOSAL_LABEL = "goal-proposal"
+GOAL_REVIEW_LABEL = "goal-review"
+# the --bot-login's goal-review issue for a goal past its horizon, its first line (S-106-5)
+OVERDUE_MARKER = re.compile(r"^<!-- shipmill:goal-overdue (G-[1-9][0-9]*) by=(\S+) -->$")
+GOAL_REVIEWS = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(labels: ["goal-review"], first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor } nodes { number body author { __typename login } }
+    }
+  }
+}
+"""
+# the goal rows' holders (spec 106's table)
+GOAL_ACTION = frozenset({"GOAL_OVERDUE"})
+
+
+@dataclass(frozen=True)
+class GoalRow:
+    """One goal's row (S-106-4): its state, holder, and horizon; a proposal's row has no goal id
+    and the proposal issue's number"""
+
+    goal: str | None
+    state: str
+    title: str
+    note: str
+    holder: str | None
+    by: str | None
+    number: int | None = None
+
+
+def release_tagged(repo: str, releases: list[str], run: Runner) -> set[str]:
+    """S-106-5: the release horizons with a tag of that version on the forge, `X.Y.Z` or
+    `vX.Y.Z` (a stable version, no pre-release), read with one query for them all"""
+    if not releases:
+        return set()
+    owner, name = split_repo(repo)
+    parts = []
+    for i, release in enumerate(releases):
+        bare = release.removeprefix("v")
+        refs = (f"refs/tags/{bare}", f"refs/tags/v{bare}")
+        parts += [f"t{i}a: ref(qualifiedName: {json.dumps(refs[0])}) {{ name }}"]
+        parts += [f"t{i}b: ref(qualifiedName: {json.dumps(refs[1])}) {{ name }}"]
+    query = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { " + " ".join(parts)
+    data = repository(run, query + " } }", {"owner": owner, "name": name})
+    return {r for i, r in enumerate(releases) if data.get(f"t{i}a") or data.get(f"t{i}b")}
+
+
+def reviewed(repo: str, bot_login: str | None, run: Runner) -> set[tuple[str, str]]:
+    """S-106-5: each (goal, horizon) a goal-review issue by the --bot-login names on its first
+    line; anyone else's marker counts for nothing"""
+    owner, name = split_repo(repo)
+    issues, _ = paged(run, GOAL_REVIEWS, {"owner": owner, "name": name}, "issues")
+    found: set[tuple[str, str]] = set()
+    for issue in issues:
+        by_bot = bot_login is not None and PLANS.login(issue.get("author")).lower() == bot_login.lower()
+        marker = OVERDUE_MARKER.match(PLANS.first_line(issue.get("body") or ""))
+        if by_bot and marker is not None:
+            found.add((marker.group(1), marker.group(2)))
+    return found
+
+
+def goal_rows(
+    goals: list[Goal],
+    plans: list[PlanRow],
+    heads: list[ProjectRow],
+    open_issues: list[dict[str, Any]],
+    bot_login: str | None,
+    tagged: set[str],
+    reviews: set[tuple[str, str]],
+    checked: frozenset[str] = frozenset(),
+) -> list[GoalRow]:
+    """S-106-4, S-106-5: a row per open goal-proposal issue by a trusted author or the
+    --bot-login, then one per goal of kind goal: met or dropped from the direction; planned
+    while an accepted plan of it is open (PLAN_ACCEPTED or PLAN_FILED) or a project head whose
+    parent is one of its plans is open; written otherwise. A written or planned goal whose date
+    horizon has ended, or whose release is tagged, reads GOAL_OVERDUE until the --bot-login's
+    goal-review issue names that goal and horizon. A measure and a goal of no kind read none"""
+    found: list[GoalRow] = []
+    for issue in open_issues:
+        if GOAL_PROPOSAL_LABEL not in labels(issue) or not PLANS.trusted(issue, bot_login):
+            continue
+        number = int(issue["number"])
+        title = str(issue.get("title") or "")
+        found.append(GoalRow(None, "GOAL_PROPOSED", title, "waits on your answer", "maintainer", None, number))
+    plans_of: dict[str, list[PlanRow]] = {}
+    for plan in plans:
+        if plan.kind == "plan" and plan.goal is not None:
+            plans_of.setdefault(plan.goal, []).append(plan)
+    ended = ("PROJECT_CLOSED", "PROJECT_STOPPED")
+    open_heads = {h.parent: h.number for h in heads if h.parent is not None and h.state not in ended}
+    for goal in goals:
+        if goal.kind != "goal":
+            continue
+        if goal.state is not None:
+            found.append(GoalRow(goal.id, f"GOAL_{goal.state.upper()}", goal.text, goal.state, None, goal.by))
+            continue
+        mine = plans_of.get(goal.id, [])
+        accepted = [p for p in mine if p.state in ("PLAN_ACCEPTED", "PLAN_FILED")]
+        project = next((open_heads[p.number] for p in mine if p.number in open_heads), None)
+        own = [p for p in mine if p.state not in ("PLAN_DECLINED", "PLAN_DONE")]
+        if accepted:
+            state, note, holder = "GOAL_PLANNED", f"plan #{accepted[0].number} accepted", "projects"
+        elif project is not None:
+            state, note, holder = "GOAL_PLANNED", f"project #{project} open", "projects"
+        elif goal.id in checked:
+            state, note, holder = "GOAL_PLANNED", "its check holds; the goal met waits on your merge", "maintainer"
+        elif own and own[0].state == "PLAN_OPEN":
+            state, note, holder = "GOAL_WRITTEN", f"plan #{own[0].number} waits on your answer", "maintainer"
+        elif own:
+            state, note, holder = "GOAL_WRITTEN", f"plan #{own[0].number} reads {own[0].state}", "agent"
+        else:
+            state, note, holder = "GOAL_WRITTEN", "a plan is due", "agent"
+        due = goal.past is True or (goal.by is not None and goal.past is None and goal.by in tagged)
+        due = due and goal.id not in checked  # its check holds: the goal met waits, not a new horizon
+        if due and goal.by is not None and (goal.id, goal.by) not in reviews:
+            when = f"past {goal.by}" if goal.past else f"release {goal.by} tagged"
+            found.append(GoalRow(goal.id, "GOAL_OVERDUE", goal.text, f"{when}; {note}", "agent", goal.by))
+            continue
+        found.append(GoalRow(goal.id, state, goal.text, note, holder, goal.by))
+    return found
+
+
+def show_goal(row: GoalRow) -> str:
+    where = row.goal if row.goal is not None else f"#{row.number}"
+    return f"{row.state:<16} {where:<7} {row.note}  {row.title}"
+
+
+def goal_json(row: GoalRow) -> dict[str, Any]:
+    """A goal row's --json line (S-106-4): state, holder, and by (the horizon, or null)"""
+    return {
+        "kind": "goal-state",
+        "goal": row.goal,
+        "number": row.number,
+        "state": row.state,
+        "title": row.title,
+        "note": row.note,
+        "holder": row.holder,
+        "by": row.by,
+    }
+
+
 def show(row: Item) -> str:
     detail = []
     if row.kind == "opportunity":
@@ -2770,6 +2953,9 @@ def main() -> int:
         "--projects", action="store_true", help="also report the projects, heads labelled project (spec 106)"
     )
     parser.add_argument(
+        "--goals", action="store_true", help="also report each goal's state, and the goal proposals (spec 106)"
+    )
+    parser.add_argument(
         "--bot-login", help="the login shipmill's sessions write as (<slug>[bot]); its triage comments count (D-16)"
     )
     parser.add_argument(
@@ -2792,8 +2978,8 @@ def main() -> int:
     args = parser.parse_args()
     if not args.plans and args.wip is not None:
         parser.error("--wip goes with --plans")
-    if not (args.plans or args.projects) and args.role:
-        parser.error("--role goes with --plans or --projects")
+    if not (args.plans or args.projects or args.goals) and args.role:
+        parser.error("--role goes with --plans, --projects, or --goals")
     if args.wip is not None and args.wip < 1:
         parser.error("--wip must be at least 1")
     if args.bot_login is not None and not args.bot_login.strip():
@@ -2825,11 +3011,15 @@ def main() -> int:
     outcomes = outcomes_in_flight(product, local_open, args.label, product_gh)
     found = rows(intake, None if outcomes is None else outcomes.room)
     planned: list[PlanRow] = []
-    if args.plans:
+    direction: list[Goal] = []
+    checked: set[str] = set()  # spec 106: goals whose finished plan's check holds
+    if args.plans or args.goals:  # the goals are read once; --goals reads the plans to place each goal
+        direction = uvx_goals(args.tool)()
         planned = fetch_plans(
             args.repo,
             intake,
-            goals=uvx_goals(args.tool),
+            checked=checked,
+            goals=lambda: direction,
             marker=args.marker,
             bot_login=args.bot_login,
             wip=args.wip,
@@ -2839,11 +3029,22 @@ def main() -> int:
         )
     heads: list[ProjectRow] = []
     projects = None
-    if args.projects:  # spec 106: the heads, and with [agents] projects the product's active count
+    if args.projects or args.goals:  # spec 106: the heads; --goals reads them for a planned goal
         now = dt.datetime.now(UTC)
         heads = fetch_projects(args.repo, args.bot_login, now, gh_graphql, args.marker, maintainers)
+    if args.projects:  # with [agents] projects, the product's active count
         limits = product_of(args.repo, config, product_gh.home_config, "projects")
         projects = projects_active(limits, heads, product_gh, args.bot_login)
+    goal_states: list[GoalRow] = []
+    if args.goals:  # spec 106: a row per goal of kind goal, and per goal proposal
+        releases = sorted({g.by for g in direction if g.kind == "goal" and g.by is not None and g.past is None})
+        tagged = release_tagged(args.repo, releases, gh_graphql)
+        reviews = reviewed(args.repo, args.bot_login, gh_graphql)
+        goal_states = goal_rows(
+            direction, planned, heads, intake.open_issues, args.bot_login, tagged, reviews, frozenset(checked)
+        )
+    planned = planned if args.plans else []
+    heads = heads if args.projects else []
     if args.json:
         print(json.dumps(first_line(autonomy, outcomes, projects)))
         for r in found:
@@ -2852,6 +3053,8 @@ def main() -> int:
             print(json.dumps(plan_json(p), sort_keys=True))
         for h in heads:
             print(json.dumps(project_json(h), sort_keys=True))
+        for g in goal_states:
+            print(json.dumps(goal_json(g), sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")
         if outcomes is not None:
@@ -2864,8 +3067,12 @@ def main() -> int:
             print(show_plan(p))
         for h in heads:
             print(show_project(h))
+        for g in goal_states:
+            print(show_goal(g))
     actions = any(r.state in ACTION for r in found) or any(p.state in PLAN_ACTION for p in planned)
-    actions = actions or any(h.state in PROJECT_ACTION for h in heads)
+    actions = (
+        actions or any(h.state in PROJECT_ACTION for h in heads) or any(g.state in GOAL_ACTION for g in goal_states)
+    )
     return 1 if actions else 0
 
 
