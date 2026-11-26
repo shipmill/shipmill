@@ -101,11 +101,14 @@ Then make it a sub-issue of the plan with github-issue-triage's `chains.py link 
 ## Intake's line on the plan once filed
 
 ```markdown
-Triage: **plan**: accepted and filed: W-2 #{a}, W-3 #{b}{; dropped: W-4, W-5}{; W-3 filed without its after W-4}{; milestone {title}}. Triage takes them up within `[agents] wip`.
+Triage: **plan**: accepted and filed: W-2 #{a}, W-3 #{b}{; linked: W-1 #{n}}{; not linked: W-4 {owner/repo}#{m}, W-5 #{k} (another parent)}{; dropped: W-4, W-5}{; W-3 filed without its after W-4}{; milestone {title}}. Triage takes them up within `[agents] wip`.
 ```
 
+- With no `feature` or `fix` item to file, the filed part is `nothing new` (`accepted and filed: nothing new; linked: W-1 #{n}`)
+- `linked:` names each `existing` item of this repository made a sub-issue of the plan (D-114), kept ones alone after a partial accept; `not linked:` names each kept `existing` item of another repository, and each one with another parent, marked `(another parent)`: neither is linked
 - `dropped:` names each item a partial accept dropped (`accept W-1, W-3` or `accept except W-2`, spec 096), in Work order; a full accept leaves the part out. A dropped item is never filed, linked, or put in the milestone
 - `W-k filed without its after W-j` names each kept item whose `(after W-j)` was on a dropped item: it got no `Depends on` line and no relation for W-j
+- Each `{...}` part is there only when it applies; the ids are placeholders, so an item is named in one part at most
 
 ## A finished plan's outcome
 

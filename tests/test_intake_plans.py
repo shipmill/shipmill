@@ -111,6 +111,7 @@ class Fake:
         carriers: list[dict[str, Any]] | None = None,
         milestones: dict[int, str | None] | None = None,
         states: Mapping[int, tuple[str, str | None]] | None = None,
+        parents: Mapping[int, tuple[str, int] | None] | None = None,
     ) -> None:
         self.opened = opened or []
         self.opportunities = opportunities or []
@@ -120,6 +121,10 @@ class Fake:
         self.carriers = carriers or []  # the issues the plan-item marker search finds
         self.milestones = milestones or {}  # each existing item's milestone
         self.states = states or {}  # each item's issue (state, stateReason), open when not given (spec 097)
+        # each existing item's parent (owner/name, number), None for none; when not given, the
+        # plan whose items were read last, so an existing item is its sub-issue (#1706)
+        self.parents = parents or {}
+        self.plan = 0
         self.asked: list[str] = []
 
     @staticmethod
@@ -130,6 +135,7 @@ class Fake:
         self.asked.append(query)
         if "search(type: ISSUE" in query:
             (plan_issue,) = [p for p in self.plans if p["number"] == variables["number"]]
+            self.plan = plan_issue["number"]
             subs = {"pageInfo": {"hasNextPage": False}, "nodes": []}
             found = {"issueCount": len(self.carriers), "nodes": self.carriers}
             repo_issue = {"number": plan_issue["number"], "body": plan_issue["body"], "subIssues": subs}
@@ -144,6 +150,14 @@ class Fake:
             found_states = {n: self.states.get(n, ("OPEN", None)) for n in states}
             nodes = {f"s{n}": {"state": s, "stateReason": r} for n, (s, r) in found_states.items()}
             return {"data": {"repository": nodes}}
+        parented = [int(n) for n in re.findall(r"\bp(\d+): issue\(", query)]
+        if parented:
+            found_parents = {n: self.parents.get(n, ("o/r", self.plan)) for n in parented}
+            parent_nodes = {
+                f"p{n}": {"parent": None if p is None else {"number": p[1], "repository": {"nameWithOwner": p[0]}}}
+                for n, p in found_parents.items()
+            }
+            return {"data": {"repository": parent_nodes}}
         if "labels: [$label]" in query:
             chosen = self.plans if variables["label"] == "goal-plan" else self.opportunities
             repo: dict[str, Any] = {"issues": self.page(chosen)}
@@ -1293,3 +1307,65 @@ def test_s097_3_a_finished_plans_comments_are_paged_back(ist: ModuleType) -> Non
             return super().__call__(query, variables)
 
     assert plan_states(ist, Older(plans=[done])) == {}
+
+
+# -- an accepted plan's existing items become its sub-issues (D-114, #1706)
+
+
+def existing_plan() -> str:
+    """A plan whose items are all existing: two of this repo's, one of another repo"""
+    return full_plan().replace(
+        "- W-1 existing: #212\n- W-2 feature: A release cut\n- W-3 fix: The lane stalls (after W-2)\n"
+        "- W-4 existing: other/x#5\n",
+        "- W-1 existing: #212\n- W-2 existing: #213\n- W-3 existing: other/x#5\n",
+    )
+
+
+def linked(
+    ist: ModuleType,
+    parents: Mapping[int, tuple[str, int] | None],
+    *,
+    answer: str = "accept",
+    body: str = "",
+    states: Mapping[int, tuple[str, str | None]] | None = None,
+) -> Any:
+    accepted = open_plan(20, owner(answer, 10), body=body or existing_plan())
+    fake = Fake(plans=[accepted], parents=parents, states=states)
+    return plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake))[20], fake
+
+
+def test_1706_an_accepted_plan_reads_accepted_until_its_existing_items_are_its_sub_issues(ist: ModuleType) -> None:
+    assert linked(ist, {212: None, 213: None})[0] == ("PLAN_ACCEPTED", "not linked: #212, #213")
+    assert linked(ist, {213: None})[0] == ("PLAN_ACCEPTED", "not linked: #213")  # #212 is the plan's already
+    done, fake = linked(ist, {})  # both are #20's sub-issues: nothing left to do, nothing new to file
+    assert done == ("PLAN_FILED", "nothing to file")
+    # one batched read of this repo's existing items, never another repo's
+    (asked,) = [q for q in fake.asked if re.search(r"\bp\d+: issue\(", q)]
+    assert "p212: issue(" in asked and "p213: issue(" in asked and "p5:" not in asked
+    assert "parent" in asked
+    # beside work still to file, the note names both
+    mixed = linked(ist, {212: None}, body=full_plan())[0]
+    assert mixed == ("PLAN_ACCEPTED", "not filed: W-2, W-3; not linked: #212")
+
+
+def test_1706_a_closed_existing_item_is_linked_too_before_the_plan_reads_done(ist: ModuleType) -> None:
+    closed = {212: ("CLOSED", "COMPLETED"), 213: ("CLOSED", "NOT_PLANNED")}
+    assert linked(ist, {212: None}, states=closed)[0] == ("PLAN_ACCEPTED", "not linked: #212")
+    note = "work closed: W-1 #212 completed, W-2 #213 not planned"
+    assert linked(ist, {}, states=closed)[0] == ("PLAN_DONE", note)  # S-097-1 once they are its children
+
+
+def test_1706_an_existing_item_with_another_parent_is_named_and_never_holds_the_plan(ist: ModuleType) -> None:
+    other = {212: ("o/r", 99), 213: ("other/x", 20)}  # another issue of this repo, and #20 of another repo
+    assert linked(ist, other)[0] == ("PLAN_FILED", "nothing to file; another parent: #212, #213")
+    mixed = linked(ist, {212: ("o/r", 99), 213: None})[0]
+    assert mixed == ("PLAN_ACCEPTED", "not linked: #213; another parent: #212")
+    assert linked(ist, {212: ("O/R", 20), 213: None})[0] == ("PLAN_ACCEPTED", "not linked: #213")  # any case
+
+
+def test_1706_a_partial_accept_links_its_kept_existing_items_alone(ist: ModuleType) -> None:
+    (state, note), fake = linked(ist, {212: None, 213: None}, answer="accept except W-2")
+    assert (state, note) == ("PLAN_ACCEPTED", "not linked: #212; dropped: W-2")
+    assert not any("p213:" in q for q in fake.asked)  # a dropped existing item is never read
+    kept = linked(ist, {213: None}, answer="accept W-1, W-3")[0]
+    assert kept == ("PLAN_FILED", "nothing to file; dropped: W-2")
