@@ -1214,6 +1214,7 @@ def plan_rows(
     wip: int | None,
     room: RoomReader,
     maintainers: frozenset[str] = frozenset(),
+    checked: set[str] | None = None,
 ) -> list[PlanRow]:
     """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has; a
     PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096). After
@@ -1241,6 +1242,10 @@ def plan_rows(
         found = plan_outcome(issue, bot_login)
         if found is None:
             finished.add(goal)
+        elif goal_check_holds(found.get("body") or ""):  # spec 106: the Met pull request waits
+            finished.add(goal)
+            if checked is not None:
+                checked.add(goal)
         else:
             follows[goal] = (issue["number"], still_missing(found.get("body") or ""))
 
@@ -1364,6 +1369,15 @@ def plan_outcome(issue: dict[str, Any], bot_login: str | None) -> dict[str, Any]
         if at >= closed and (found is None or at >= timestamp(found["createdAt"])):
             found = comment
     return found
+
+
+GOAL_CHECK = re.compile(r"^Goal check:[ \t]*holds\b", re.IGNORECASE | re.MULTILINE)
+
+
+def goal_check_holds(body: str) -> bool:
+    """spec 106: a finished plan's trusted outcome says its goal's check holds; the goal reads
+    planned, and no plan is proposed for it, until the maintainer merges the goal met"""
+    return GOAL_CHECK.search(body) is not None
 
 
 def still_missing(body: str) -> tuple[str, ...]:
@@ -1958,6 +1972,7 @@ def fetch_plans(
     holds: HoldReader | None = None,
     now: dt.datetime | None = None,
     stable: re.Pattern[str] = STABLE,
+    checked: set[str] | None = None,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
@@ -1998,6 +2013,7 @@ def fetch_plans(
         bot_login=bot_login,
         wip=wip,
         room=room,
+        checked=checked,
     )
     found = by_goal + by_issue
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
@@ -2735,10 +2751,10 @@ GOAL_REVIEW_LABEL = "goal-review"
 # the --bot-login's goal-review issue for a goal past its horizon, its first line (S-106-5)
 OVERDUE_MARKER = re.compile(r"^<!-- shipmill:goal-overdue (G-[1-9][0-9]*) by=(\S+) -->$")
 GOAL_REVIEWS = """
-query($owner: String!, $name: String!) {
+query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    issues(labels: ["goal-review"], first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
-      totalCount nodes { number body author { __typename login } }
+    issues(labels: ["goal-review"], first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor } nodes { number body author { __typename login } }
     }
   }
 }
@@ -2782,12 +2798,9 @@ def reviewed(repo: str, bot_login: str | None, run: Runner) -> set[tuple[str, st
     """S-106-5: each (goal, horizon) a goal-review issue by the --bot-login names on its first
     line; anyone else's marker counts for nothing"""
     owner, name = split_repo(repo)
-    data = repository(run, GOAL_REVIEWS, {"owner": owner, "name": name})
-    issues = data["issues"]
-    if int(issues["totalCount"]) > len(issues["nodes"]):
-        fail(f"{repo} has {issues['totalCount']} {GOAL_REVIEW_LABEL} issues, more than intake_state.py reads")
+    issues, _ = paged(run, GOAL_REVIEWS, {"owner": owner, "name": name}, "issues")
     found: set[tuple[str, str]] = set()
-    for issue in issues["nodes"]:
+    for issue in issues:
         by_bot = bot_login is not None and PLANS.login(issue.get("author")).lower() == bot_login.lower()
         marker = OVERDUE_MARKER.match(PLANS.first_line(issue.get("body") or ""))
         if by_bot and marker is not None:
@@ -2803,6 +2816,7 @@ def goal_rows(
     bot_login: str | None,
     tagged: set[str],
     reviews: set[tuple[str, str]],
+    checked: frozenset[str] = frozenset(),
 ) -> list[GoalRow]:
     """S-106-4, S-106-5: a row per open goal-proposal issue by a trusted author or the
     --bot-login, then one per goal of kind goal: met or dropped from the direction; planned
@@ -2832,16 +2846,21 @@ def goal_rows(
         mine = plans_of.get(goal.id, [])
         accepted = [p for p in mine if p.state in ("PLAN_ACCEPTED", "PLAN_FILED")]
         project = next((open_heads[p.number] for p in mine if p.number in open_heads), None)
+        own = [p for p in mine if p.state not in ("PLAN_DECLINED", "PLAN_DONE")]
         if accepted:
             state, note, holder = "GOAL_PLANNED", f"plan #{accepted[0].number} accepted", "projects"
         elif project is not None:
             state, note, holder = "GOAL_PLANNED", f"project #{project} open", "projects"
+        elif goal.id in checked:
+            state, note, holder = "GOAL_PLANNED", "its check holds; the goal met waits on your merge", "maintainer"
+        elif own and own[0].state == "PLAN_OPEN":
+            state, note, holder = "GOAL_WRITTEN", f"plan #{own[0].number} waits on your answer", "maintainer"
+        elif own:
+            state, note, holder = "GOAL_WRITTEN", f"plan #{own[0].number} reads {own[0].state}", "agent"
         else:
-            waiting = next((p for p in mine if p.state == "PLAN_OPEN"), None)
-            state = "GOAL_WRITTEN"
-            note = "a plan is due" if waiting is None else f"plan #{waiting.number} waits on your answer"
-            holder = "agent" if waiting is None else "maintainer"
+            state, note, holder = "GOAL_WRITTEN", "a plan is due", "agent"
         due = goal.past is True or (goal.by is not None and goal.past is None and goal.by in tagged)
+        due = due and goal.id not in checked  # its check holds: the goal met waits, not a new horizon
         if due and goal.by is not None and (goal.id, goal.by) not in reviews:
             when = f"past {goal.by}" if goal.past else f"release {goal.by} tagged"
             found.append(GoalRow(goal.id, "GOAL_OVERDUE", goal.text, f"{when}; {note}", "agent", goal.by))
@@ -2993,11 +3012,13 @@ def main() -> int:
     found = rows(intake, None if outcomes is None else outcomes.room)
     planned: list[PlanRow] = []
     direction: list[Goal] = []
+    checked: set[str] = set()  # spec 106: goals whose finished plan's check holds
     if args.plans or args.goals:  # the goals are read once; --goals reads the plans to place each goal
         direction = uvx_goals(args.tool)()
         planned = fetch_plans(
             args.repo,
             intake,
+            checked=checked,
             goals=lambda: direction,
             marker=args.marker,
             bot_login=args.bot_login,
@@ -3019,7 +3040,9 @@ def main() -> int:
         releases = sorted({g.by for g in direction if g.kind == "goal" and g.by is not None and g.past is None})
         tagged = release_tagged(args.repo, releases, gh_graphql)
         reviews = reviewed(args.repo, args.bot_login, gh_graphql)
-        goal_states = goal_rows(direction, planned, heads, intake.open_issues, args.bot_login, tagged, reviews)
+        goal_states = goal_rows(
+            direction, planned, heads, intake.open_issues, args.bot_login, tagged, reviews, frozenset(checked)
+        )
     planned = planned if args.plans else []
     heads = heads if args.projects else []
     if args.json:

@@ -35,7 +35,14 @@ def rows(
     ist: ModuleType, goals: list[Any], plans: Sequence[Any] = (), heads: Sequence[Any] = (), **kw: Any
 ) -> dict[Any, Any]:
     found = ist.goal_rows(
-        goals, list(plans), list(heads), kw.get("issues", []), BOT, kw.get("tagged", set()), kw.get("reviews", set())
+        goals,
+        list(plans),
+        list(heads),
+        kw.get("issues", []),
+        BOT,
+        kw.get("tagged", set()),
+        kw.get("reviews", set()),
+        kw.get("checked", frozenset()),
     )
     return {(r.goal or r.number): (r.state, r.holder, r.note) for r in found}
 
@@ -147,9 +154,16 @@ def test_s106_5_only_the_bots_marker_counts_as_the_review(ist: ModuleType) -> No
         {"number": 3, "body": "no marker\n" + marker, "author": who(BOT)},
     ]
     seen: list[str] = []
-    found = ist.reviewed("o/r", BOT, run_with({"reviews": {"issues": {"totalCount": 3, "nodes": nodes}}}, seen))
+    found = ist.reviewed(
+        "o/r", BOT, run_with({"reviews": {"issues": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}}, seen)
+    )
     assert found == {("G-1", "2026-12-31")}
-    assert ist.reviewed("o/r", None, run_with({"reviews": {"issues": {"totalCount": 3, "nodes": nodes}}}, [])) == set()
+    assert (
+        ist.reviewed(
+            "o/r", None, run_with({"reviews": {"issues": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}}, [])
+        )
+        == set()
+    )
 
 
 def test_s106_5_a_release_horizon_is_past_once_its_version_is_tagged(ist: ModuleType) -> None:
@@ -158,3 +172,31 @@ def test_s106_5_a_release_horizon_is_past_once_its_version_is_tagged(ist: Module
     assert ist.release_tagged("o/r", ["0.7.0", "v0.8.0"], run_with({"tags": tags}, seen)) == {"0.7.0"}
     assert 'qualifiedName: "refs/tags/v0.7.0"' in seen[0] and 'qualifiedName: "refs/tags/0.8.0"' in seen[0]
     assert ist.release_tagged("o/r", [], run_with({}, seen)) == set() and len(seen) == 1  # nothing read
+
+
+def test_s106_4_a_goal_whose_finished_plan_check_holds_reads_planned(ist: ModuleType) -> None:
+    """the session opened the pull request adding `. Met:`; until the maintainer merges it the
+    goal reads planned, never written, so no plan is due and no overdue question is asked"""
+    found = rows(ist, [goal(ist, "G-1", past=True)], checked=frozenset({"G-1"}))
+    assert found["G-1"] == ("GOAL_PLANNED", "maintainer", "its check holds; the goal met waits on your merge")
+    assert ist.goal_check_holds("<!-- shipmill:plan-outcome -->\nx\n\nGoal check: holds: the p90 is 20h\n")
+    assert not ist.goal_check_holds("Goal check: fails: the p90 is 30h")
+    assert not ist.goal_check_holds("Goal check: can't be run by an agent: needs production")
+
+
+def test_s106_4_a_goals_other_plan_is_named_in_its_note(ist: ModuleType) -> None:
+    found = rows(ist, [goal(ist, "G-1")], [plan(ist, "G-1", 20, "PLAN_HELD")])
+    assert found["G-1"] == ("GOAL_WRITTEN", "agent", "plan #20 reads PLAN_HELD")
+
+
+def test_s106_4_no_plan_is_due_for_a_goal_whose_check_holds(ist: ModuleType) -> None:
+    from .test_intake_plans import Fake, due, plan, reported
+
+    def finished(check: str) -> dict[str, Any]:
+        done = reported(plan(30, "G-1", state="CLOSED", reason="COMPLETED"))
+        outcome = done["comments"]["nodes"][-1]
+        outcome["body"] = outcome["body"].replace("Holds:", f"Goal check: {check}\n\nHolds:")
+        return done
+
+    assert "G-1" not in due(ist, Fake(plans=[finished("holds: the p90 is 20h")]))  # the goal met waits
+    assert due(ist, Fake(plans=[finished("fails: the p90 is 30h")]))["G-1"][0] == "PLAN_DUE"
