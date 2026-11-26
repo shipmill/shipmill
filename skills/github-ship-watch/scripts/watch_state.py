@@ -274,7 +274,9 @@ Intake (github-issue-triage's triage_state.py):
                   queue lists them: one the --bot-login opened, or an OWNER, MEMBER, or
                   COLLABORATOR (its "association"); with --trusted-only, the --bot-login's
                   alone. Report-only, never an action or an agent's, and in no --tier or
-                  --sweep read: only the maintainer answers a plan
+                  --sweep read: only the maintainer answers a plan. A plan noted "unclear
+                  accept asked" (spec 096) is in no plan row: its question is
+                  NEEDS_DECISION's while it waits
   SPEC_DUE        from the same intake_state.py run (spec 074): `ACCEPTED #N ...`, every
                   opportunity the maintainer accepted that triage hasn't taken, oldest first;
                   the session runs github-issue-triage's spec gate on each. An agent's row at
@@ -679,6 +681,9 @@ PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_FILED", 
 # keeps the two equal)
 PLAN_OPEN = "PLAN_OPEN"
 PLAN_OPEN_FIX = "answer the goal plan"
+# Spec 096: intake_state.py's PLAN_OPEN note once the session asked about an unclear accept; the
+# plan's question is NEEDS_DECISION's then, never the PLAN_OPEN row's
+UNCLEAR_ACCEPT_ASKED = "unclear accept asked"
 GOAL_ID = re.compile(r"G-[1-9]\d*")
 # spec 074: intake_state.py's feedback lines the watch places, the kinds they come in, its intake
 # levels, the wait after triage's hand-off before an intake pass is due, and the trusted openers
@@ -4281,7 +4286,9 @@ def plans_waiting(text: str, repo: str, bot_login: str | None = None, trusted_on
     no action, no agent's, and in no --tier or --sweep read, so no session starts for a plan
     only the maintainer answers. Trusted as the queue trusts an item (D-16): one the --bot-login
     opened, or an OWNER, MEMBER, or COLLABORATOR; with trusted_only, the --bot-login's alone, as
-    PLANS reads it. Numbers only, never an issue's text"""
+    PLANS reads it. A plan noted `unclear accept asked` (spec 096) is in none: its question
+    waits, so it is NEEDS_DECISION's, as fleet.py queue lists it in QUESTION alone. Numbers
+    only, never an issue's text"""
     waiting: list[str] = []
     for line in text.splitlines():
         row = plan_line(line)
@@ -4290,7 +4297,7 @@ def plans_waiting(text: str, repo: str, bot_login: str | None = None, trusted_on
         association = row.get("association")
         if association is not None and not isinstance(association, str):
             raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
-        if row["state"] != PLAN_OPEN:
+        if row["state"] != PLAN_OPEN or row.get("note") == UNCLEAR_ACCEPT_ASKED:
             continue
         ours = bot_login is not None and row["author"].lower() == bot_login.lower()
         if ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS):

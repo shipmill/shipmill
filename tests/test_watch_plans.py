@@ -335,3 +335,41 @@ def test_s097_9_intakes_plan_done_row_reads_as_a_plan_line(ws: ModuleType, ist: 
     assert ws.plan_line(line)["state"] == "PLAN_DONE"
     assert ws.plans_rows(intake_lines(line), "o/r", BOT).rows[0].detail == "PLAN_DONE #27"
     assert set(ws.PLAN_ACTION) == ist.PLAN_ACTION  # the watch's actions are intake's
+
+
+# -- a partial accept and an unclear accept (spec 096, #1709)
+
+
+def intake_plan(ist: ModuleType, number: int, state: str, note: str, **kw: Any) -> str:
+    """intake_state.py's own --json line for a plan issue, as the watch reads it"""
+    row = ist.PlanRow("G-1", state, "Plan for G-1", note, number, "plan", BOT, "NONE", **kw)
+    return json.dumps(ist.plan_json(row), sort_keys=True)
+
+
+def test_s096_13_the_plans_row_lists_a_partial_and_an_unclear_accept_and_no_filed_or_asked_plan(
+    ws: ModuleType, ist: ModuleType
+) -> None:
+    text = intake_lines(
+        intake_plan(ist, 30, "PLAN_ACCEPTED", "not filed: W-3; dropped: W-2", kept=("W-1", "W-3"), dropped=("W-2",)),
+        intake_plan(ist, 31, "PLAN_ANSWERED", "unclear accept: W-9 is not in the plan"),
+        intake_plan(ist, 32, "PLAN_FILED", "dropped: W-2", kept=("W-1", "W-3"), dropped=("W-2",)),
+        intake_plan(ist, 33, "PLAN_OPEN", "unclear accept asked"),  # intake_state.py's note, as it prints it
+    )
+    (row,) = ws.plans_rows(text, "o/r", BOT).rows
+    assert row.detail == "PLAN_ANSWERED #31; PLAN_ACCEPTED #30"
+    assert row.fix == "/shipmill:product-intake o/r" and row.json()["agent"] is True
+    # the asked plan's question is NEEDS_DECISION's: no PLAN_OPEN row waits on it as a plan
+    assert ws.plans_waiting(text, "o/r", BOT) == []
+    waiting = intake_lines(
+        intake_plan(ist, 34, "PLAN_OPEN", ""), intake_plan(ist, 33, "PLAN_OPEN", ws.UNCLEAR_ACCEPT_ASKED)
+    )
+    assert [r.detail for r in ws.plans_waiting(waiting, "o/r", BOT)] == ["#34"]
+    # the note the watch skips is the one intake_state.py prints
+    assert f'"PLAN_OPEN", title, "{ws.UNCLEAR_ACCEPT_ASKED}"' in INTAKE_STATE.read_text(encoding="utf-8")
+
+
+def test_s096_13_shipmill_gate_starts_a_session_for_a_partial_accept(ws: ModuleType, ist: ModuleType) -> None:
+    line = intake_plan(ist, 30, "PLAN_ACCEPTED", "not filed: W-1; dropped: W-2", kept=("W-1",), dropped=("W-2",))
+    (row,) = ws.plans_rows(intake_lines(line), "o/r", BOT).rows
+    decision = decide(parse_findings(json.dumps(row.json(), sort_keys=True)), [], None, NOW, dt.timedelta(hours=6))
+    assert decision.action is Action.LAUNCH and [f.detail for f in decision.work] == ["PLAN_ACCEPTED #30"]

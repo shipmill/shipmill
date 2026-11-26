@@ -373,6 +373,25 @@ def test_s069_6_an_opportunity_or_person_item_in_question_is_only_a_question(
     assert [line.split()[1] for line in out.splitlines()] == ["QUESTION", "QUESTION"]
 
 
+def test_s096_13_a_partially_accepted_plan_is_no_row_and_an_asked_unclear_accept_is_only_a_question(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    partial = {**intake_line(30, "PLAN_ACCEPTED", "plan"), "note": "dropped: W-2", "kept": ["W-1"], "dropped": ["W-2"]}
+    filed = {**intake_line(31, "PLAN_FILED", "plan"), "note": "dropped: W-2", "kept": ["W-1"], "dropped": ["W-2"]}
+    unclear = {**intake_line(32, "PLAN_OPEN", "plan"), "note": "unclear accept asked"}
+    fake = FakeGh(
+        watch={"o/r": [watch_row("NEEDS_DECISION", "o/r", "#32")]},
+        intake={"o/r": [{"autonomy": "propose"}, partial, filed, unclear]},
+        github={"o/r": {32: asked(32, "Plan for G-1", ago(hours=4), author=BOT, association="NONE")}},
+    )
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 1
+    assert out.splitlines() == ["o/r QUESTION      #32    answer the needs-decision question: Plan for G-1 (4h)"]
+    assert fl.intake_items("\n".join(json.dumps(r) for r in (partial, filed)), "o/r") == {}
+    graphql = next(c for c in fake.calls if c[:3] == ["gh", "api", "graphql"])
+    assert re.findall(r"\bi(\d+): issueOrPullRequest", graphql[4]) == ["32"]  # the accepted plans are never read
+
+
 def test_the_plan_revision_marker_is_intake_states() -> None:
     intake = Path(__file__).resolve().parents[1] / "skills" / "product-intake" / "scripts" / "intake_state.py"
     found = re.search(r'^REVISED = re\.compile\(r"(.+)"\)$', intake.read_text(encoding="utf-8"), re.MULTILINE)
