@@ -18,16 +18,16 @@ below.
 
 ## Goals
 
-- G-1: A connected repository goes from a new issue to an announced release with no human step but the maintainer's decisions
+- G-1: Held: a connected repository goes from a new issue to an announced release with no human step but the maintainer's decisions. Threshold: its measure line. Source: ship-watch's weekly metrics
   measure: issue_to_release_p90 < 2d
-- G-2: Agents' work holds a quality bar the maintainer can trust without reading every diff
+- G-2: Held: agents' work holds a quality bar the maintainer can trust without reading every diff. Threshold: its measure line. Source: ship-watch's weekly metrics
   measure: change_failure_rate <= 5%
-- G-3: The person who asked for a change can find where it is available; the core reports which release fixed an issue and doesn't promise to tell them (D-69)
-- G-4: The maintainer sees in one place what waits on them, across all their repositories
-- G-5: Agents keep to the written direction: work outside the goals is postponed or declined with its reason
-- G-6: Agents pursue a goal: they propose the work that reaches it, and the maintainer approves it
-- G-7: The loop knows whether each goal is met, from a measure, and proposes changing the direction when it is
-- G-8: Each person's profile credits the work they decided, and the record still tells their words from their agents'
+- G-3: The person who asked for a change can find where it is available; the core reports which release fixed an issue and doesn't promise to tell them (D-69). Check: `status --item` on a closed issue names the release that carries its fix. By: 2026-12-31
+- G-4: The maintainer sees in one place what waits on them, across all their repositories. Check: `queue --fleet` lists every item a waiting-on-me round finds, none missing. By: 2026-12-31
+- G-5: Held: agents keep to the written direction: work outside the goals is postponed or declined with its reason. Threshold: every merged pull request and every filed issue names the goal or quality-bar item it serves. Source: the plan check at landing and the triage verdicts
+- G-6: Agents pursue a goal: they propose the work that reaches it, and the maintainer approves it. Check: #1680 to #1683 and #1688 are closed, and `status --item` on a goal names its state. By: 2026-12-31
+- G-7: The loop knows whether each goal is met and each measure held, and proposes changing the direction when it is. Check: the weekly round reads every measure and every goal's check, and proposes the change. By: 2026-12-31
+- G-8: Each person's profile credits the work they decided, and the record still tells their words from their agents'. Check: a decision the App relayed shows on the person's profile, and the record tells their words from the agent's. By: 2027-03-31
 
 ## Non-goals
 
