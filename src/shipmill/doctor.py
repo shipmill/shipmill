@@ -333,11 +333,15 @@ def doctor(
         uses = None if credential is None else credential()
         if uses is not None:
             folder, record = None, None
-            if uses.token is not None:  # #1725: the pause records only a token file's row names
-                folder = pauses or pauses_dir(os.environ, Path.home() if home is None else home)
-                git = Git(root)
-                record = state_dir(git) / RECORD if git.ok("rev-parse", "--git-dir") else None
-            checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC), folder, record))
+            try:
+                if uses.token is not None:  # #1725: the pause records only a token file's row names
+                    folder = pauses or pauses_dir(os.environ, Path.home() if home is None else home)
+                    git = Git(root)
+                    record = state_dir(git) / RECORD if git.ok("rev-parse", "--git-dir") else None
+            except ReleaseError as exc:  # a relative XDG_STATE_HOME, which the gate refuses too: a row, not an exit
+                checks.append(Check("FAIL", "claude auth", f"{exc}; fix: {exc.fix}"))
+            else:
+                checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC), folder, record))
         if auth is not None and (uses is None or uses.refused is None):  # a refused file can't be asked about
             checks.append(auth_check(auth(None if uses is None else uses.token)))
         if policy.agents.verify:  # D-9: no list, no row and no read of the gate's state
