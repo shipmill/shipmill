@@ -1,6 +1,6 @@
 # S-098: The maintainer holds a goal plan until a condition they name
 
-status: approved
+status: built
 serves: G-6
 
 ## Problem
@@ -188,7 +188,29 @@ plan-item marker is read and nothing is filed for it.
 - shipmill/shipmill#1732: S-098-10, S-098-11, S-098-14
 - shipmill/shipmill#1734: S-098-12, S-098-13
 
+Built in #1746 (#1729), #1749 (#1732) and #1751 (#1734).
+
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked on main at e63e873e (after #1751) by reading the code and running the tests named
+below (`tests/test_intake_plan_hold.py`, `tests/test_watch_plan_hold.py`,
+`tests/test_fleet_queue_plan_hold.py`, `tests/test_status_plan_hold.py`,
+`tests/test_product_intake_skill_plan_hold.py`, `pytest -k s098`: 65 passed); `specs.py
+coverage --spec 098` exits 0.
+
+- S-098-1: `read_hold` in `intake_state.py` takes a trusted answer's first line `hold until <date | #N | owner/repo#N | release>`, any case, an optional final period, and `plan_state` reads it PLAN_HELD `until <condition>`; PLAN_HELD is not in `PLAN_ACTION`, so a run with only it exits 0 (`test_s098_1_a_hold_reads_held_until_its_condition`, `test_s098_1_held_is_no_action_so_a_run_with_only_it_exits_0`); holds
+- S-098-2: a date hold is met at that day's 00:00 UTC and reads PLAN_HOLD_MET `hold met: <date>; re-check due`, at once for a past date (`test_s098_2_a_date_hold_is_met_at_that_days_midnight_utc`, `test_s098_2_a_date_already_past_is_met_at_once`); holds
+- S-098-3: `gh_holds` reads an item's state, in this repository or another, and a closed item, merged or not, meets the hold with `hold met: <ref> closed; re-check due` (`test_s098_3_an_item_hold_is_met_once_the_item_closes`); holds
+- S-098-4: a release hold is met by a tag matching `--stable-tag-regex` (triage_state.py's default) created after the hold's comment, a pre-release or an older tag counting for nothing; the tags are read once a run (`test_s098_4_a_release_hold_is_met_by_a_stable_tag_after_the_hold`, `test_s098_4_stable_is_triage_states_and_the_flag_is_too`, `test_s098_4_the_tags_are_read_once_a_run`); holds
+- S-098-5: `plan_json` prints `hold` (`until`, `met_at`) only for a PLAN_HELD row, a PLAN_HOLD_MET row, and a PLAN_OPEN row whose hold was met (`test_s098_5_only_a_held_row_has_a_hold_key`); holds
+- S-098-6: `plan_answer` counts a hold only from an OWNER, MEMBER, or COLLABORATOR or a `--bot-login` relay naming a maintainer (`test_s098_6_an_untrusted_hold_changes_nothing`, `test_s098_6_a_relayed_hold_naming_a_maintainer_reads_held`); holds
+- S-098-7: a trusted `hold until` line whose rest is no single condition reads PLAN_OPEN `hold not read: <the first line>`, never an edit or PLAN_ANSWERED (`test_s098_7_a_malformed_hold_reads_open_never_answered`, `test_s098_7_hold_until_is_never_an_edit`); holds
+- S-098-8: an item GitHub answers null for reads PLAN_OPEN `hold not read: <ref> can't be read`, and any other failed read exits 2 (`test_s098_8_an_item_github_answers_null_for_holds_nothing`, `test_s098_8_any_other_failed_read_exits_2`); holds
+- S-098-9: the newest trusted answer decides, so a newer accept, decline, edit, or hold replaces the hold, and a hand edit of the body leaves it held (`test_s098_9_a_newer_answer_replaces_the_hold`, `test_s098_9_a_hand_edit_after_a_hold_leaves_it_held`); holds
+- S-098-10: a goal whose only open plan is held reads no PLAN_DUE, and `watch_state.py`'s `plans_rows` leaves PLAN_HELD out of the PLANS row, so `shipmill gate`'s `decide` stays quiet (`test_s098_10_a_goal_whose_only_open_plan_is_held_reads_no_plan_due`, `test_s098_10_shipmill_gate_starts_no_session_for_a_held_plan`); holds
+- S-098-11: `fleet.py`'s `INTAKE_KINDS` maps only PLAN_OPEN to `PLAN`, and a re-checked plan waits since the later of its newest revision and the hold's `met_at` (`test_s098_11_a_held_or_hold_met_plan_is_no_row`, `test_s098_11_a_rechecked_plan_waits_since_the_later_of_its_revision_and_met_at`, `test_s098_11_a_hold_not_met_or_malformed_on_a_plan_open_line`, `test_s098_11_a_plan_given_its_met_at_waits_since_the_later_of_the_two`); holds
+- S-098-12: `status.py`'s `open_plans` reads only the watch's PLAN_OPEN row, which `plans_waiting` builds from intake's PLAN_OPEN plans alone, so a held or hold-met plan adds no WAITS ON YOU reason and a re-checked one adds it (`test_s098_12_status_waits_on_you_only_for_the_rechecked_plan`); holds
+- S-098-13: `item_status.py` reads a PLAN_HELD plan from the PLAN_HELD row `watch_state.py`'s `--item` read alone builds (`plans_held`) as `held until <condition>`, an event, holder postponed; a PLAN_HOLD_MET plan from the PLANS row as the agent's; a re-checked plan as an unanswered plan, the maintainer's (`test_s098_13_a_held_plans_holder_is_postponed_then_the_agent_then_you`, `test_s098_13_the_held_condition_is_cleared_by_an_event`, `test_s098_13_the_plan_held_row_is_read_for_an_item_only`, `test_s098_13_an_unreadable_held_plan_is_refused`); holds
+- S-098-14: product-intake's SKILL.md and plan.md give the hold answer and that a session never acts on a held plan, and the ship-watch Fleet section says a held plan is no `PLAN` row (`test_s098_14_product_intake_gives_the_hold_answer_and_never_acts_on_a_held_plan`, `test_s098_14_the_plans_triage_line_names_the_hold_answer`, `test_s098_14_the_fleet_section_says_a_held_plan_is_no_plan_row`); holds
+- S-098-15: `rechecked` counts a `<!-- shipmill:plan-recheck -->` comment only from the `--bot-login` and newer than `met_at`, after which the plan reads PLAN_OPEN `hold met: ...`; PLAN_HOLD_MET is in both `PLAN_ACTION` sets, so the PLANS row lists it and the gate launches (`test_s098_15_the_bot_logins_recheck_after_met_at_reads_open`, `test_s098_15_anyone_elses_or_an_older_recheck_changes_nothing`, `test_s098_15_a_recheck_of_an_earlier_hold_is_not_this_ones`, `test_s098_15_the_recheck_marker_is_never_an_answer`, `test_s098_15_text_output_names_the_state`, `test_s098_15_the_plans_row_lists_plan_hold_met_as_an_action`, `test_s098_15_a_held_plan_alone_makes_no_plans_row`, `test_s098_15_shipmill_gate_starts_a_session_for_plan_hold_met`, `test_s098_15_a_rechecked_plan_waits_on_the_maintainer_again`); holds
+- S-098-16: product-intake's SKILL.md lists PLAN_HELD and PLAN_HOLD_MET and gives the re-check step: each Work item read from trusted text, one `plan-recheck` comment of the done and stale items or `Nothing in this plan is done or stale.`, the body, filing, and answer left alone (`test_s098_16_the_skill_lists_the_held_states`, `test_s098_16_the_skill_gives_the_recheck_step`); holds
