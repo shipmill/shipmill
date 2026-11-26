@@ -157,4 +157,8 @@ the still-missing lines, after the plans filed.
 
 ## Issues
 
+- shipmill/shipmill#1710: S-097-1, S-097-2, S-097-3, S-097-4, S-097-6, S-097-7
+- shipmill/shipmill#1711: S-097-5, S-097-12
+- shipmill/shipmill#1712: S-097-8, S-097-9, S-097-10, S-097-11
+
 ## Verification

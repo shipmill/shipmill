@@ -185,4 +185,7 @@ item the maintainer cut.
 
 ## Issues
 
+- shipmill/shipmill#1708: S-096-1, S-096-2, S-096-3, S-096-4, S-096-5, S-096-6, S-096-7, S-096-8, S-096-9
+- shipmill/shipmill#1709: S-096-10, S-096-11, S-096-12, S-096-13
+
 ## Verification
