@@ -181,7 +181,8 @@ def due(
     *,
     wip: int | None = None,
     room: int = 1,
-    goals: Sequence[tuple[str, str] | tuple[str, str, str | None]] = GOALS,  # (id, text) or (id, text, kind)
+    # (id, text), (id, text, kind), or (id, text, kind, state)
+    goals: Sequence[tuple[str, str] | tuple[str, str, str | None] | tuple[str, str, str | None, str | None]] = GOALS,
     bot_login: str | None = BOT,
 ) -> dict[str, tuple[str, str]]:
     """Each goal's plan row as (state, note); records the WIP limits the room was read for"""

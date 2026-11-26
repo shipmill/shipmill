@@ -126,7 +126,8 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
   PLAN_WAITS        with --wip N, a no-work or stalled trigger holds while
                     `triage_state.py --wip N` reports no room left; the note is the
                     trigger and "waits for room". A request never waits
-A goal whose `kind` is measure (spec 105, a standing measure) is planned only on request:
+A goal the direction records as met or dropped (its `state`, spec 106) reads no trigger, not
+even a request's. A goal whose `kind` is measure (spec 105, a standing measure) is planned only on request:
 it reads `requested in #N` alone, never a no-work or stalled PLAN_DUE or PLAN_WAITS. A goal
 of kind goal, or with no kind (null, or absent from an older shipmill), reads every trigger.
 A goal with an open plan issue reads nothing, whatever its trigger; nor does a goal no
@@ -910,6 +911,7 @@ def rows(intake: Intake) -> list[Item]:
 
 
 GOAL_KINDS = ("goal", "measure")  # spec 105: a goal's kind in `product show --json`, or null
+GOAL_ENDS = ("met", "dropped")  # spec 106: a goal's state in `product show --json`, or null
 
 
 @dataclass(frozen=True)
@@ -917,6 +919,7 @@ class Goal:
     id: str  # G-<n>
     text: str
     kind: str | None = None  # spec 105: goal, measure, or None for neither form (or a shipmill before it)
+    state: str | None = None  # spec 106: met, dropped, or None while open (or a shipmill before it)
 
 
 @dataclass
@@ -950,8 +953,8 @@ RoomReader = Callable[[int], int]
 
 def parse_goals(text: str) -> list[Goal]:
     """`shipmill product show --section goals --json`'s output, strictly; a goal's `kind`
-    (spec 105) is `goal`, `measure`, or null, and absent reads as null, as a pinned shipmill
-    before spec 105 prints it"""
+    (spec 105) is `goal`, `measure`, or null, and its `state` (spec 106) `met`, `dropped`, or
+    null; either absent reads as null, as a pinned shipmill before those specs prints it"""
     try:
         record = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -968,7 +971,10 @@ def parse_goals(text: str) -> list[Goal]:
         kind = entry.get("kind")
         if kind is not None and kind not in GOAL_KINDS:
             fail(f"shipmill product show --json listed a goal whose kind isn't goal, measure, or null: {entry!r}")
-        goals.append(Goal(ident, text_, kind))
+        state = entry.get("state")
+        if state is not None and state not in GOAL_ENDS:
+            fail(f"shipmill product show --json listed a goal whose state isn't met, dropped, or null: {entry!r}")
+        goals.append(Goal(ident, text_, kind, state))
     return goals
 
 
@@ -1169,6 +1175,8 @@ def plan_rows(
     found: list[PlanRow] = []
     left: int | None = None  # the room under --wip, read once and only when a goal waits on it
     for goal in goals:
+        if goal.state is not None:  # S-106-3: a met or dropped goal reads no trigger, a request's either
+            continue
         if goal.id in planned:
             continue
         if goal.id in requests:

@@ -466,7 +466,7 @@ from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
 from shipmill.pr_plan import hold_plan
-from shipmill.product import DIRECTION, GitRef, Horizon, Inherited, ItemId, Measure, Section, Serves
+from shipmill.product import DIRECTION, GitRef, GoalEnd, Horizon, Inherited, ItemId, Measure, Section, Serves
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.product_home import HomeReach, inherited
@@ -1183,6 +1183,18 @@ def _parser() -> argparse.ArgumentParser:
         "goals", nargs="*", default=[], help="the ids of the product home's goals it serves, such as G-2"
     )
     served.add_argument("--clear", action="store_true", help="remove the goal's serves line")
+    meeting = acting.add_parser(
+        "met", help="record a goal of kind goal as met: append `. Met: <date>` to its text (spec 106); print it"
+    )
+    meeting.add_argument("id", help="the goal's id, such as G-3")
+    meeting.add_argument("--on", metavar="YYYY-MM-DD", help="the date it was met (default: today in UTC)")
+    dropping = acting.add_parser(
+        "drop",
+        help="record a goal of kind goal as dropped: append `. Dropped: <today>: <reason>` to its text (spec 106); "
+        "print it",
+    )
+    dropping.add_argument("id", help="the goal's id, such as G-3")
+    dropping.add_argument("--reason", required=True, help="why it was dropped, one line")
     for each in (checking, showing):
         each.add_argument(
             "--local",
@@ -1200,6 +1212,8 @@ def _parser() -> argparse.ArgumentParser:
         goaling,
         holding,
         serving,
+        meeting,
+        dropping,
     ):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
@@ -4843,6 +4857,12 @@ def _product(root: Path, args: argparse.Namespace, reach: HomeReach) -> int:
     if args.product == "held":  # S-105-7
         threshold, source = LineText(args.threshold), LineText(args.source)
         print(product.held(root, ItemId.parse(args.id), threshold, source).text)
+        return 0
+    if args.product in ("met", "drop"):  # S-106-2: the maintainer's record that a goal ended
+        today = dt.datetime.now(dt.UTC).date()
+        on = today if getattr(args, "on", None) is None else GoalEnd.day(args.on)
+        reason = str(LineText(args.reason)) if args.product == "drop" else None
+        print(product.end(root, ItemId.parse(args.id), GoalEnd(on, reason)).text)
         return 0
     if args.product == "serves":
         goal = ItemId.parse(args.id)

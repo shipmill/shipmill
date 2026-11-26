@@ -27,7 +27,7 @@ Any other request for new behaviour is an **opportunity**: triage comments the h
 ## The gate
 
 1. **Read what's settled.** `specs.py find <the paths and areas the feature touches>` lists specs that already cover them: extend one of those rather than writing a second. `decisions.py find` on the same terms gives the rules the spec relies on
-2. **Write the spec.** `specs.py new <slug>` writes `docs/specs/NNN-<slug>.md` from the template with the next number and `status: draft`. When the repo has a direction, `docs/product.md`, add a `serves:` line right after the status line naming the goals the feature serves (`serves: G-2, G-3`, ids from its Goals), or `serves: quality bar`; `check` refuses a spec that isn't built without one, or naming an id the direction doesn't list. Fill in every section from the issue and the code, except Verification:
+2. **Write the spec.** `specs.py new <slug>` writes `docs/specs/NNN-<slug>.md` from the template with the next number and `status: draft`. When the repo has a direction, `docs/product.md`, add a `serves:` line right after the status line naming the goals the feature serves (`serves: G-2, G-3`, ids from its Goals), or `serves: quality bar`; `check` refuses a spec that isn't built without one, or naming an id the direction doesn't list, and a draft or approved one naming a goal the direction records as met or dropped (spec 106). Fill in every section from the issue and the code, except Verification:
    - **Behaviour** names every touched path or area in backticks, so `find` lists the spec for a change there
    - **Acceptance criteria** are checkable statements, `S-NNN-1`, `S-NNN-2`, and so on, each one a test could prove: an exit code, an output, a file written, a refusal. "Works well" isn't a criterion
    - **Decisions relied on** lists the `D-n` entries it follows; a departure from one is a question for the user, as in the design gate
@@ -45,6 +45,7 @@ The line under the title says where a spec stands; `specs.py check` accepts only
 | `draft` | Being written; a merged draft is not approved, so its build doesn't start | `specs.py new` |
 | `approved` | The spec PR merged with it, by the maintainer's hand or by github-pr-triage after a trusted answer that takes every recommendation (D-49): the build may start | The spec PR, when it's ready for review |
 | `built` | Every build issue is closed or closing, and each criterion was checked on the code | The PR that closes the last build issue |
+| `stopped` | Its project was stopped (spec 106): nothing more is built for it, so it needs no Verification section, and `specs.py split` refuses it | The pull request a project's stop opens (product intake's PROJECT_STOP_DUE) |
 
 `specs.py check` refuses a `built` spec that lists no build issues, or whose Verification section leaves out a criterion id, and an `approved` or `built` spec whose Issues lines leave a criterion out or give one to two build issues. It also refuses the template's placeholder text left word for word: a `draft` may keep it, an `approved` spec may not in Problem, Behaviour, Acceptance criteria, or Out of scope, and a `built` spec in any section. `specs.py coverage` (in CI) refuses a `built` spec with a criterion no test names.
 

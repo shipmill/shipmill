@@ -221,7 +221,7 @@ def test_s024_1_bad_cli_input_exits_2(tmp_path: Path) -> None:
 
 
 # a goal of neither kind's fields (spec 105), each null
-NO_KIND = dict.fromkeys(("kind", "outcome", "check", "by", "past", "held", "threshold", "source"))
+NO_KIND = dict.fromkeys(("kind", "outcome", "check", "by", "past", "held", "threshold", "source", "state", "ended"))
 
 
 def test_s024_2_show_json_prints_name_mission_and_items(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

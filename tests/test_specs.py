@@ -242,7 +242,7 @@ def test_status_is_required_and_a_built_spec_is_verified(tmp_path: Path) -> None
     )
     out = specs(root, "check").stdout
     assert "001-built.md" not in out
-    assert "002-odd.md:3: status must be one of draft, approved, built, got 'done'" in out
+    assert "002-odd.md:3: status must be one of draft, approved, built, stopped, got 'done'" in out
     assert "003-none.md:1: no status line" in out
     assert "004-unverified.md:1: built, but lists no build issues" in out
     assert "004-unverified.md:1: built, but Verification doesn't name S-004-2" in out
