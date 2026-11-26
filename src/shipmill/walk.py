@@ -349,13 +349,35 @@ class End(enum.StrEnum):
 BACKOFF = (dt.timedelta(minutes=15), dt.timedelta(hours=1), dt.timedelta(hours=4))
 
 
+WAITED_REPO = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+"  # owner/name, safe inside a query
+WAITED = re.compile(rf"({WAITED_REPO})#([1-9]\d*)")  # a waited item as handed.json's waits names it
+
+
+@dataclass(frozen=True, slots=True)
+class Waited:
+    """The item a subject's newest waits-on marker names: its repo (owner/name) and number"""
+
+    repo: str
+    number: int
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(WAITED_REPO, self.repo) is None or self.number < 1:
+            raise ValueError(f"a waited item is owner/name#N, got {self.repo!r}#{self.number!r}")
+
+    @property
+    def named(self) -> str:
+        return f"{self.repo}#{self.number}"
+
+
 @dataclass(frozen=True, slots=True)
 class Hand:
     """One hand in handed.json: the session it went to, and when; for a pull request subject
     the head it had then (spec 061); idle once a walk past retry_hours found nothing changed on
     its subject since; ended, how its session ended, None while it runs (spec 089); errors, the
     error ends in a row on its key, carried to the hand that replaces it, and until, when an
-    error end's backoff hands it again, in place of retry_hours (S-089-11)"""
+    error end's backoff hands it again, in place of retry_hours (S-089-11); waits, on an idle
+    hand alone, the item its subject's newest waits-on marker by the bot named when the walk
+    marked it idle (spec 092)"""
 
     session: str
     at: dt.datetime
@@ -364,18 +386,32 @@ class Hand:
     ended: End | None = None
     errors: int = 0
     until: dt.datetime | None = None
+    waits: Waited | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.errors, bool) or not isinstance(self.errors, int) or self.errors < 0:
             raise ValueError(f"errors must be a count, got {self.errors!r}")
         if self.until is not None and (self.ended is not End.ERROR or self.errors < 1):
             raise ValueError("only a hand whose session ended error is held until a time")
+        if self.waits is not None and not self.idle:
+            raise ValueError("only an idle hand waits on an item")
+
+    def due(self, now: dt.datetime, idle_days: int, read: Mapping[Waited, WaitedItem]) -> bool:
+        """Spec 092 (S-092-6): an idle hand idle_days (not 0) or more old, save one whose waits
+        names an item not read as closed (open, or unread), which waits on that item instead,
+        whatever its age; one whose waits names a closed item is due as one without waits"""
+        if not self.idle or idle_days == 0:
+            return False
+        if self.waits is not None and ((item := read.get(self.waits)) is None or not item.closed):
+            return False
+        return now - self.at >= dt.timedelta(days=idle_days)
 
     def record(self) -> dict[str, object]:
         found: dict[str, object] = {"session": self.session, "at": self.at.isoformat()}
         if self.head is not None:
             found |= {"head": self.head.sha, "rollup": self.head.rollup}
         found |= {"idle": True} if self.idle else {}
+        found |= {} if self.waits is None else {"waits": self.waits.named}
         found |= {} if self.ended is None else {"ended": self.ended.value}
         found |= {"errors": self.errors} if self.errors else {}
         return found | ({} if self.until is None else {"until": self.until.isoformat()})
@@ -393,11 +429,11 @@ class Hand:
         delay of BACKOFF after the death, or for retry_hours once the run is past it"""
         errors = self.errors + 1
         delay = BACKOFF[errors - 1] if errors <= len(BACKOFF) else retry
-        return replace(self, errors=errors, until=died + delay, idle=False)
+        return replace(self, errors=errors, until=died + delay, idle=False, waits=None)
 
 
 HAND_KEYS = frozenset({"session", "at"})
-HAND_EXTRA = frozenset({"idle", "ended", "errors", "until"})
+HAND_EXTRA = frozenset({"idle", "waits", "ended", "errors", "until"})
 PULL_KEYS = frozenset({"head", "rollup"})
 ENDS = ", ".join(e.value for e in End)
 # ends that drop their hand and count no attempt: the wait is the credential's pause (S-089-4), the
@@ -410,7 +446,7 @@ def hand_of(key: str, entry: object) -> Hand:
     while its session runs, loads with ended None (S-089-2)"""
     if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | HAND_EXTRA:
         raise ValueError(
-            f"{key}: expected session and at, head and rollup or neither, and idle, ended, errors, until or not"
+            f"{key}: expected session and at, head and rollup or neither, and idle, waits, ended, errors, until or not"
         )
     if not isinstance(entry["session"], str) or not entry["session"]:
         raise ValueError(f"{key}: session must be a non-empty string")
@@ -427,6 +463,15 @@ def hand_of(key: str, entry: object) -> Hand:
         raise ValueError(f"{key}: idle must be true or false")
     if idle and SUBJECT_KEY.fullmatch(key) is None:
         raise ValueError(f"{key}: only a subject's hand is idle")
+    waits = None
+    if "waits" in entry:  # spec 092 (S-092-2)
+        named = entry["waits"]
+        found = WAITED.fullmatch(named) if isinstance(named, str) else None
+        if found is None:
+            raise ValueError(f"{key}: waits must be <owner/repo>#<N>, got {named!r}")
+        if not idle:
+            raise ValueError(f"{key}: only an idle hand has waits")
+        waits = Waited(found[1], int(found[2]))
     ended = None
     if "ended" in entry:
         if not isinstance(entry["ended"], str) or entry["ended"] not in End:
@@ -438,7 +483,7 @@ def hand_of(key: str, entry: object) -> Hand:
     until = moment(entry["until"], f"{key}.until") if "until" in entry else None
     if until is not None and (ended is not End.ERROR or errors < 1):
         raise ValueError(f"{key}: only a hand whose session ended error, with errors, has until")
-    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle, ended, errors, until)
+    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle, ended, errors, until, waits)
 
 
 @dataclass(frozen=True, slots=True)
@@ -452,7 +497,9 @@ class Handed:
     the session handed it) and `at` (when, an ISO 8601 time with its offset); a pull request
     subject's also `head` (its head SHA) and `rollup` (its head's check rollup state, or null
     with no checks) from the change check; `"idle": true` once a walk past retry_hours found
-    its subject unchanged since `at` (absent otherwise); and `ended`, how its session ended (ok,
+    its subject unchanged since `at` (absent otherwise), with `waits`, `<owner/repo>#<N>`, when
+    its subject's newest waits-on marker by the bot named an item then (spec 092; absent
+    otherwise, and on every hand without idle); and `ended`, how its session ended (ok,
     limit, auth, error, github_limit, or disk), once a tick found the session gone
     (absent while it runs, spec 089, spec 095).
     It is a cache of the gate's own launches: deleted, every subject reads not taken and is
@@ -600,15 +647,27 @@ class Handed:
                 found[k] = replace(h, errors=0)
         return Handed(found)
 
-    def marked(self, keys: Iterable[str]) -> Handed:
-        """These hands marked idle"""
-        idle = set(keys)
-        return Handed({k: replace(h, idle=True) if k in idle else h for k, h in self.hands.items()})
+    def marked(self, found: Mapping[str, Waited | None]) -> Handed:
+        """These hands marked idle, each with the item its subject waits on, if any (spec 092)"""
+        return Handed({k: replace(h, idle=True, waits=found[k]) if k in found else h for k, h in self.hands.items()})
 
     def unmarked(self, keys: Iterable[str]) -> Handed:
-        """These hands no longer marked idle"""
+        """These hands no longer marked idle, nor waiting on an item"""
         busy = set(keys)
-        return Handed({k: replace(h, idle=False) if k in busy else h for k, h in self.hands.items()})
+        return Handed({k: replace(h, idle=False, waits=None) if k in busy else h for k, h in self.hands.items()})
+
+    def waiting(self) -> list[Waited]:
+        """Spec 092: the items the idle hands' waits name, each once, for the change check"""
+        return sorted({h.waits for h in self.hands.values() if h.waits is not None}, key=lambda w: (w.repo, w.number))
+
+    def stirred(self, read: Mapping[Waited, WaitedItem]) -> list[str]:
+        """Spec 092 (S-092-3): the idle hands whose waits names an item updated after the hand's
+        at, as the change check read it; an item it read no answer for (null) stirs none"""
+        return [
+            k
+            for k, h in self.hands.items()
+            if h.waits is not None and (item := read.get(h.waits)) is not None and item.updated > h.at
+        ]
 
 
 # -- the change check --------------------------------------------------------------------------
@@ -1019,25 +1078,25 @@ def issue_updates(repo: str, numbers: Iterable[int], graphql: GraphQL) -> dict[i
 
 # spec 089: a session that leaves a subject unchanged because it waits on another item names it
 # in a comment on the subject whose first line is this marker, posted as the --bot-login
-WAITED_REPO = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+"  # owner/name, safe inside a query
 WAITS_ON = re.compile(rf"<!-- shipmill:waits-on ({WAITED_REPO})#([1-9]\d*) -->")
 WAIT_COMMENTS = 50  # the newest comments of a subject read for its marker
 
 
 @dataclass(frozen=True, slots=True)
-class Waited:
-    """The item a subject's newest waits-on marker names: its repo (owner/name) and number"""
+class WaitedItem:
+    """What GitHub says of a waited item: when it was last updated, and whether it is closed"""
 
-    repo: str
-    number: int
+    updated: dt.datetime
+    closed: bool
 
-    def __post_init__(self) -> None:
-        if re.fullmatch(WAITED_REPO, self.repo) is None or self.number < 1:
-            raise ValueError(f"a waited item is owner/name#N, got {self.repo!r}#{self.number!r}")
 
-    @property
-    def named(self) -> str:
-        return f"{self.repo}#{self.number}"
+@dataclass(frozen=True, slots=True)
+class Marker:
+    """A subject's newest waits-on marker by the bot (spec 089): the item it names, and that item
+    as GitHub answered it, None when it answered null (gone, or a repo the token can't read)"""
+
+    item: Waited
+    read: WaitedItem | None
 
 
 def waits_query(numbers: Sequence[int]) -> str:
@@ -1088,8 +1147,9 @@ def waited_query(items: Sequence[Waited]) -> str:
     a resource() it can't resolve (gone, or a repo the token can't read) with null alone, where a
     repository() or issueOrPullRequest() it can't resolve adds a NOT_FOUND error, on which gh api
     graphql exits 1 and the tick would fail on every walk while the marker stands. A URL's owner
-    reads only as GitHub spells it: a marker naming it in another case wakes nothing"""
-    updated = "... on Issue { updatedAt } ... on PullRequest { updatedAt }"
+    reads only as GitHub spells it: a marker naming it in another case wakes nothing. Each item's
+    closed too, which spec 092 reads"""
+    updated = "... on Issue { updatedAt closed } ... on PullRequest { updatedAt closed }"
     aliases = " ".join(
         f'w{i}: resource(url: "https://github.com/{w.repo}/issues/{w.number}") {{ {updated} }}'
         for i, w in enumerate(items)
@@ -1097,11 +1157,11 @@ def waited_query(items: Sequence[Waited]) -> str:
     return f"query {{ {aliases} }}"
 
 
-def waited_updates(items: Iterable[Waited], graphql: GraphQL) -> dict[Waited, dt.datetime]:
-    """The updatedAt of the items markers name, one query per PAGE of them; an item GitHub
-    answers null for (gone, or a repo the token can't read) is left out: nothing woke"""
+def waited_items(items: Iterable[Waited], graphql: GraphQL) -> dict[Waited, WaitedItem]:
+    """The updatedAt and closed of the items markers name, one query per PAGE of them; an item
+    GitHub answers null for (gone, or a repo the token can't read) is left out: nothing woke"""
     wanted = sorted(set(items), key=lambda w: (w.repo, w.number))
-    found: dict[Waited, dt.datetime] = {}
+    found: dict[Waited, WaitedItem] = {}
     for start in range(0, len(wanted), PAGE):
         chunk = wanted[start : start + PAGE]
         answer = graphql(waited_query(chunk), {})
@@ -1112,17 +1172,20 @@ def waited_updates(items: Iterable[Waited], graphql: GraphQL) -> dict[Waited, dt
             node = data.get(f"w{i}")
             if node is None:
                 continue
-            if not isinstance(node, dict) or "updatedAt" not in node:
-                raise ReleaseError(f"gh api graphql printed {str(node)[:200]} for {w.named}, not its updatedAt")
-            found[w] = moment(node["updatedAt"], f"{w.named}'s updatedAt")
+            if not isinstance(node, dict) or "updatedAt" not in node or not isinstance(node.get("closed"), bool):
+                raise ReleaseError(
+                    f"gh api graphql printed {str(node)[:200]} for {w.named}, not its updatedAt and closed"
+                )
+            found[w] = WaitedItem(moment(node["updatedAt"], f"{w.named}'s updatedAt"), node["closed"])
     return found
 
 
-def waits(repo: str, numbers: Iterable[int], bot: str, graphql: GraphQL) -> dict[int, dt.datetime]:
-    """Spec 089: for each subject whose newest bot marker names an item, that item's updatedAt"""
+def waits(repo: str, numbers: Iterable[int], bot: str, graphql: GraphQL) -> dict[int, Marker]:
+    """Spec 089: for each subject whose newest bot marker names an item, that item and what
+    GitHub says of it (None when it answered null)"""
     marked = waits_on(repo, numbers, bot, graphql)
-    updated = waited_updates(marked.values(), graphql) if marked else {}
-    return {n: updated[w] for n, w in marked.items() if w in updated}
+    read = waited_items(marked.values(), graphql) if marked else {}
+    return {n: Marker(w, read.get(w)) for n, w in marked.items()}
 
 
 def queued(changes: Changes, label: str) -> bool:
@@ -1219,14 +1282,16 @@ def last_landed(default: Mapping[str, Any]) -> Landed | None:
 
 class Source(Protocol):
     """Where a walk reads the state: the change check, one tier, the sweep, the updatedAt of
-    issue subjects past retry_hours (spec 061), and, for subjects past it, the updatedAt of the
-    item each one's newest waits-on marker by the bot names (waited, spec 089)"""
+    issue subjects past retry_hours (spec 061), for subjects past it the item each one's newest
+    waits-on marker by the bot names and what GitHub says of it (waited, spec 089), and for the
+    change check the items idle hands wait on (waited_items, spec 092)"""
 
     def changes(self, since: dt.datetime | None) -> Changes: ...
     def tier(self, number: int, changes: Changes) -> list[Finding]: ...
     def sweep(self, changes: Changes) -> list[Finding]: ...
     def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]: ...
-    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]: ...
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, Marker]: ...
+    def waited_items(self, items: Sequence[Waited]) -> Mapping[Waited, WaitedItem]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1243,7 +1308,10 @@ class Rows:
     def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
         return {}
 
-    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, Marker]:
+        return {}
+
+    def waited_items(self, items: Sequence[Waited]) -> Mapping[Waited, WaitedItem]:
         return {}
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
@@ -1287,10 +1355,11 @@ def idle(hand: Hand, number: int, pulls: Mapping[int, Pull], issues: Mapping[int
     return updated is not None and untouched(hand, updated)
 
 
-def woken(hand: Hand, waited: dt.datetime | None) -> bool:
+def woken(hand: Hand, marker: Marker | None) -> bool:
     """Spec 089 (S-089-12): the item the subject's newest waits-on marker by the bot names was
-    updated after the hand, so the subject is no longer idle; False with no such marker"""
-    return waited is not None and waited > hand.at
+    updated after the hand, so the subject is no longer idle; False with no such marker, or one
+    whose item GitHub answered null for"""
+    return marker is not None and marker.read is not None and marker.read.updated > hand.at
 
 
 def untouched(hand: Hand, updated: dt.datetime) -> bool:
@@ -1323,11 +1392,12 @@ def walk(
     is never idle (spec 061), nor is one whose session ended anything but ok (S-089-3), nor one
     whose newest waits-on marker by the bot names an item updated since the hand (S-089-12). The
     updatedAt of a tier's issue subjects past retry, and the markers of its subjects past retry,
-    are each read once for the tier, in one query per PAGE, and not at all when it has none"""
+    are each read once for the tier, in one query per PAGE, and not at all when it has none. A
+    hand marked idle records the item its subject's marker names, if any, as waits (S-092-2)"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand, str | None] | None = None
-    marked: list[str] = []
+    marked: dict[str, Waited | None] = {}
     met: set[str] = set()  # the subjects this walk met
     for number in TIERS:
         found: list[Finding] = []
@@ -1369,8 +1439,8 @@ def walk(
                     and idle(given, n, changes.pulls, issues)
                     and not woken(given, woke.get(n))
                 ):
-                    marked.append(key)
-                    first = first or (key, replace(given, idle=True))
+                    marked[key] = None if (marker := woke.get(n)) is None else marker.item
+                    first = first or (key, replace(given, idle=True, waits=marked[key]))
                 else:
                     left.append(n)  # changed since its hand: handed again, its hand replaced
             if left:

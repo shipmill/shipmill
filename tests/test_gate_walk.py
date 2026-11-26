@@ -47,8 +47,11 @@ from shipmill.walk import (
     Cursor,
     Hand,
     Handed,
+    Marker,
     Pull,
     Swept,
+    Waited,
+    WaitedItem,
     check,
     item_key,
     window_change,
@@ -90,6 +93,8 @@ class Source:
     pulls: dict[int, Pull] = field(default_factory=dict)  # spec 061: the open pull requests the change check read
     issued: dict[int, dt.datetime] = field(default_factory=dict)  # spec 061: each issue's updatedAt on GitHub
     waits: dict[int, dt.datetime] = field(default_factory=dict)  # spec 089: the waited item's updatedAt per subject
+    named: dict[int, Waited] = field(default_factory=dict)  # spec 092: the item a subject's marker names
+    items: dict[Waited, WaitedItem] = field(default_factory=dict)  # spec 092: the waited items on GitHub
 
     def changes(self, since: dt.datetime | None) -> Changes:
         self.reads.append("changes")
@@ -99,9 +104,20 @@ class Source:
         self.reads.append(f"issues {' '.join(f'#{n}' for n in numbers)}")
         return {n: self.issued[n] for n in numbers if n in self.issued}
 
-    def waited(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+    def waited(self, numbers: Sequence[int]) -> Mapping[int, Marker]:
+        """A subject in waits or named has a marker, naming named's item (else #99 of the repo),
+        read as items holds it, else open and updated as waits says, else null"""
         self.reads.append(f"waited {' '.join(f'#{n}' for n in numbers)}")
-        return {n: self.waits[n] for n in numbers if n in self.waits}
+        found = {}
+        for n in (n for n in numbers if n in self.waits or n in self.named):
+            item = self.named.get(n, Waited(REPO, 99))
+            at = self.waits.get(n)
+            found[n] = Marker(item, self.items.get(item, None if at is None else WaitedItem(at, False)))
+        return found
+
+    def waited_items(self, items: Sequence[Waited]) -> Mapping[Waited, WaitedItem]:
+        self.reads.append(f"waited items {' '.join(w.named for w in items)}")
+        return {w: self.items[w] for w in items if w in self.items}
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
         self.reads.append(f"tier {number}")

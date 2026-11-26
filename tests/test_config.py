@@ -240,7 +240,7 @@ MESSAGES: dict[str, str] = {
     "autonomy deploy environment name": "an environment name is letters, digits, '.', '_', or '-'; got 'pro duction'",
     "autonomy deploy unknown environment": "shipmill.toml [autonomy]: deploy.qa names no environment in [environments]; known: staging",
     "autonomy a table": "shipmill.toml: autonomy must be a table, got 1",
-    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']",
+    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'idle_days', 'max_wait_minutes', 'merge', 'mode', 'notify', 'parked_days', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']",
     "agents prompt required": "shipmill.toml [agents]: prompt is required",
     "agents prompt empty": "shipmill.toml [agents]: prompt must not be empty",
     "agents retry range": "shipmill.toml [agents]: retry_hours must be in 1..168, got 0",
@@ -395,7 +395,7 @@ def test_the_agents_section_alone_is_read_with_the_same_words(tmp_path: Path) ->
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == "shipmill.toml: agents must be a table, got 1"
     path.write_text('[agents]\nprompt = "/t"\nwhen = 1\n', encoding="utf-8")
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == (
-        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
+        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'author', 'catch_up', 'credit', 'identity', 'idle_days', 'max_wait_minutes', 'merge', 'mode', 'notify', 'parked_days', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
     )
 
 
@@ -480,12 +480,12 @@ WAIT_REFUSALS = {
     'max_wait_minutes = "4"': "max_wait_minutes must be an integer, got '4'",
     "max_wait_hours = 4": (
         "unknown keys ['max_wait_hours']; allowed: "
-        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
+        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'idle_days', 'max_wait_minutes', 'merge', 'mode', 'notify', 'parked_days', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
         "'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
     ),
     "wait_hours = 4": (
         "unknown keys ['wait_hours']; allowed: "
-        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'max_wait_minutes', 'merge', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
+        "['app_id', 'author', 'catch_up', 'credit', 'identity', 'idle_days', 'max_wait_minutes', 'merge', 'mode', 'notify', 'parked_days', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
         "'roles', 'sandbox', 'stall_minutes', 'sweep_hours', 'verify', 'wip']"
     ),
 }
