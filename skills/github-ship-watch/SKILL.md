@@ -357,7 +357,7 @@ In a session, `/loop 1h` the same report.
 - `QUESTION`: an open item labelled `needs-decision` whose newest question has no trusted reply, since that question. An item in `QUESTION` is in no other row
 - `YOUR_ITEM`: a person's item (WITH_PERSON) assigned to the reader, `--login` or else `gh api user`'s login, since its hand-off. One assigned only to others or to a team is none
 - `OPPORTUNITY`: an opportunity waiting for accept or decline, since its opening
-- `PLAN`: a goal plan waiting for its answer, since its newest revision
+- `PLAN`: a goal plan waiting for its answer, since its newest revision. A plan the maintainer held (`hold until <condition>`, spec 098) is no `PLAN` row until its condition is met and product intake has re-checked it: PLAN_HELD and PLAN_HOLD_MET are no row. Once re-checked it is a `PLAN` row again, waiting since the later of its newest revision and the hold's `met_at`, so a plan held for a month doesn't come back as the oldest item
 - `SPEC_TO_MERGE`: an open, non-draft spec pull request (its body's first line `Spec for #N`) that no question holds and nothing lands by itself, read with `pr_gate.py`'s readers: no trusted answer taking every recommendation (D-49) and no decided comment of the `--bot-login` at `accepted-spec` (D-88). One that edits `docs/product.md` or `docs/product/` is a row either way, since only the maintainer merges it (D-34). Since it was marked ready, else its opening
 - `TO_MERGE`: a pull request labelled `shipmill-ready` under `[autonomy] land = "propose"`, since the label
 - `PROMOTION`: an open "Ready to promote" proposal issue of `shipmill operate`, since its opening

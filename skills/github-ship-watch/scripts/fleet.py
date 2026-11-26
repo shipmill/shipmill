@@ -84,7 +84,10 @@ login:
   OPPORTUNITY an open opportunity intake_state.py reads OPPORTUNITY_OPEN; since its opening
   PLAN        an open plan issue intake_state.py reads PLAN_OPEN; since its newest revision:
               the newest <!-- shipmill:plan-revised rev=k --> comment by the --bot-login
-              whose rev is higher than the one before it, else its opening
+              whose rev is higher than the one before it, else its opening. A plan re-checked
+              after its hold was met (its line's hold has a met_at, spec 098) waits since the
+              later of that and the hold's met_at; a held plan (PLAN_HELD) and one whose
+              re-check is due (PLAN_HOLD_MET) are no row
   NO_REASON   a closed opportunity intake_state.py reads NO_REASON; since its close
 GitHub's GraphQL reads the open pull requests (25 a read, each with its newest 100 comments and
 first 100 files), and pr_gate.py's readers judge them:
@@ -743,6 +746,27 @@ def intake_items(text: str, repo: str) -> dict[int, str]:
     return found
 
 
+def plan_holds_met(text: str, repo: str) -> dict[int, dt.datetime]:
+    """intake_state.py --plans --json's PLAN_OPEN plans re-checked after their hold was met,
+    each with the hold's met_at (spec 098): the PLAN row waits since the later of its newest
+    revision and that; a PLAN_OPEN line with no hold, or a hold not met, is none"""
+    what = f"intake_state.py for {repo}"
+    found: dict[int, dt.datetime] = {}
+    for line in json_lines(text, what):
+        if INTAKE_KINDS.get((str(line.get("kind")), str(line.get("state")))) != PLAN or "hold" not in line:
+            continue
+        hold = line["hold"]
+        if not isinstance(hold, dict) or not isinstance(hold.get("until"), str) or "met_at" not in hold:
+            raise Refused(f"error: {what} printed a plan whose hold has no until and met_at: {line!r}")
+        met_at = hold["met_at"]
+        if met_at is None:
+            continue
+        if not isinstance(met_at, str):
+            raise Refused(f"error: {what} printed a plan whose hold's met_at is no time: {line!r}")
+        found[number_of(line, what)] = WS.TRIAGE.timestamp(met_at)
+    return found
+
+
 def wanted(rows: list[Row]) -> dict[int, str]:
     """The watch rows' items the queue lists, each number with its kind; an item in QUESTION
     is in no other kind (S-069-6)"""
@@ -834,7 +858,8 @@ def queue_item(
 ) -> Item | None:
     """The row for one item as GitHub has it now, or None: closed (open, for NO_REASON),
     untrusted (S-069-9), its label gone, or its question answered since the watch read it
-    (S-069-1). given is the time a state script already gave it (YOUR_ITEM's)"""
+    (S-069-1). given is the time a state script already gave it: YOUR_ITEM's hand-off, or a
+    PLAN's met hold (spec 098), which it waits since when later than its newest revision"""
     where = f"gh api graphql for {repo}#{node.get('number')}"
     missing = [k for k in ITEM_KEYS if k not in node]
     if missing or node.get("__typename") not in ("Issue", "PullRequest"):
@@ -848,7 +873,8 @@ def queue_item(
             raise Refused(f"error: {where}: closed with no closedAt")
         since = WS.TRIAGE.timestamp(str(node["closedAt"]))
     elif kind == PLAN:
-        since = revised_since(nodes(node, "comments", where), bot_login, opened)
+        revised = revised_since(nodes(node, "comments", where), bot_login, opened)
+        since = revised if given is None else max(revised, given)
     elif kind == YOUR_ITEM:
         since = given or opened
     elif kind == QUESTION:
@@ -881,7 +907,7 @@ def read_items(
     given: dict[int, dt.datetime] | None = None,
 ) -> list[Item] | RepoError:
     """The queue's rows of one repo, from batched GraphQL reads, or the read's REPO_ERROR;
-    given holds the times a state script already gave (YOUR_ITEM's)"""
+    given holds the times a state script already gave (YOUR_ITEM's, and a PLAN's met hold)"""
     given = given or {}
     found: list[Item] = []
     numbers = sorted(kinds)
@@ -1058,7 +1084,8 @@ def queue_clone(e: Entry, runner: Runner, checkout: Path, bot_login: str | None,
     unowned = [(n, UPSTREAM) for n in upstream_items(triaged.stdout, e.repo)]
     for n, kind in [*((n, YOUR_ITEM) for n in mine), *intake_items(intake.stdout, e.repo).items(), *unowned]:
         kinds.setdefault(n, kind)
-    found = read_items(e.repo, kinds, runner, bot_login, mine) if kinds else []
+    given = {**plan_holds_met(intake.stdout, e.repo), **mine}  # a number in both is YOUR_ITEM, as kinds has it
+    found = read_items(e.repo, kinds, runner, bot_login, given) if kinds else []
     if isinstance(found, RepoError):
         return found
     listed = [i.number for i in found]  # a spec pull request another row lists, QUESTION's first, is in that row only
