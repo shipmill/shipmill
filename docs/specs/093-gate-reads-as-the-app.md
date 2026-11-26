@@ -180,7 +180,7 @@ folder held no `app-token-tick.json` after it.
 - S-093-6: by #1653's build; the token kept out of `tick.json` and `repr` by `test_s093_10_*`, passing; holds
 - S-093-7: by #1653's build, and the dry run above wrote no cache; holds
 - S-093-8: `settle` in `src/shipmill/tick_read.py` returns no token without `app_id`, so each read's env is the gate's own; `test_s093_8_*`, passing; holds
-- S-093-9: a shipmill error anywhere in `settle` reads as the host with its first line, and `tick_lines` appends `; reads as host: <why>` only when an App's reads fell back; `test_s093_9_*`, passing; holds
+- S-093-9: a shipmill error reading the config or minting in `settle` reads as the host with its first line (a malformed `app-token-tick.json` is no failed mint: it ends the tick `ERROR`, exit 2, Q-1), and `tick_lines` appends `; reads as host: <why>` only when an App's reads fell back; `test_s093_9_*`, passing; holds
 - S-093-10: `tick_record` and `TickRecord.record` write `reads_as`; the dry run above printed it as the App; `test_s093_10_*`, passing; holds
 - S-093-11: a failed read raises its `ReleaseError` as before, `gate()` records ERROR with the reads' `reads_as`, and `run` exits 2; nothing retries it; `test_s093_11_*`, passing; holds
 - S-093-12: `reads_as` stays None until the first `env()` call, and `load_tick` reads a missing key as null; `test_s093_12_*`, passing; holds

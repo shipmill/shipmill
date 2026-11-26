@@ -369,6 +369,20 @@ def test_s093_9_a_product_of_another_owner_reads_as_the_host_naming_it(tmp_path:
     assert reads.reads_as == ReadsAs(Reader.HOST, "the product lists other/web of another owner")
 
 
+def test_s093_9_a_malformed_tick_cache_is_no_failed_mint_and_ends_the_tick_error(tmp_path: Path) -> None:
+    """Q-1, as S-004-8's app-token.json: a malformed app-token-tick.json stops the tick naming its
+    path, rather than reading as the host on every tick while the file stays as it is"""
+    git = app_checkout(tmp_path / "demo")
+    state_dir(git).mkdir(parents=True, exist_ok=True)
+    (state_dir(git) / "app-token-tick.json").write_text("{", encoding="utf-8")
+    api = TickApi(now=NOW)
+    key = key_file(tmp_path)
+    reads = TickReads(settle(git.root, REPO, state_dir(git), key, tmp_path, lambda: NOW, FakeSigner(), api, True))
+    with pytest.raises(ReleaseError, match="app-token-tick.json"):
+        tick(git, reads)
+    assert api.posts == [] and written(git)["action"] == ERROR
+
+
 # -- S-093-10 --------------------------------------------------------------------------------
 
 

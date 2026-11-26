@@ -140,7 +140,8 @@ def settle(
     (tick_token) with the key `shipmill gate` uses (key, else the App's default path under
     home), else the host, `no [agents] app_id`. Any shipmill error on the way, reading the
     config included, reads as the host with its first line as why and never fails the tick
-    (S-093-9); a dry run passes write false"""
+    (S-093-9); a dry run passes write false. A malformed `app-token-tick.json` is no failed mint:
+    it raises naming its path (Q-1, as S-004-8's cache), since no tick would ever rewrite it"""
 
     def settled() -> tuple[ReadsAs, str | None]:
         try:
@@ -148,14 +149,23 @@ def settle(
             if app_id is None:
                 return WITHOUT_APP, None
             product = ProductConfig.load(root)
+        except ReleaseError as exc:
+            return _host(exc), None
+        load_product_token(state / TICK_CACHE)  # Q-1: a malformed cache stops the tick, exit 2
+        try:
             path = key if key is not None else default_key(app_id, home)
             found = tick_token(state, repo, product, app_id, path, clock(), signer, api, write)
         except ReleaseError as exc:
-            lines = str(exc).strip().splitlines()
-            return ReadsAs(Reader.HOST, lines[0] if lines else type(exc).__name__), None
+            return _host(exc), None
         return AS_APP, found.value
 
     return settled
+
+
+def _host(exc: ReleaseError) -> ReadsAs:
+    """S-093-9: the host, with the error's first line as why"""
+    lines = str(exc).strip().splitlines()
+    return ReadsAs(Reader.HOST, lines[0] if lines else type(exc).__name__)
 
 
 def tick_repos(repo: str, product: ProductConfig | None, listed: tuple[str, ...] = ()) -> tuple[str, ...]:
