@@ -140,6 +140,8 @@ still lands through a pull request:
 | `shipmill product drop <G-n>` | Records a goal of kind goal as dropped, with `--reason "<reason>"`: appends `. Dropped: <today>: <reason>` (spec 106); refuses as `met` does |
 | `shipmill product serves <G-n> <G-n> ...` | In a component (`[product] home`), writes the goal's serves line naming the goals of the product's home direction it serves, or replaces the one it has (spec 071); `--clear` removes it |
 
+Without `uv tool install shipmill`, run each as `uvx shipmill product ...`.
+
 Each takes `--repo DIR` (default: the current directory). An edit command exits 2 without
 writing when the file doesn't pass `check` first. In a session with the shipmill plugin,
 an edit of the direction runs `shipmill product check --local` right away and shows a broken line
