@@ -57,7 +57,9 @@ def head(
     closed_at: str | None = None,
 ) -> dict[str, Any]:
     """A head issue as PROJECTS_QUERY reads it"""
-    events = [] if labelled_by is None else [{"label": {"name": "project"}, "actor": {"login": labelled_by}}]
+    kind = "Bot" if labelled_by is not None and labelled_by.endswith("[bot]") else "User"
+    actor = {"__typename": kind, "login": labelled_by}
+    events = [] if labelled_by is None else [{"label": {"name": "project"}, "actor": actor}]
     return {
         "number": number,
         "title": f"Head {number}",
@@ -146,6 +148,14 @@ def test_s106_12_a_head_is_a_trusted_authors_or_labelled_by_another(ist: ModuleT
     assert read(ist, head(association="NONE", author="drive-by", labelled_by="drive-by")) is None
     assert read(ist, head(association="NONE", author="drive-by", labelled_by="maintainer")) is not None
     assert read(ist, head(association="NONE", author=BOT)) is not None
+    # another bot's label counts for nothing (a workflow an outsider's text can trigger); the --bot-login's does
+    assert read(ist, head(association="NONE", author="drive-by", labelled_by="github-actions[bot]")) is None
+    assert read(ist, head(association="NONE", author="drive-by", labelled_by=BOT)) is not None
+
+
+def test_s106_12_a_second_check_issue_is_no_part(ist: ModuleType) -> None:
+    second = sub(51, "OPEN", "Check: the docs say so", CHECK)
+    assert read(ist, head(subs=(check(), second, sub(8, "CLOSED")))) == ("PROJECT_CLOSING", "no cleanup listed")
 
 
 def test_s106_12_more_sub_issues_than_read_is_refused(ist: ModuleType) -> None:

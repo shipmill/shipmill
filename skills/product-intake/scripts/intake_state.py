@@ -2182,8 +2182,11 @@ CHECK_SECTION = re.compile(r"^##[ \t]+Check[ \t]*$", re.MULTILINE)
 CLEANUP_SECTION = re.compile(r"^##[ \t]+Cleanup[ \t]*$", re.MULTILINE)
 UNCHECKED = re.compile(r"^[ \t]*[-*][ \t]+\[ \][ \t]+(.+?)[ \t]*$", re.MULTILINE)
 PROJECT_HEADS = 50  # heads per page, and per repo in a product count
-PROJECT_SUBS = 50  # sub-issues of a head
-PROJECT_PARTS = 20  # sub-issues of a head's sub-issue: the check issue's parts
+# sub-issues of a head, and of each of its sub-issues (the check issue's parts): kept small, as
+# GitHub refuses a query past 500,000 nodes and a product count reads every repo of an owner at
+# once (about 31,000 nodes a repo); a head with more is refused, never read short
+PROJECT_SUBS = 30
+PROJECT_PARTS = 15
 # the states a head reads, and who holds each (spec 106's table): its start, agents and the
 # maintainer's steps, the maintainer's steps first, the person who runs the check, none
 PROJECT_HOLDERS = {
@@ -2198,8 +2201,8 @@ PROJECT_COUNTED = ("PROJECT_ACTIVE", "PROJECT_FOCUS")  # S-106-28: held and clos
 HEAD_FIELDS = f"""
 number title body state stateReason closedAt author {{ login }} authorAssociation
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
-timelineItems(itemTypes: [LABELED_EVENT], first: 50) {{
-  nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ login }} }} }}
+timelineItems(itemTypes: [LABELED_EVENT], first: 20) {{
+  nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ __typename login }} }} }}
 }}
 comments(last: 20) {{ nodes {{ author {{ login }} body }} }}
 subIssues(first: {PROJECT_SUBS}) {{
@@ -2257,9 +2260,10 @@ class Projects:
 
 def is_head(head: dict[str, Any], bot_login: str | None) -> bool:
     """A head is labelled `project` and was opened by an OWNER, MEMBER, or COLLABORATOR or the
-    --bot-login, or labelled `project` by someone other than its opener: GitHub lets only a
-    person with triage access label another's issue, while a label an issue form adds on
-    opening is the opener's own (D-16)"""
+    --bot-login, or labelled `project` by a person other than its opener, or by the --bot-login:
+    GitHub lets only a person with triage access label another's issue, while a label an issue
+    form adds on opening is the opener's own. Another bot's label counts for nothing, as an
+    outsider's text can make a workflow add one (D-16)"""
     if PROJECT_LABEL not in labels(head):
         return False
     author = (head.get("author") or {}).get("login")
@@ -2268,8 +2272,15 @@ def is_head(head: dict[str, Any], bot_login: str | None) -> bool:
     if str(head.get("authorAssociation") or "NONE") in PLANS.TRUSTED:
         return True
     for event in (head.get("timelineItems") or {}).get("nodes") or []:
-        actor = (event.get("actor") or {}).get("login")
-        if (event.get("label") or {}).get("name") == PROJECT_LABEL and actor is not None and actor != author:
+        if (event.get("label") or {}).get("name") != PROJECT_LABEL:
+            continue
+        actor = event.get("actor") or {}
+        login = actor.get("login")
+        if login is None:
+            continue
+        if bot_login is not None and login.lower() == bot_login.lower():
+            return True
+        if actor.get("__typename") == "User" and login != author:
             return True
     return False
 
@@ -2323,7 +2334,7 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
     subs = complete(head.get("subIssues") or {}, f"project #{number}")
     checks = [sub for sub in subs if is_check(sub)]
     check = next((c for c in checks if c["state"] == "OPEN"), checks[0] if checks else None)
-    parts = [sub for sub in subs if sub is not check]
+    parts = [sub for sub in subs if not is_check(sub)]  # a second check issue is no part
     if check is not None:
         parts += complete(check.get("subIssues") or {}, f"check issue #{check['number']}")
     open_parts = sum(1 for part in parts if part["state"] == "OPEN")
