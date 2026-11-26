@@ -2189,7 +2189,7 @@ CLEANUP_SECTION = re.compile(r"^##[ \t]+Cleanup[ \t]*$", re.MULTILINE)
 UNCHECKED = re.compile(r"^[ \t]*[-*][ \t]+\[ \][ \t]+(.+?)[ \t]*$", re.MULTILINE)
 # The page sizes keep each read to a few of the host's rate-limit points (#1459): GitHub charges
 # a query by its worst case, one request per node of each nested connection, so a page of heads
-# with their sub-issues and those sub-issues' own is small; tests/test_intake_cost.py pins them
+# with their sub-issues and those sub-issues' own is small; tests/test_intake_projects.py pins them
 PROJECT_PAGE = 10  # heads per page of the checkout's own read
 PRODUCT_HEADS = 25  # open heads per repo in a product count, refused past it
 # sub-issues of a head, and of each of its sub-issues (the check issue's parts); a head with
