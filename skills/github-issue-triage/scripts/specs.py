@@ -350,7 +350,9 @@ def parse(path: Path, text: str | None = None) -> tuple[Spec | None, list[str]]:
     for section in SECTIONS:
         if section not in seen and not (section == "Verification" and spec.status == "stopped"):
             problem(1, f"missing the section '{section}'")
-    if len(seen) == len(SECTIONS) and set(seen) == set(SECTIONS) and seen != list(SECTIONS):
+    # a stopped spec may leave Verification out (spec 106); the rest keep their order
+    wanted = [s for s in SECTIONS if s in seen] if spec.status == "stopped" else list(SECTIONS)
+    if len(seen) == len(wanted) and set(seen) == set(wanted) and seen != wanted:
         problem(1, f"sections out of order; a spec has: {', '.join(SECTIONS)}")
     if "Acceptance criteria" in seen and not spec.criteria:
         problem(1, "no acceptance criteria")
@@ -573,8 +575,11 @@ def direction_ids(root: Path) -> set[str] | None:
 
 
 # A goal's end, the maintainer's record (spec 106): `. Met: <date>` or `. Dropped: <date>: <reason>`
-# after a goal of kind goal's horizon; `shipmill product check` holds its form
-GOAL_ENDED = re.compile(r"\. By: .*?\. (?:Met|Dropped): [0-9]{4}-[0-9]{2}-[0-9]{2}")
+# right after a goal of kind goal's horizon, as src/shipmill/product.py reads it; `shipmill
+# product check` holds its form
+GOAL_ENDED = re.compile(
+    r"\. By: (?:[0-9]{4}-[0-9]{2}-[0-9]{2}|v?[0-9]+\.[0-9]+\.[0-9]+)\. (?:Met|Dropped): [0-9]{4}-[0-9]{2}-[0-9]{2}"
+)
 
 
 def ended_goals(root: Path) -> set[str]:

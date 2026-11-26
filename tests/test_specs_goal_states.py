@@ -85,3 +85,12 @@ def test_s106_20_split_refuses_a_stopped_spec(tmp_path: Path) -> None:
     out = specs(root, "split", "5")
     assert out.returncode == 2
     assert "S-005 is stopped; a stopped spec is never split into build issues" in out.stderr
+
+
+def test_s106_20_a_stopped_specs_sections_keep_their_order(tmp_path: Path) -> None:
+    text = stopped("005")
+    behaviour, criteria = text.index("## Behaviour"), text.index("## Acceptance criteria")
+    swapped = text[:behaviour] + text[criteria:] + text[behaviour:criteria]
+    root = repo(tmp_path, **{"005-stopped.md": swapped})
+    out = specs(root, "check")
+    assert "005-stopped.md:1: sections out of order" in out.stdout, out.stdout

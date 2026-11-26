@@ -295,6 +295,8 @@ class GoalEnd:
         label = _MET if text.startswith(_MET) else _DROPPED
         rest = text[len(label) :]
         written, reason = rest, ""
+        if label == _MET and _DROPPED in rest:
+            raise ReleaseError(f"a goal ends met or dropped, not both; a goal ends {_END_FORM}")
         if label == _DROPPED:  # `<date>: <reason>`; a date with no reason, colon or not, names none
             written, _, reason = rest.partition(": ")
             written = written.removesuffix(":")
@@ -319,16 +321,20 @@ class GoalEnd:
         return f"{_DROPPED}{self.on.isoformat()}: {self.reason}"
 
 
+# Where a goal's end starts: the first `. Met: ` or `. Dropped: ` right after `. By: <horizon>`,
+# so an outcome or a check may hold either label, and a dropped goal's reason any text
+_ENDS_AT = re.compile(r"\. By: (?:[0-9]{4}-[0-9]{2}-[0-9]{2}|v?[0-9]+\.[0-9]+\.[0-9]+)(?=\. (?:Met|Dropped): )")
+# An end sentence anywhere, with its date: on a text that isn't a goal of kind goal, refused
+_ANY_END = re.compile(r"\. (?:Met|Dropped): [0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
 def _split_end(text: str) -> tuple[str, GoalEnd | None]:
-    """A goal's text before its end sentence, and the end; refused when it has both sentences.
-    The end is the first `. Met: ` or `. Dropped: `, so a dropped goal's reason may hold any text"""
-    met, dropped = text.find(_MET), text.find(_DROPPED)
-    if met >= 0 and dropped >= 0:
-        raise ReleaseError(f"a goal ends met or dropped, not both; a goal ends {_END_FORM}")
-    at = max(met, dropped)
-    if at < 0:
+    """A goal's text before its end sentence, and the end, the sentence right after its horizon;
+    refused when it is malformed or names both. Text with no end reads as a whole"""
+    found = _ENDS_AT.search(text)
+    if found is None:
         return text, None
-    return text[:at], GoalEnd.parse(text[at:])
+    return text[: found.end()], GoalEnd.parse(text[found.end() :])
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,10 +352,8 @@ class GoalForm:
         written = f"{self.outcome}{_CHECK}{self.check}{_BY}{self.by}"
         if _kind(written) is not GoalKind.GOAL or _goal_parts(written) != (self.outcome, self.check, self.by.text):
             raise ReleaseError(f"`{written}` doesn't read back as this goal; a goal is {GoalKind.GOAL.form}")
-        if _split_end(written)[1] is not None:
-            raise ReleaseError(
-                f"`{written}` holds a `. Met: ` or `. Dropped: ` before its end; a goal ends {_END_FORM}"
-            )
+        if _ENDS_AT.search(written) is not None:
+            raise ReleaseError(f"`{written}` holds an end before its own; a goal ends {_END_FORM}")
 
     @property
     def kind(self) -> GoalKind:
@@ -390,7 +394,7 @@ def read_goal(text: str) -> GoalForm | MeasureForm | None:
     text with neither form's labels; refused (ReleaseError) naming what is wrong and the form it
     takes, the rule `product check` gives after the goal's id"""
     head, end = _split_end(text)
-    if end is not None and _kind(head) is not GoalKind.GOAL:
+    if end is None and _ANY_END.search(text) is not None and _kind(text) is not GoalKind.GOAL:
         raise ReleaseError(f"only a goal of kind goal ends met or dropped; a goal is {GoalKind.GOAL.form}")
     match _kind(head):
         case GoalKind.GOAL:
@@ -1645,12 +1649,7 @@ def end(root: Path, id: ItemId, ended: GoalEnd) -> Edited:
         raise ReleaseError(f"{id} is {kind}; only a goal of kind goal, {GoalKind.GOAL.form}, ends met or dropped")
     if form.end is not None:
         raise ReleaseError(f"{id} is already {form.end.state} on {form.end.on.isoformat()}; nothing was written")
-    body, number = _located(bodies, id)
-    line = f"- {Item(id, str(replace(form, end=ended)))}"
-    document = Document.read(root / body.path)
-    document.replace(number - 1, line)
-    document.write()
-    return Edited(body.path, number, line)
+    return _rewrite(root, bodies, id, str(replace(form, end=ended)))
 
 
 def _editable(root: Path) -> tuple[Direction, dict[Section, _Body]]:

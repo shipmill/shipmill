@@ -141,3 +141,34 @@ def test_s106_2_product_goal_keeps_an_ended_goals_record(tmp_path: Path) -> None
     with pytest.raises(ReleaseError, match="G-1 is met on 2026-12-20, the maintainer's record"):
         run(root, "goal", "G-1", "--check", "faster", "--by", "2027-01-31")
     assert (root / DIRECTION).read_text(encoding="utf-8") == before
+
+
+def test_s106_1_an_end_reads_only_right_after_the_horizon(tmp_path: Path) -> None:
+    """an outcome or check may hold `. Met: `, a goal of no kind may say `Met:` without a date,
+    and a dropped goal's reason holds any text; all read as on main before this spec"""
+    goals = (
+        "- G-1: Ship. Met: partners. Check: b. Dropped: c. By: 2026-12-31\n"
+        "- G-2: Grow users. Met: partners\n"
+        "- G-3: A. Check: b. By: 0.7.0. Dropped: 2026-12-01: superseded. Met: nobody. By: then\n"
+    )
+    root = write(tmp_path, direction(goals))
+    assert check(root) == ()
+    first = read_goal("Ship. Met: partners. Check: b. Dropped: c. By: 2026-12-31")
+    assert isinstance(first, GoalForm) and first.end is None and first.outcome == "Ship. Met: partners"
+    assert read_goal("Grow users. Met: partners") is None
+    third = read_goal("A. Check: b. By: 0.7.0. Dropped: 2026-12-01: superseded. Met: nobody. By: then")
+    assert isinstance(third, GoalForm) and third.end is not None
+    assert third.end.reason == "superseded. Met: nobody. By: then"
+
+
+def test_s106_2_drop_writes_a_reason_holding_any_text_and_the_direction_still_reads(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = write(tmp_path, direction(GOALS))
+    assert run(root, "drop", "G-1", "--reason", "superseded. Met: nobody") == 0
+    assert (
+        capsys.readouterr()
+        .out.rstrip()
+        .endswith(". Dropped: " + dt.datetime.now(dt.UTC).date().isoformat() + ": superseded. Met: nobody")
+    )
+    assert check(root) == ()
