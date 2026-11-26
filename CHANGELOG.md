@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.189.0] - 2026-11-26
+
+### Added
+
+- An accepted opportunity names its goal (spec 106): with `--plans`, one accepted from this release on reads ACCEPTED_INTO the goal a trusted `accept G-<n>` reply or its one-goal `Serves:` line names, GOAL_PROPOSAL_DUE (an action) for `accept new goal` until the App's `goal-proposal` issue is its parent, then GOAL_PROPOSED, or NEEDS_GOAL for no goal still open; one accepted before keeps its path to the spec gate. A goal reads PLAN_DUE for a request or an accepted opportunity even with an open plan, the older open plan reads PLAN_REPLACED (an action) by the newer, and a replaced plan is no decline. A plan's `feature` item naming an accepted opportunity files no issue: the opportunity, labelled `project` and linked as the plan's sub-issue, is its head (#1742)
+
 ## [0.188.0] - 2026-11-26
 
 ### Changed
@@ -3291,7 +3297,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.188.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.189.0...HEAD
+[0.189.0]: https://github.com/shipmill/shipmill/compare/v0.188.0...v0.189.0
 [0.188.0]: https://github.com/shipmill/shipmill/compare/v0.187.0...v0.188.0
 [0.187.0]: https://github.com/shipmill/shipmill/compare/v0.186.0...v0.187.0
 [0.186.0]: https://github.com/shipmill/shipmill/compare/v0.185.0...v0.186.0
