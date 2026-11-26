@@ -115,7 +115,7 @@ shipmill gh issue comment {P} -R {owner/repo} --body-file tmp/plan-{P}-outcome.m
 
 ```text
 <!-- shipmill:plan-outcome -->
-@{maintainer} The work of this plan has closed: W-1 #{a} completed, W-2 #{b} not planned.
+`@{maintainer}` The work of this plan has closed: W-1 #{a} completed, W-2 #{b} not planned.
 
 The Order said reaching the goal looks like: {the end state, quoted from the Order}
 
@@ -127,6 +127,6 @@ Still missing:
 ```
 
 - The marker is the first line, exactly. An outcome counts only from the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR, and a trusted person's comment carrying the agent marker counts for nothing (D-29, D-62)
-- `@{maintainer}` is each login the `--role maintainer=` flag gives, so the maintainer hears it; without the flag the line starts at `The work`
+- `` `@{maintainer}` `` is each login the `--role maintainer=` flag gives, in a code span: an outcome is no needs-decision question, so it names the maintainer without notifying them (D-61); without the flag the line starts at `The work`
 - `Holds:` and `Still missing:` each hold list items; a list with no part is `- nothing`. An Order that names no end state is `Still missing:` with `- the Order named no end state`. The goal's next plan reads the `Still missing:` items as its row's `missing`
 - The outcome is a report, never a decision: it changes no goal, adds no measure (D-34), never calls the goal met, and never reopens the plan or files new items on it; the next plan proposes what is missing, for the maintainer to accept or decline (D-10)

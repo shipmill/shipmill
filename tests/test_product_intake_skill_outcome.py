@@ -95,7 +95,7 @@ def test_s097_10_plan_md_gives_the_outcome_template(ist: ModuleType) -> None:
     body = outcome_template()
     lines = body.splitlines()
     assert lines[0] == ist.OUTCOME_MARKER  # the marker intake_state.py reads, first
-    assert lines[1].startswith("@{maintainer} The work of this plan has closed:")
+    assert lines[1].startswith("`@{maintainer}` The work of this plan has closed:")  # D-61: in a code span
     assert "Holds:" in lines and "Still missing:" in lines
     assert lines.index("Holds:") < lines.index("Still missing:")
     # the next plan's `missing` is what intake_state.py reads from this list
