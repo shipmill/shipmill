@@ -59,10 +59,18 @@ open issue and pull request, ascending by number:
   the item it counts with
 - **`waits_on`:** the open targets it waits on, as `owner/name#N`: the items of this repo or
   another that a BLOCKED note names and that are not closed or merged, and the open pull
-  requests an IN_PROGRESS or AGENT_DRAFT note names; `[]` for a pull request and an issue
-  with none
-- **`accept`:** `"opportunity"` or `"plan"` for an issue triaged as such, which the maintainer
-  accepts or declines; else `null`
+  requests an IN_PROGRESS or AGENT_DRAFT note names, and the open opportunity issues a
+  request triaged as an opportunity is grouped into (below); `[]` for a pull request and an
+  issue with none
+- **`accept`:** `"opportunity"` or `"plan"` for an issue triaged as such that is itself one
+  the maintainer accepts or declines, an opportunity issue or a goal's plan (labelled
+  `opportunity` or `goal-plan`); else `null`. A user's request triaged as an opportunity is
+  product intake's until intake groups it, so it is the agent's, and once an open opportunity
+  issue's body names it (`#N`, `owner/name#N` of the repo, or its URL) it waits on that
+  opportunity, an event, named in its `waits_on`: it counts once, through its opportunity, and
+  never as the maintainer's itself (shipmill/shipmill#1643). triage_state.py's first query
+  already reads the labels and bodies this takes, and its `--json` line carries them as
+  `"proposal": true` and `"grouped"`
 - **`parent`:** its umbrella, the open issue it is a sub-issue of, in any repo, as
   `owner/name#N`; `null` for an issue with no open parent and for a pull request. It comes
   from the `parent` field triage_state.py's first query already reads (spec 022), which its
@@ -170,7 +178,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-3: `waits_on` names the not-closed targets of a BLOCKED note, of this repo or another, and the open pull requests of an IN_PROGRESS note, as `owner/name#N`
 - S-094-4: a condition from an assignee or the reporter is `people`, save a person's item whose assignees or teams include one of spec 036's resolved `maintainer` role, which is `maintainer` with the reason `assigned to you: ...`; a wait on another repo's item, an upstream report, or labelled blocked is `elsewhere`; POSTPONED, triaged postponed, or any wait of a parent moving through its children is `postponed`; any other event is `nobody`
 - S-094-5: an item's line is the first in the order attention, maintainer, agent, people, elsewhere, postponed, nobody; a parent moving through its children counts by its own conditions alone
-- S-094-6: an issue triaged as an opportunity or a plan has `accept` naming it and holder `maintainer`; any other item has `accept` null
+- S-094-6: an issue triaged as an opportunity or a plan that is labelled `opportunity` or `goal-plan` has `accept` naming it and holder `maintainer`; one triaged as an opportunity without either label has `accept` null and is the agent's, waiting for product intake to group it, or, once an open opportunity issue's body names it, holder `nobody` with `waits_on` naming that opportunity; any other item has `accept` null
 - S-094-7: the text of `queue` prints the repo with its totals, then each holder's label in the table's order with one line per item, `#N <kind>: <why> (clears: <clears>)`
 - S-094-8: `status --item N --json` carries the same `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and conditions as `queue`'s record of N, including an issue that counts with its pull request whose rows name only that pull request
 - S-094-9: the JSON of `queue --json`, `queue --fleet --json`, and `status --item --json` carries `"schema": 1` as its first key
@@ -208,7 +216,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-3: #1531's `waits_on` was `["shipmill/shipmill#1524", "shipmill/shipmill#1528"]`, the open items its BLOCKED note names
 - S-094-4: #338 (labelled blocked) read `elsewhere` and the postponed issues `postponed`; no issue there was a person's, so `people` and the rest of the table are each a case of `test_s094_4_each_condition_has_its_finer_holder`; an item assigned to the maintainer reads `maintainer` in `test_s094_4_an_item_assigned_to_the_maintainer_waits_on_them`, and in `queue`, `status --item`, and `status --summary` alike in `test_s094_4_queue_summary_and_item_put_the_maintainers_item_on_waits_on_you` (shipmill/shipmill#1641)
 - S-094-5: the run placed 63 items with the maintainer, 11 with the agent, 1 elsewhere, and 10 postponed, each once; a parent moving through its children read `postponed` in its test
-- S-094-6: the run marked 50 issues `accept: "opportunity"` and 4 `accept: "plan"`, each held by the maintainer
+- S-094-6: the run marked 50 issues `accept: "opportunity"` and 4 `accept: "plan"`, each held by the maintainer; since shipmill/shipmill#1643 only the opportunity and plan issues themselves are, and a request handed to intake reads the agent's, or `nobody` with `waits_on` naming the open opportunity that names it, in `queue`, `status --item`, and `status --summary` alike, in `test_s094_6_*`
 - S-094-7: `shipmill queue` printed the repo with its totals, then each holder's label with its items as `#N <kind>: <why> (clears: <clears>)`
 - S-094-8: `status --item N --json` for #1531 (linked), #338, and #322 matched `queue`'s record of N key for key
 - S-094-9: `queue --json`, `queue --fleet --json`, and `status --item --json` each printed `"schema": 1` as their first key

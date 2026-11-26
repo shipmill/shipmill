@@ -276,6 +276,10 @@ class Issue:
     teams: tuple[str, ...] = ()
     verdict: str | None = None  # spec 088: a TRIAGED line's verdict, one of TRIAGE_VERDICTS
     parent: str | None = None  # spec 094: the open issue it is a sub-issue of, as owner/name#N
+    # #1643: a TRIAGED opportunity or plan that is itself the maintainer's to accept or decline
+    # (labelled opportunity or goal-plan), and the open opportunity issues that name a request
+    proposal: bool = False
+    grouped: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,9 +434,28 @@ def parse_issues(text: str) -> list[Issue]:
         parent = r.get("parent")
         if parent is not None and (not isinstance(parent, str) or PARENT_REF.fullmatch(parent) is None):
             raise ReleaseError(f"triage_state.py printed a parent that is no owner/name#N: {r!r}")
+        proposal, grouped = intake_of(r, verdict)
         number, state, note, closed = int(r["number"]), str(r["state"]), str(r["note"]), r.get("closed") is True
-        issues.append(Issue(number, state, note, people, closed, teams, verdict, parent))
+        issues.append(Issue(number, state, note, people, closed, teams, verdict, parent, proposal, grouped))
     return issues
+
+
+def intake_of(raw: Mapping[str, Any], verdict: str | None) -> tuple[bool, tuple[int, ...]]:
+    """#1643: a TRIAGED line's "proposal" (true, on an opportunity or a plan) and "grouped" (a
+    non-empty list of issue numbers, on an opportunity that is no proposal); either absent reads
+    False and none, and anything else is malformed"""
+    proposal, grouped = raw.get("proposal"), raw.get("grouped")
+    if proposal is not None and (proposal is not True or verdict not in ("opportunity", "plan")):
+        raise ReleaseError(f"triage_state.py printed a proposal it doesn't write: {raw!r}")
+    if grouped is not None and (
+        verdict != "opportunity"
+        or proposal is not None
+        or not isinstance(grouped, list)
+        or not grouped
+        or not all(type(n) is int and n > 0 for n in grouped)
+    ):
+        raise ReleaseError(f"triage_state.py printed a grouped it doesn't write: {raw!r}")
+    return proposal is True, tuple(grouped or ())
 
 
 def person_logins(raw: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:

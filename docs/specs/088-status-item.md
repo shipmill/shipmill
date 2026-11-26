@@ -45,8 +45,8 @@ the REF. `--item` can't be combined with `--rows`.
 
 ```
 shipmill/shipmill#1461 (https://github.com/shipmill/shipmill/issues/1461): parked
-  why:  triaged as opportunity: waits for product intake to group it and the maintainer to accept it
-        clears: the maintainer (accept the opportunity)
+  why:  triaged as opportunity: waits on the maintainer to accept or decline it
+        clears: the maintainer (accept or decline the opportunity)
 ```
 
 - The first line: the item as `owner/name#N`, its link, and its bucket, the label of the
@@ -135,8 +135,10 @@ taken from an item's title, body, or comments beyond what the state scripts alre
   word of its newest triage comment when it is one the skills write (`opportunity`,
   `feature`, `clarify`, `needs a decision`, `postponed`, `won't fix`, `duplicate`, `plan`,
   `upstream`), and none otherwise. The picture's `parked` line shows it,
-  `#N triaged: opportunity`, and `--item` says what it waits on: an opportunity waits on
-  product intake and the maintainer's accept, a feature on its spec, `clarify` on the
+  `#N triaged: opportunity`, and `--item` says what it waits on: an opportunity issue itself
+  (labelled `opportunity`) waits on the maintainer's accept, a user's request triaged as an
+  opportunity on product intake grouping it (an agent), and once an open opportunity issue's
+  body names it, on that opportunity's answer (an event, #1643), a feature on its spec, `clarify` on the
   reporter, `needs a decision` and `plan` on the maintainer, `won't fix` and `duplicate` on a
   close. An opportunity the maintainer accepted, one the watch's `SPEC_DUE` row names
   (intake_state.py's ACCEPTED: labelled `planned`, spec 074), waits instead on triage's spec
@@ -171,7 +173,7 @@ repo, or a failed read, as `shipmill status` exits 2.
 - S-088-5: an open HOLD row, no `[agents]`, and the item's stage at `observe` or `propose` each add a condition the maintainer clears
 - S-088-6: an issue's triage_state.py state gives its condition: NEEDS_DECISION, BLOCKED with each item it waits on, POSTPONED, WITH_PERSON with its assignees, IN_PROGRESS with its pull requests, UPSTREAM
 - S-088-7: triage_state.py's TRIAGED line carries the newest triage comment's verdict when it is one the skills write, and none otherwise
-- S-088-8: the picture's parked line shows a triaged issue's verdict, `#N triaged: <verdict>`, and `--item` says what that verdict waits on and who clears it; an opportunity the watch's SPEC_DUE row names as accepted waits on triage's spec gate, cleared by an agent, and `status --summary` counts it on the agent's line
+- S-088-8: the picture's parked line shows a triaged issue's verdict, `#N triaged: <verdict>`, and `--item` says what that verdict waits on and who clears it; an opportunity the watch's SPEC_DUE row names as accepted waits on triage's spec gate, cleared by an agent, and `status --summary` counts it on the agent's line; an issue triaged as an opportunity without the `opportunity` label waits on product intake to group it, cleared by an agent, or, once an open opportunity issue's body names it, on that opportunity, cleared by an event, and neither counts on the maintainer's line
 - S-088-9: an item that a row the gate starts a session on names, with the gate configured, no hold, and its stage at act, reads that the gate takes it up, cleared by an agent
 - S-088-10: a pull request names each of: draft, needs-decision, merge state BEHIND, DIRTY, or BLOCKED, each failing and each pending check by name, a review decision CHANGES_REQUESTED or REVIEW_REQUIRED, shipmill-ready under land propose, and a closed land window that holds one of its labels with when it opens
 - S-088-11: `--json` prints one object with `repo`, `number`, `kind`, `url`, `bucket`, and `conditions`, each with `reason`, `who`, and `clears`
@@ -212,7 +214,7 @@ Checked on the build's pull request against this repo, by running `shipmill stat
 - S-088-5: a hold, no `[agents]`, and triage, fix, and land below act each add a maintainer's condition in `test_s088_5_*`
 - S-088-6: NEEDS_DECISION, BLOCKED (a closed hold left out), labelled blocked, POSTPONED, WITH_PERSON, IN_PROGRESS, and UPSTREAM in `test_s088_6_*`
 - S-088-7: the newest triage comment's verdict, a longer form of one, a curly apostrophe, and an unknown or unbolded word in `test_s088_7_*`; the two scripts' sets are asserted equal
-- S-088-8: the parked line's `triaged: opportunity`, the item's condition, an accepted opportunity on the agent's line and an unaccepted one on the maintainer's, in `--item` and the summary (#1611), and a verdict triage_state.py doesn't write refused in `test_s088_8_*`
+- S-088-8: the parked line's `triaged: opportunity`, the item's condition, an accepted opportunity on the agent's line and an unaccepted one on the maintainer's, in `--item` and the summary (#1611), a request handed to intake on the agent's or waiting on its opportunity (#1643), and a verdict triage_state.py doesn't write refused in `test_s088_8_*`
 - S-088-9: an agent row's item at act reads the gate's turn, not under a hold, without a gate, or under propose; a pull request under land act, and a GATE_IDLE hand-off, in `test_s088_9_*`
 - S-088-10: draft, needs-decision, behind, conflicts, a failing and two pending checks, changes requested, review required, shipmill-ready under propose, and a closed land window that opens again in `test_s088_10_*`
 - S-088-11: `--json`'s one object, field by field, in `test_s088_11_*`
