@@ -220,6 +220,10 @@ def test_s024_1_bad_cli_input_exits_2(tmp_path: Path) -> None:
         assert exc.value.code == 2
 
 
+# a goal of neither kind's fields (spec 105), each null
+NO_KIND = dict.fromkeys(("kind", "outcome", "check", "by", "past", "held", "threshold", "source"))
+
+
 def test_s024_2_show_json_prints_name_mission_and_items(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert run(write(tmp_path, WELL_FORMED), "show", "--json") == 0
     assert json.loads(capsys.readouterr().out) == {
@@ -227,8 +231,8 @@ def test_s024_2_show_json_prints_name_mission_and_items(tmp_path: Path, capsys: 
         "mission": "Acme ships widgets.\n\nIt ships them fast.",
         "users": [{"id": "U-1", "text": "A widget buyer"}],
         "goals": [
-            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None, "serves": []},
-            {"id": "G-3", "text": "Buyers can track a widget", "measure": None, "serves": []},
+            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None, "serves": []} | NO_KIND,
+            {"id": "G-3", "text": "Buyers can track a widget", "measure": None, "serves": []} | NO_KIND,
         ],
         "non_goals": [],
         "quality": [{"id": "Q-1", "text": "Every widget is tested"}],
@@ -240,8 +244,8 @@ def test_s024_2_section_prints_only_that_section(tmp_path: Path, capsys: pytest.
     assert run(root, "show", "--section", "goals", "--json") == 0
     assert json.loads(capsys.readouterr().out) == {
         "goals": [
-            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None, "serves": []},
-            {"id": "G-3", "text": "Buyers can track a widget", "measure": None, "serves": []},
+            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None, "serves": []} | NO_KIND,
+            {"id": "G-3", "text": "Buyers can track a widget", "measure": None, "serves": []} | NO_KIND,
         ]
     }
     assert run(root, "show", "--section", "quality", "--section", "non-goals", "--json") == 0
