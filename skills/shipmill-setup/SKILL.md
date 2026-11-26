@@ -632,6 +632,7 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    app_id = 123456    # replace with the App ID step 3 prints; sessions write as its bot
    mode = "interactive" # step 4's answer: sessions ask you; "headless": they ask on GitHub
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
+   # outcomes = 5     # at most 5 open opportunities at once for the product (1..100, spec 101); set in the home only
    # author = "app"   # whose account agents' issues, PRs, merges go out as (spec 051); unset: the App's, no trailer
    # merge = "merge"  # land with a merge commit, each commit of a branch kept (spec 072, D-96); unset: "squash"
    ```

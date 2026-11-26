@@ -1109,7 +1109,14 @@ the delivery loop (D-32); without it there is no limit:
 [agents]
 prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
 wip = 3       # at most 3 issues in progress at once (1..100)
+outcomes = 5  # at most 5 outcomes in flight at once for the product (1..100)
 ```
+
+`[agents] outcomes` caps how many outcomes product intake keeps in front of the maintainer
+at once (spec 101): every open opportunity issue counts, waiting for an answer or accepted
+and still being built. It takes the same range as `wip`, and without it there is no limit.
+A product's limit is set once, in its home: a component (`[product] home`) that sets it is
+refused, naming the home whose config holds it.
 
 `[roadmap]` is deprecated (D-32): shipmill no longer plans milestones, so nothing reads it.
 A config with it still loads and `doctor` warns, naming `[agents] wip`; move `wip` there

@@ -337,6 +337,9 @@ class AgentsConfig:
     app_id: int | None = None  # sessions write as this GitHub App (spec 004, D-14); None: the host's gh login
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
+    # at most this many outcomes (open opportunities) in flight at once for the product, set in
+    # its home (spec 101); None: no limit
+    outcomes: int | None = None
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
     plugin: Plugin = Plugin.HOST  # [agents] plugin: per person, or committed for the repo (spec 033)
     identity: WriteAs = WriteAs.APP  # [agents] identity: who `shipmill gh` writes as without app_id (spec 037)
@@ -373,6 +376,7 @@ class AgentsConfig:
             "app_id",
             "mode",
             "wip",
+            "outcomes",
             "roles",
             "plugin",
             "identity",
@@ -423,6 +427,7 @@ class AgentsConfig:
             app_id=app_id,
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
+            outcomes=table.integer("outcomes", default=None, low=1, high=_MAX_WIP),  # S-101-1: wip's ceiling
             roles=roles,
             plugin=plugin_of(table),
             identity=identity,
@@ -460,6 +465,7 @@ class AgentsConfig:
         product = ProductConfig.read(top, agents.app_id)  # the gate refuses a bad [product] too
         if product is not None:
             product.refuse_self(repo)
+            product.refuse_outcomes(agents.outcomes)
         return agents.with_autonomy(AutonomyPolicy.parse(top.table("autonomy", optional=True)))
 
     def with_autonomy(self, autonomy: AutonomyPolicy) -> AgentsConfig:
@@ -613,6 +619,17 @@ class ProductConfig:
             f"so its session writes only {own} and reads the product's other repos only with "
             f"`{cli_command()} gh --product <their repo>` (D-84); report work for another repo in "
             "this repo, labelled upstream"
+        )
+
+    def refuse_outcomes(self, outcomes: int | None) -> None:
+        """S-101-2: a product's [agents] outcomes is set once, in its home; a component that
+        sets it is refused, naming the home whose config holds the limit"""
+        if self.home is None or outcomes is None:
+            return
+        raise ReleaseError(
+            f"{CONFIG_PATH}: [agents] outcomes is set in a component of {self.home} ([product] home), but a "
+            f"product's limit is set once, in its home (spec 101); delete it here and set it in {self.home}'s "
+            f"{CONFIG_PATH}"
         )
 
     def lists(self, repo: str) -> bool:
