@@ -1,6 +1,6 @@
 # S-101: Limit the outcomes that wait on the maintainer at once
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -161,4 +161,27 @@ agent keys, and `docs/flow.md` gives a held request its state and what clears it
 - shipmill/shipmill#1728: S-101-3, S-101-4, S-101-5, S-101-10
 - shipmill/shipmill#1733: S-101-6, S-101-7, S-101-8, S-101-9, S-101-11
 
+Built in #1744 (#1727), #1745 (#1728) and the pull request for #1733.
+
 ## Verification
+
+Checked on main at 710ab70a with #1733's change on top, by reading the code and running the
+tests named below (`tests/test_config.py`, `tests/test_product_config.py`,
+`tests/test_intake_outcomes.py`, `tests/test_intake_held.py`,
+`tests/test_watch_feedback_outcomes.py`, `tests/test_product_intake_skill_held.py`);
+`specs.py coverage --spec 101` exits 0.
+
+- S-101-1: `AgentsConfig.outcomes` reads 1 to wip's ceiling, None without the key, and refuses 0, a negative number, a number above the ceiling, and a non-integer naming the key (`test_s101_1_the_outcomes_limit_reads_1_to_wips_ceiling_and_is_none_when_omitted`, `test_s101_1_a_bad_outcomes_limit_is_refused_naming_the_key`); holds
+- S-101-2: a component that sets `[agents] outcomes` is refused naming its home, and a home and a lone repo keep the key (`test_s101_2_a_component_that_sets_the_outcomes_limit_is_refused_naming_the_home`, `test_s101_2_the_home_and_a_lone_repo_keep_their_outcomes_limit`); holds
+- S-101-3: without the key `intake_state.py`'s text, `--json`, and exit code are as before, held comments included, and `rows` reads no held comment without a room (`test_s101_3_without_the_key_both_outputs_and_the_exit_are_as_before`, `test_s101_3_a_component_whose_home_sets_no_limit_prints_as_before`, `test_s101_3_a_component_whose_homes_config_cant_be_read_prints_as_before`); holds
+- S-101-4: every open opportunity counts once, an `expedite` one included, and the room is the limit less the count, never below 0 (`test_s101_4_every_open_opportunity_counts_once`, `test_s101_4_the_room_is_what_the_limit_leaves`, `test_s101_4_a_bad_limit_is_refused_naming_the_key`); holds
+- S-101-5: the home counts its listed repos through `shipmill gh --product`, one call per owner, a component reads its home's limit and counts the same set, and a failed read exits 2 naming the repo (`test_s101_5_the_home_counts_its_listed_repos_one_call_per_owner`, `test_s101_5_a_component_reads_the_homes_limit_and_counts_the_same_set`, `test_s101_5_a_read_that_fails_exits_2_naming_the_repo`, `test_s101_5_a_component_never_sets_the_limit_itself`); holds
+- S-101-6: `held_comment` reads the newest comment whose first line is the held marker, with the agent marker, by the `--bot-login` or a trusted author, newer than the newest trusted triage comment, and `feedback_state` reads it HELD `held since <date>` at room 0; HELD is not in `ACTION`, so a run with only it exits 0 (`test_s101_6_a_held_request_reads_held_at_room_0`, `test_s101_6_the_held_comment_must_be_newer_than_the_newest_trusted_triage_comment`, `test_s101_6_the_newest_held_comment_dates_the_hold`, `test_s101_6_a_held_row_never_makes_the_run_exit_1`); holds
+- S-101-7: a held comment by an untrusted author or another bot, without the agent marker, or with the marker not first, holds nothing (`test_s101_7_an_untrusted_or_unmarked_held_comment_holds_nothing`; `test_s101_7_a_trusted_persons_session_holds_too` shows the Behaviour's OWNER, MEMBER, or COLLABORATOR with the agent marker holding); holds
+- S-101-8: above room 0 a held request reads NEW_FEEDBACK `held since <date>`, and `row_order` prints held requests first, oldest held comment first, then the rest newest number first as before; a hand-off keeps its `handed` (`test_s101_8_room_back_reads_held_requests_new_feedback_oldest_held_first`, `test_s101_8_a_held_request_keeps_its_hand_off_time`); holds
+- S-101-9: `asked_by_name` reads a reply newer than the held comment whose first line is `propose` (any case, an optional period) from an OWNER, MEMBER, or COLLABORATOR other than the `--bot-login` with no agent marker, and the request reads NEW_FEEDBACK `asked by name` at room 0; the `--bot-login`'s, an agent's, an untrusted author's, an older reply, and an unreadable author change nothing (`test_s101_9_a_trusted_propose_reply_asks_for_it_by_name`, `test_s101_9_any_other_reply_changes_nothing`, `test_s101_9_a_reply_whose_author_cant_be_read_is_an_agents`); holds
+- S-101-10: `watch_state.py` accepts the `outcomes` key on intake's first line, makes no FEEDBACK_DUE row for a HELD request, and makes one once a handed-over request reads NEW_FEEDBACK again (`test_s101_10_the_autonomy_line_may_carry_the_outcomes`, `test_s101_10_a_held_request_makes_no_feedback_due_until_it_reads_new_feedback_again`); holds
+- S-101-11: product-intake's SKILL.md lists HELD, rule 10 opens no new opportunity at the limit unless asked for by name, Workflow step 3 holds and orders, the report names the room and the held outcomes, and opportunity.md's held comment starts with the held marker and holds neither `Triage:` nor "implement" (`test_s101_11_the_skill_lists_held_in_its_state_table`, `test_s101_11_a_pass_at_the_limit_opens_no_new_opportunity_unless_asked_by_name`, `test_s101_11_the_report_names_the_room_and_the_held_outcomes`, `test_s101_11_opportunity_md_holds_the_held_comment`); holds
+
+A discussion is never held: `intake_state.py` reads no discussion's comments, so at room 0 a
+pass opens nothing for a discussion that would start a new outcome and lists it as waiting.

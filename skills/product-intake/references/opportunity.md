@@ -76,3 +76,14 @@ Quote the reason without an issue number right after a hold phrase ("waits on #4
 ```markdown
 Triage: **opportunity**: this outcome shipped through #{opportunity}{, released in {version}}. If something is still missing, say what, and it will be grouped as a new request.
 ```
+
+## On a request held at the limit
+
+With `[agents] outcomes` and no room (SKILL.md, step 3, spec 101), a request that would start a new outcome gets this comment instead of an opportunity, posted through `shipmill gh`, which adds the agent marker `intake_state.py` reads it by:
+
+```markdown
+<!-- shipmill:intake-held -->
+This asks for a new outcome, and it waits for room: {K} of {N} outcomes are in flight under `[agents] outcomes`, the most this product carries at once. Once one of them closes, held requests are proposed in the order they were held, this one among them. The maintainer can have it proposed now by replying `propose`.
+```
+
+The first line is the held marker and nothing else. It starts with no `Triage:` marker, so the request's triage verdict stays triage's hand-off, and it never holds the word "implement". Post it once per request: one that already reads HELD gets no second comment.
