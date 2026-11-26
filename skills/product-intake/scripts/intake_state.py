@@ -52,6 +52,18 @@ opportunity itself. The first line (text) or the first JSON line is the [autonom
 level from the shipmill config (.github/shipmill.toml in the current directory; none
 means the default, propose).
 
+With [agents] outcomes = N (spec 101), the product's outcomes in flight are counted: every
+open --label issue of the product's repos, whatever it reads (OPPORTUNITY_OPEN, ACCEPTED,
+HANDED_OFF), each once. The product is the repo alone without [product] (or with standalone);
+in its home ([product] repos), the home and every listed repo; in a component ([product]
+home), the home and every repo the home lists, the limit read from the home's config on its
+default branch (a component that sets the key itself is refused). Other repos are read with
+`shipmill gh --product <repo> api graphql`, one call per owner, and a read that fails exits 2
+naming the step and the repo. The text output's second line is then `outcomes in flight: K
+of N (product <owner/home>)`, and --json's first line gains "outcomes": {"limit": N,
+"in_flight": K, "room": R}, R being N - K and never below 0. Without the key nothing is
+counted and both outputs are as before (a component still reads its home's config to know).
+
 With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
 login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
 association, the opener's author association, null for a discussion; and handed, the
@@ -183,6 +195,14 @@ except ModuleNotFoundError:  # Python 3.10: the config is read with regexes inst
 
 CONFIG = Path(".github/shipmill.toml")
 INTAKE_LEVELS = ("observe", "propose")  # shipmill's autonomy: intake never acts
+OUTCOMES_CEILING = 100  # spec 101: [agents] outcomes' ceiling, wip's (src/shipmill/agents.py's _MAX_WIP)
+PLAIN_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+ARRAY_KEYS = ("repos",)  # the keys the 3.10 reader reads as a one-line array of strings: [product] repos
+# The product home's config on its default branch (HEAD), read in a component (spec 101)
+HOME_CONFIG = (
+    "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) "
+    '{ object(expression: "HEAD:.github/shipmill.toml") { ... on Blob { text } } } }'
+)
 # Labels whose issues are never feedback: bugs, tracking issues, and shipmill's own. Extend
 # the list here for every repo, or per run with --skip-label
 SKIP_LABELS = (
@@ -1624,7 +1644,11 @@ def config_file(given: Path | None) -> Path | None:
 
 def config_values(path: Path, table: str, keys: tuple[str, ...]) -> dict[str, object]:
     """The keys a config table sets, of those asked for"""
-    text = path.read_text(encoding="utf-8")
+    return text_values(path.read_text(encoding="utf-8"), path, table, keys)
+
+
+def text_values(text: str, path: Path | str, table: str, keys: tuple[str, ...]) -> dict[str, object]:
+    """The keys a config's text sets in a table, of those asked for; path names it in an error"""
     if tomllib is not None:
         try:
             raw = tomllib.loads(text)
@@ -1637,7 +1661,7 @@ def config_values(path: Path, table: str, keys: tuple[str, ...]) -> dict[str, ob
     return config_values_310(text, path, table, keys)
 
 
-def config_values_310(text: str, path: Path, table: str, keys: tuple[str, ...]) -> dict[str, object]:
+def config_values_310(text: str, path: Path | str, table: str, keys: tuple[str, ...]) -> dict[str, object]:
     unreadable = f"{path}: can't read [{table}] on Python 3.10: use 3.11+, or plain key = value lines in [{table}]"
     body: list[str] | None = None
     current = ""
@@ -1658,13 +1682,16 @@ def config_values_310(text: str, path: Path, table: str, keys: tuple[str, ...]) 
             if not re.match(rf"^\s*[\"']?{re.escape(key)}[\"']?\s*=", line):
                 continue
             value = re.match(
-                r"^[^=]*=\s*(?:\"([^\"\\]*)\"|'([^']*)'|(-?\d+)|(true|false))\s*(?:#.*)?$",
+                r"^[^=]*=\s*(?:\"([^\"\\]*)\"|'([^']*)'|(-?\d+)|(true|false)"
+                r"|\[\s*((?:\"[^\"\\]*\"\s*,\s*)*(?:\"[^\"\\]*\"\s*,?\s*)?)\])\s*(?:#.*)?$",
                 line,
             )
-            if value is None:
+            if value is None or (value.group(5) is not None and key not in ARRAY_KEYS):
                 fail(unreadable)
             text_value = value.group(1) if value.group(1) is not None else value.group(2)
-            if text_value is not None:
+            if value.group(5) is not None:  # a one-line array of plain strings, such as [product] repos
+                found[key] = re.findall(r"\"([^\"\\]*)\"", value.group(5))
+            elif text_value is not None:
                 found[key] = text_value
             elif value.group(3) is not None:
                 found[key] = int(value.group(3))
@@ -1682,6 +1709,187 @@ def intake_autonomy(path: Path | None) -> str:
     if not isinstance(level, str) or level not in INTAKE_LEVELS:
         fail(f"{path}: [autonomy] intake must be one of {list(INTAKE_LEVELS)}, got {level!r}")
     return level
+
+
+# -- spec 101: [agents] outcomes, how many outcomes the product has in flight at once, and its
+# open opportunities across the product's repos
+
+
+@dataclass(frozen=True)
+class Product:
+    """Where the product's limit is set and the repos whose open opportunities count"""
+
+    home: str  # owner/name: the repo whose config sets the limit, the checkout's own outside a component
+    repos: tuple[str, ...]  # every repo of the product, the checkout's own first, none twice
+    limit: int | None  # [agents] outcomes; None without the key, and then nothing is counted
+
+
+@dataclass(frozen=True)
+class Outcomes:
+    """The --json first line's outcomes and the text output's second line"""
+
+    home: str
+    limit: int
+    in_flight: int
+
+    @property
+    def room(self) -> int:
+        return max(self.limit - self.in_flight, 0)
+
+    def json(self) -> dict[str, int]:
+        return {"limit": self.limit, "in_flight": self.in_flight, "room": self.room}
+
+    def line(self) -> str:
+        return f"outcomes in flight: {self.in_flight} of {self.limit} (product {self.home})"
+
+
+def outcomes_limit(value: object, where: Path | str) -> int:
+    """[agents] outcomes, checked as src/shipmill/agents.py reads it: an integer from 1 to wip's ceiling"""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= OUTCOMES_CEILING:
+        fail(f"{where}: [agents] outcomes must be an integer from 1 to {OUTCOMES_CEILING}, got {value!r}")
+    return value
+
+
+def product_repos(value: object, where: Path | str) -> list[str]:
+    """[product] repos, each owner/name"""
+    if not isinstance(value, list) or not all(isinstance(r, str) and PLAIN_REPO.fullmatch(r) for r in value):
+        fail(f"{where}: [product] repos must be a list of owner/name, got {value!r}")
+    return list(value)
+
+
+def unique(repos: list[str]) -> tuple[str, ...]:
+    """The repos in order, a repo named twice (in any case) kept once"""
+    seen: set[str] = set()
+    kept = []
+    for repo in repos:
+        if repo.lower() not in seen:
+            seen.add(repo.lower())
+            kept.append(repo)
+    return tuple(kept)
+
+
+# Reads a config from a repo's default branch: its text, or None when it has none
+HomeReader = Callable[[str], str | None]
+
+
+def product_of(repo: str, path: Path | None, read_home: HomeReader) -> Product:
+    """The product the checkout's config places repo in (spec 101). A lone repo, or one whose
+    [product] says standalone, is its own product; in the product's home ([product] repos), the
+    home and the repos it lists; in a component ([product] home), the limit and the repos are
+    read from the home's config on its default branch, through read_home, and a component that
+    sets [agents] outcomes itself is refused, naming the home. [product] repos is read only with
+    a limit, so a run without one reads the config as before"""
+    if path is None:
+        return Product(repo, (repo,), None)
+    product = config_values(path, "product", ("home", "standalone"))
+    local = config_values(path, "agents", ("outcomes",))
+    home = None if product.get("standalone") is True else product.get("home")
+    if home is not None:
+        if not isinstance(home, str) or not PLAIN_REPO.fullmatch(home):
+            fail(f"{path}: [product] home must be owner/name, got {home!r}")
+        if "outcomes" in local:
+            fail(f"{path}: [agents] outcomes is the product's, set in its home {home}'s {CONFIG}, not in a component")
+        where = f"{home}:{CONFIG}"
+        text = read_home(home)
+        if text is None:
+            fail(f"reading the product's limit: GitHub has no {where} on its default branch")
+        found = text_values(text, where, "agents", ("outcomes",))
+        if "outcomes" not in found:
+            return Product(home, (repo,), None)
+        limit = outcomes_limit(found["outcomes"], where)
+        listed = product_repos(text_values(text, where, "product", ("repos",)).get("repos", []), where)
+        return Product(home, unique([repo, home, *listed]), limit)
+    if "outcomes" not in local:
+        return Product(repo, (repo,), None)
+    limit = outcomes_limit(local["outcomes"], path)
+    listed = [] if product.get("standalone") is True else config_values(path, "product", ("repos",)).get("repos", [])
+    return Product(repo, unique([repo, *product_repos(listed, path)]), limit)
+
+
+class ProductGh:
+    """`shipmill gh --product <repo> api graphql` from the checkout, as triage_state.py --home
+    runs it (spec 065): `uvx shipmill==<the plugin's version> --repo <the checkout> gh`, run
+    once more with uv's index refreshed when uv found no such version (#597), the coordinator's
+    token in the home (D-83) and the read token in a component (D-84). A read that fails exits 2
+    naming the step and the repo, never reading it as empty"""
+
+    def __init__(self, here: Path, execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_uvx):
+        self.here = here
+        self.execute = execute
+
+    def graphql(self, via: str, query: str, variables: dict[str, str], step: str) -> dict[str, Any]:
+        top = next((d for d in (self.here, *self.here.parents) if (d / ".git").exists()), self.here)
+        cmd = [*shipmill_command(None), "--repo", str(top), "gh", "--product", via, "api", "graphql"]
+        cmd += ["-f", f"query={query}"]
+        for key, value in variables.items():
+            cmd += ["-f", f"{key}={value}"]
+        try:
+            proc: subprocess.CompletedProcess[str] = watch_module().pinned(cmd, self.execute)
+        except FileNotFoundError:
+            fail(f"{step}: uvx is not on PATH, and {via} is read with `shipmill gh --product`")
+        said = (proc.stderr or "").strip().splitlines()
+        if proc.returncode != 0:
+            fail(f"{step}: shipmill gh --product {via} exited {proc.returncode}" + (f": {said[0]}" if said else ""))
+        try:
+            response = json.loads(proc.stdout)
+        except ValueError:
+            fail(f"{step}: shipmill gh --product {via} printed no JSON: {proc.stdout[:200]!r}")
+        if not isinstance(response, dict) or response.get("errors"):
+            fail(f"{step}: shipmill gh --product {via} answered {json.dumps(response)[:300]}")
+        data: dict[str, Any] = response.get("data") or {}
+        return data
+
+    def home_config(self, home: str) -> str | None:
+        """The home's config on its default branch, None when it has none"""
+        owner, name = split_repo(home)
+        step = f"reading the product's limit from {home}:{CONFIG}"
+        node = self.graphql(home, HOME_CONFIG, {"owner": owner, "name": name}, step).get("repository")
+        if node is None:
+            fail(f"{step}: GitHub returned no repository {home}")
+        blob = node.get("object")
+        return None if blob is None else str(blob.get("text") or "")
+
+
+def count_query(repos: list[str]) -> str:
+    """One query that counts each repo's open issues labelled $label"""
+    parts = []
+    for i, repo in enumerate(repos):
+        owner, name = split_repo(repo)
+        where = f"owner: {json.dumps(owner)}, name: {json.dumps(name)}"
+        parts.append(f"r{i}: repository({where}) {{ issues(labels: [$label], states: OPEN) {{ totalCount }} }}")
+    return "query($label: String!) { " + " ".join(parts) + " }"
+
+
+def outcomes_in_flight(product: Product, local_open: int, label: str, gh: ProductGh) -> Outcomes | None:
+    """The product's open opportunities (spec 101): the checkout's own, local_open, as fetch read
+    them, and every other repo's, counted with one `shipmill gh --product` per owner, its repo the
+    home when the owner's repos include it, else the owner's first. Open is all that counts:
+    OPPORTUNITY_OPEN, ACCEPTED, and HANDED_OFF, an expedite or fixed-date one like any other.
+    None without a limit, and then nothing is read"""
+    if product.limit is None:
+        return None
+    owners: dict[str, list[str]] = {}
+    for repo in product.repos[1:]:
+        owners.setdefault(repo.partition("/")[0].lower(), []).append(repo)
+    total = local_open
+    for group in owners.values():
+        via = next((r for r in group if r.lower() == product.home.lower()), group[0])
+        step = f"counting the open opportunities of {', '.join(group)}"
+        data = gh.graphql(via, count_query(group), {"label": label}, step)
+        for i, repo in enumerate(group):
+            count = ((data.get(f"r{i}") or {}).get("issues") or {}).get("totalCount")
+            if not isinstance(count, int) or isinstance(count, bool):
+                fail(f"{step}: GitHub returned no open issue count for {repo}")
+            total += count
+    return Outcomes(product.home, product.limit, total)
+
+
+def first_line(autonomy: str, outcomes: Outcomes | None) -> dict[str, Any]:
+    """--json's first line: the autonomy, and with a limit the outcomes (spec 101)"""
+    line: dict[str, Any] = {"autonomy": autonomy}
+    if outcomes is not None:
+        line["outcomes"] = outcomes.json()
+    return line
 
 
 def show(row: Item) -> str:
@@ -1769,7 +1977,10 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    autonomy = intake_autonomy(config_file(args.config))
+    config = config_file(args.config)
+    autonomy = intake_autonomy(config)
+    product_gh = ProductGh(Path.cwd().resolve())
+    product = product_of(args.repo, config, product_gh.home_config)
     intake = fetch(
         args.repo,
         label=args.label,
@@ -1781,6 +1992,8 @@ def main() -> int:
         bot_login=args.bot_login,
     )
     found = rows(intake)
+    local_open = sum(1 for issue in intake.opportunity_issues if issue["state"] == "OPEN")
+    outcomes = outcomes_in_flight(product, local_open, args.label, product_gh)
     planned: list[PlanRow] = []
     if args.plans:
         planned = fetch_plans(
@@ -1794,13 +2007,15 @@ def main() -> int:
             maintainers=maintainers,
         )
     if args.json:
-        print(json.dumps({"autonomy": autonomy}))
+        print(json.dumps(first_line(autonomy, outcomes)))
         for r in found:
             print(json.dumps(json_row(r), sort_keys=True))
         for p in planned:
             print(json.dumps(plan_json(p), sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")
+        if outcomes is not None:
+            print(outcomes.line())
         for r in found:
             print(show(r))
         for p in planned:

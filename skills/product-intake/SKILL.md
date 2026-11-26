@@ -67,6 +67,8 @@ What the script decides for you, so the pass doesn't re-derive it:
 
 `--label`, `--accepted-label`, and `--marker` rename `opportunity`, `planned`, and `Triage:` for a repo that uses other names. `--json` prints JSON lines, the first one `{"autonomy": ...}`.
 
+With `[agents] outcomes = N` (spec 101), the script counts the product's outcomes in flight: every open opportunity of the product, whatever it reads (OPPORTUNITY_OPEN, ACCEPTED, HANDED_OFF), each once. The product is the repo alone, or in its home the home and every repo `[product] repos` lists; in a component the limit and the repos come from the home's config on its default branch. Other repos are read through `shipmill gh --product`, one call per owner; a read that fails exits 2 naming the repo. The text output's second line is then `outcomes in flight: K of N (product <owner/home>)`, and the first JSON line gains `"outcomes": {"limit": N, "in_flight": K, "room": R}`. Without the key both outputs are as before.
+
 `--plans` adds the goal plans (spec 028) after the opportunity rows: a row per goal a plan is due for, then a row per issue labelled `goal-plan`. Pass `--wip N` with `[agents] wip`, and `--bot-login '<slug>[bot]'` when `[agents] app_id` is set (quoted, as zsh globs the brackets; a gate session's prompt names it). Without the App's login a revision never counts, so a plan only the maintainer's own login writes can't be edited ([plan.md](references/plan.md), A revision).
 
 | State | Means | Do |
