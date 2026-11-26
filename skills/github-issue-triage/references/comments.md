@@ -279,6 +279,8 @@ Only holds gate the hand-off: `triage_state.py` reads a `Depends on` line, a blo
 
 **HANDOFF_DUE**, the hand-off: a mention of every assignee and of every team its roles resolve to (the note's `for @a @example-org/legal`, or the `assignees` and `teams` lists of its `--json` line), which holds closed, the issue's steps quoted (never rewritten), its `## Check` when it has one, and how to report. A team can't be assigned, so the mention is how its members hear of the step; a team-only role's item mentions the team alone. Post it once per unblock; nothing mentions the person or the team again while the item reads WITH_PERSON. A done report counts from an assignee or a trusted author (D-16): a team member who is a member of the repo's organization counts, an outside one doesn't.
 
+A `role:maintainer` item (or a `human` one) is never handed to a headless session to work it, which is why an item that needs full access (spec 087: ssh with a key, Docker, the host's keys) carries the label: a person runs it, approving each command. So its hand-off also names the command that opens an interactive session on it in the repo's checkout, `claude "/shipmill:github-issue-resolve <owner>/<repo>#<n>"`, with the item's own repo and number. Another role's hand-off doesn't name it.
+
 ```markdown
 <!-- shipmill:handoff -->
 @{assignee} @{assignee} @{org/team}, it's your turn: {owner/repo#N} closed{, and owner/repo#M}.
@@ -290,6 +292,10 @@ What to do, from this issue:
 {When the issue has one:} When it's done, this must hold:
 
 > {its ## Check, quoted}
+
+{When it is labelled role:maintainer or human:} To work it in an interactive session, run this in the repo's checkout:
+
+`claude "/shipmill:github-issue-resolve {owner/repo}#{N}"`
 
 Reply `done` here when it's finished, or close the issue.
 ```
