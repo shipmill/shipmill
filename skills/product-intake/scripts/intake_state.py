@@ -2848,6 +2848,8 @@ def projects_active(
 OPEN_PLAN_ISSUES = PLAN_ISSUES.replace(
     "issues(labels: [$label], first:", "issues(labels: [$label], states: OPEN, first:"
 )
+if OPEN_PLAN_ISSUES == PLAN_ISSUES:
+    raise RuntimeError("OPEN_PLAN_ISSUES no longer narrows PLAN_ISSUES to open plans")
 
 
 def unmet(hold: Hold) -> HoldMet:
@@ -2871,9 +2873,12 @@ def read_product_plans(
     bot_login: str | None,
     marker: str,
     maintainers: frozenset[str],
+    own: tuple[str, HoldReader, frozenset[str]] | None = None,
 ) -> ProductPlans:
     """S-106-9, S-106-14: each repo's open plan issues read as --plans reads them: overdue past
-    its answer date (another repo's held plan read held), or accepted at its answer's time"""
+    its answer date, or accepted at its answer's time. own is the checkout's repo, its hold
+    reader, and its direction's goals, so its plans read exactly as --plans prints them; another
+    repo's held plan reads held, and its goals are each plan's own"""
     overdue: list[str] = []
     accepted: dict[tuple[str, int], dt.datetime] = {}
     for repo, plans in issues.items():
@@ -2881,14 +2886,16 @@ def read_product_plans(
             if issue.get("state") != "OPEN" or not is_plan(issue, bot_login):
                 continue
             goal = plan_goal(issue)
+            mine = own is not None and repo.lower() == own[0].lower()
+            goals = own[2] if own is not None and mine and own[2] else frozenset({goal} if goal else set())
             row = plan_state(
                 issue,
-                goals=frozenset({goal} if goal else set()),
+                goals=goals,
                 marker=marker,
                 bot_login=bot_login,
                 filing=lambda issue, plan: ("PLAN_FILED", ""),
                 maintainers=maintainers,
-                holds=unmet,
+                holds=own[1] if own is not None and mine else unmet,
             )
             if row is None:
                 continue
@@ -2963,9 +2970,9 @@ def start_due(
     def turn(entry: tuple[str, ProjectRow]) -> tuple[Any, ...]:
         repo, head = entry
         accepted = plans.accepted.get((repo.lower(), head.parent)) if head.parent is not None else None
-        if accepted is not None:
-            return (0, accepted.isoformat(), head.work or 0, repo.lower(), head.number)
-        return (1, head.labelled or "", 0, repo.lower(), head.number)
+        if accepted is not None:  # an item with no marker comes after its plan's numbered ones
+            return (0, accepted.isoformat(), head.work if head.work is not None else 10**9, repo.lower(), head.number)
+        return (1, head.labelled or "9999", 0, repo.lower(), head.number)  # never labelled: last
 
     chosen = {(repo.lower(), head.number) for repo, head in sorted(held, key=turn)[:room]}
     found = []
@@ -2977,7 +2984,7 @@ def start_due(
 
 
 def show_project(row: ProjectRow) -> str:
-    return f"{row.state:<16} #{row.number:<6} {row.note}  {row.title}"
+    return f"{row.state:<17} #{row.number:<6} {row.note}  {row.title}"
 
 
 def project_json(row: ProjectRow) -> dict[str, Any]:
@@ -3291,13 +3298,10 @@ def main() -> int:
             projects = projects_active(limits, heads, product_gh, args.bot_login, others)
         owner, name = split_repo(args.repo)
         here, _ = paged(gh_graphql, OPEN_PLAN_ISSUES, {"owner": owner, "name": name, "label": PLAN_LABEL}, "issues")
-        product_plans = read_product_plans(
-            product_plan_issues(limits, here, product_gh),
-            dt.datetime.now(UTC),
-            args.bot_login,
-            args.marker,
-            maintainers,
-        )
+        when = dt.datetime.now(UTC)
+        own = (args.repo, gh_holds(args.repo, gh_graphql_unreadable, when, stable), frozenset(g.id for g in direction))
+        issues = product_plan_issues(limits, here, product_gh)
+        product_plans = read_product_plans(issues, when, args.bot_login, args.marker, maintainers, own)
         planned = overdue_waits(planned, product_plans.overdue)  # S-106-9
         heads = start_due({args.repo: heads, **others}, args.repo, projects, product_plans)  # S-106-14
     goal_states: list[GoalRow] = []

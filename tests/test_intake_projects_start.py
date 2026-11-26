@@ -163,3 +163,21 @@ def test_s106_15_the_skill_gives_project_start_dues_step() -> None:
         "remove the `held` label",
     ):
         assert words in step, words
+
+
+def test_s106_9_the_checkouts_own_plans_read_as_plans_prints_them(ist: ModuleType) -> None:
+    """a plan of the checkout re-checked after its hold was met and past its answer date reads
+    overdue here as in --plans; another repo's held plan reads held"""
+    from .test_intake_plans import comment
+
+    hold = owner("hold until 2026-10-05", 10)
+    recheck = comment(
+        "<!-- shipmill:plan-recheck -->\nNothing in this plan is done or stale.", 0, author="shipmill-app", bot=True
+    )
+    recheck["createdAt"] = "2026-10-06T10:00:00Z"
+    now = dt.datetime(2026, 10, 20, tzinfo=dt.UTC)
+    issues = {"o/r": [open_plan(30, hold, recheck)], "o/api": [open_plan(7, hold, recheck)]}
+    own = ("o/r", ist.gh_holds("o/r", lambda query, variables: {}, now), frozenset({"G-1"}))
+    found = ist.read_product_plans(issues, now, BOT, "Triage:", frozenset(), own)
+    assert found.overdue == ("o/r#30",)  # re-checked 2026-10-06: due 2026-10-13
+    assert ist.read_product_plans(issues, now, BOT, "Triage:", frozenset()).overdue == ()  # no reader: held
