@@ -58,7 +58,7 @@ Labels are case-sensitive and spaced as written. A goal's text that holds `. Che
 date nor a version, is malformed; so is a text starting `Held: ` that lacks `. Threshold: `
 or `. Source: ` in that order, or any text holding both forms' labels. A `  measure:` line
 under a goal of kind goal is malformed too: a goal ends on its check, and a metric held for
-good is a measure. `shipmill product check` refuses each malformed goal with exit 2 and one
+good is a measure. `shipmill product check` refuses each malformed goal with exit 1 and one
 line naming the file, the line, the goal, and the form it should take, as it refuses any
 other line today (Q-1). The item lines of `## Users`, `## Non-goals`, and `## Quality bar`
 are not read for kinds.
@@ -140,7 +140,7 @@ section's lines for each kind, and `docs/flow.md` says a measure is planned only
 ## Acceptance criteria
 
 - S-105-1: `shipmill product check` exits 0 on a direction whose goals are written in the goal form (`<outcome>. Check: <check>. By: 2026-12-31` and `By: 0.7.0`), in the measure form with and without a `  measure:` line, and with no form, and on this repository's `docs/product.md` as merged on 2026-11-26
-- S-105-2: `shipmill product check` exits 2 with one line naming the file, the line, and the goal for each of: `. Check: ` without `. By: `, `. By: ` without `. Check: `, an empty outcome, check, or horizon, a horizon that is neither a valid `YYYY-MM-DD` nor `X.Y.Z` with an optional `v` (`2026-13-01`, `Q4`, `2026-12-31.`), a text starting `Held: ` without `. Threshold: ` and `. Source: ` in that order, a text with both forms' labels, and a `  measure:` line under a goal of kind goal
+- S-105-2: `shipmill product check` exits 1 with one line naming the file, the line, and the goal for each of: `. Check: ` without `. By: `, `. By: ` without `. Check: `, an empty outcome, check, or horizon, a horizon that is neither a valid `YYYY-MM-DD` nor `X.Y.Z` with an optional `v` (`2026-13-01`, `Q4`, `2026-12-31.`), a text starting `Held: ` without `. Threshold: ` and `. Source: ` in that order, a text with both forms' labels, and a `  measure:` line under a goal of kind goal
 - S-105-3: a goal's check or outcome that holds a period and a space reads whole: `A. B. Check: C. D. By: 2026-12-31` has the outcome `A. B` and the check `C. D`
 - S-105-4: `shipmill product show --json` gives every goal `kind`, `outcome`, `check`, `by`, `past`, `held`, `threshold`, and `source`, with the fields of the other kinds null, and keeps `id`, `text`, `measure`, and `serves` as before
 - S-105-5: `past` is true for a date horizon once that date has ended in UTC and false on the date itself, and null for a release horizon, a measure, and a goal of kind none

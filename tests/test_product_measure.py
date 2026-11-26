@@ -320,7 +320,8 @@ def test_s027_2_a_measure_is_a_value_object_that_refuses_what_check_refuses() ->
 def test_s027_3_show_json_gives_every_goal_a_measure_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert run(write(tmp_path, WELL_FORMED), "show", "--json") == 0
     record = json.loads(capsys.readouterr().out)
-    assert record["goals"] == [
+    kept = ("id", "text", "measure", "serves")  # spec 105 adds each goal's kind fields beside them
+    assert [{key: goal[key] for key in kept} for goal in record["goals"]] == [
         {
             "id": "G-1",
             "text": "Widgets reach buyers in a day",

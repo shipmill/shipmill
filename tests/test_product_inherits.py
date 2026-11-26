@@ -423,7 +423,7 @@ def test_s071_8_local_reads_nothing_of_the_home_and_gives_the_prior_output(
     assert run(root, tmp_path, NoNetwork(), "show", "--local", "--section", "non-goals", key=False) == 0
     assert out(capsys) == OWN_NON_GOALS
     assert run(root, tmp_path, NoNetwork(), "show", "--local", "--json", key=False) == 0
-    assert json.loads(out(capsys)) == direction.record()
+    assert json.loads(out(capsys)) == direction.record(today=dt.datetime.now(dt.UTC).date())
     assert run(root, tmp_path, NoNetwork(), "ids", key=False) == 0  # ids never reads the home
     assert out(capsys).splitlines() == [str(item) for item in direction.all_items()]
 
@@ -457,7 +457,7 @@ def test_s071_8_a_repo_without_product_home_reads_no_other_repo_and_prints_as_be
         assert run(root, tmp_path, NoNetwork(), "show", *local, "--section", "goals", "--section", "non-goals") == 0
         assert out(capsys) == direction.render([Section.GOALS, Section.NON_GOALS])
         assert run(root, tmp_path, NoNetwork(), "show", *local, "--json") == 0
-        assert json.loads(out(capsys)) == direction.record()
+        assert json.loads(out(capsys)) == direction.record(today=dt.datetime.now(dt.UTC).date())
     assert run(root, tmp_path, NoNetwork(), "ids") == 0
     assert out(capsys).splitlines()[0] == "U-1: A partner's developer"
 

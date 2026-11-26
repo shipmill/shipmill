@@ -9,8 +9,12 @@ carry one measure on the line right after it, `  measure: <metric> <comparison> 
 the maintainer merges a change to it (D-34); the edit commands at the end write one item
 line, or a goal's measure or serves line, in the working tree, never a commit. `check` and
 `read` also read it as committed at a git ref (spec 034), so the watch checks the default
-branch's direction rather than whatever the checkout holds"""
+branch's direction rather than whatever the checkout holds. A goal's text is of one of two
+kinds (spec 105), a goal, `<outcome>. Check: <check>. By: <horizon>`, or a standing measure,
+`Held: <statement>. Threshold: <threshold>. Source: <source>`, or of neither, as written
+before spec 105"""
 
+import datetime as dt
 import posixpath
 import re
 from collections.abc import Callable, Iterable, Sequence
@@ -43,6 +47,10 @@ _SERVES_LIKE = re.compile(r"^\s*serves:")  # any line that tries to be a serves 
 _SERVES_LINE = re.compile(r"^  serves: (?P<text>\S.*)$")
 _SERVES_FORM = "`  serves: G-n[, G-n ...]`"
 _GOAL_ID = re.compile(r"G-[1-9][0-9]*")
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_RELEASE = re.compile(r"v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+_CHECK, _BY = ". Check: ", ". By: "  # a goal's labels, case-sensitive and spaced as written
+_HELD, _THRESHOLD, _SOURCE = "Held: ", ". Threshold: ", ". Source: "  # a measure's
 
 
 class Unit(StrEnum):
@@ -197,6 +205,200 @@ def _in_unit(number: float, suffix: str) -> float:
             return number
 
 
+class GoalKind(StrEnum):
+    """What a goal of the direction is (spec 105): a goal, which ends when its check passes, or a
+    standing measure, held at its threshold for good. A goal written in neither form has none"""
+
+    GOAL = "goal"
+    MEASURE = "measure"
+
+    @property
+    def form(self) -> str:
+        """How a goal of this kind is written, as the refusals name it"""
+        return _KIND_FORMS[self]
+
+
+_KIND_FORMS = {
+    GoalKind.GOAL: "`<outcome>. Check: <check>. By: <YYYY-MM-DD or X.Y.Z>`",
+    GoalKind.MEASURE: "`Held: <statement>. Threshold: <threshold>. Source: <source>`",
+}
+_HORIZON_FORM = "a date, `YYYY-MM-DD`, or a release, `X.Y.Z` with an optional `v`, with nothing after it"
+
+
+@dataclass(frozen=True, slots=True)
+class Horizon:
+    """When a goal is due (spec 105): a calendar date, or a release; `text` is as written, a
+    release's `v` included. Built by `parse`"""
+
+    text: str
+    date: dt.date | None  # None for a release
+
+    def __post_init__(self) -> None:
+        if self.date is None and _RELEASE.fullmatch(self.text) is None:
+            raise ReleaseError(f"a horizon is {_HORIZON_FORM}; got `{self.text}`")
+        if self.date is not None and self.text != self.date.isoformat():
+            raise ReleaseError(f"a date horizon is written `{self.date.isoformat()}`; got `{self.text}`")
+
+    @classmethod
+    def parse(cls, text: str) -> Horizon:
+        """`YYYY-MM-DD`, a valid calendar date, or `X.Y.Z` with an optional `v`; refused naming the form"""
+        if _DATE.fullmatch(text) is None:
+            return cls(text, None)
+        try:
+            day = dt.date.fromisoformat(text)
+        except ValueError:
+            raise ReleaseError(f"a horizon is {_HORIZON_FORM}; `{text}` is not a calendar date") from None
+        return cls(text, day)
+
+    @property
+    def release(self) -> str | None:
+        """The release, as written; None for a date"""
+        return self.text if self.date is None else None
+
+    def past(self, today: dt.date) -> bool | None:
+        """For a date, whether it has ended by `today` in UTC, so false on the date itself; None
+        for a release, whose passing the consumer reads from the forge's tags"""
+        return None if self.date is None else today > self.date
+
+    def record(self) -> dict[str, str]:
+        return {"release": self.text} if self.date is None else {"date": self.text}
+
+    def __str__(self) -> str:
+        return self.text
+
+
+@dataclass(frozen=True, slots=True)
+class GoalForm:
+    """A goal of kind goal: `<outcome>. Check: <check>. By: <horizon>`, read by splitting at the
+    first `. Check: ` and the last `. By: `, so the outcome and the check may hold a period"""
+
+    outcome: str
+    check: str
+    by: Horizon
+
+    def __post_init__(self) -> None:
+        written = str(self)
+        if _kind(written) is not GoalKind.GOAL or _goal_parts(written) != (self.outcome, self.check, self.by.text):
+            raise ReleaseError(f"`{written}` doesn't read back as this goal; a goal is {GoalKind.GOAL.form}")
+
+    @property
+    def kind(self) -> GoalKind:
+        return GoalKind.GOAL
+
+    def __str__(self) -> str:
+        return f"{self.outcome}{_CHECK}{self.check}{_BY}{self.by}"
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureForm:
+    """A goal of kind measure: `Held: <statement>. Threshold: <threshold>. Source: <source>`,
+    read by splitting at the first `. Threshold: ` and the last `. Source: `"""
+
+    held: str
+    threshold: str
+    source: str
+
+    def __post_init__(self) -> None:
+        written = str(self)
+        if _kind(written) is not GoalKind.MEASURE or _measure_parts(written) != (
+            self.held,
+            self.threshold,
+            self.source,
+        ):
+            raise ReleaseError(f"`{written}` doesn't read back as this measure; a measure is {GoalKind.MEASURE.form}")
+
+    @property
+    def kind(self) -> GoalKind:
+        return GoalKind.MEASURE
+
+    def __str__(self) -> str:
+        return f"{_HELD}{self.held}{_THRESHOLD}{self.threshold}{_SOURCE}{self.source}"
+
+
+def read_goal(text: str) -> GoalForm | MeasureForm | None:
+    """A goal's text read for its kind (spec 105): its goal form, its measure form, or None for a
+    text with neither form's labels; refused (ReleaseError) naming what is wrong and the form it
+    takes, the rule `product check` gives after the goal's id"""
+    match _kind(text):
+        case GoalKind.GOAL:
+            outcome, check, horizon = _goal_parts(text)
+            try:
+                by = Horizon.parse(horizon)
+            except ReleaseError as exc:
+                raise ReleaseError(f"{exc}; a goal is {GoalKind.GOAL.form}") from None
+            return GoalForm(outcome, check, by)
+        case GoalKind.MEASURE:
+            return MeasureForm(*_measure_parts(text))
+        case None:
+            return None
+
+
+def _kind(text: str) -> GoalKind | None:
+    """The kind a goal's labels give it; refused when it holds both forms' labels"""
+    goal = _CHECK in text or _BY in text
+    measure = text.startswith(_HELD) or _THRESHOLD in text or _SOURCE in text
+    if goal and measure:
+        raise ReleaseError(
+            "the text holds both a goal's labels (`. Check: `, `. By: `) and a measure's (`Held: `, "
+            f"`. Threshold: `, `. Source: `); a goal is {GoalKind.GOAL.form}, a measure is {GoalKind.MEASURE.form}"
+        )
+    if text.startswith(_HELD):
+        return GoalKind.MEASURE
+    return GoalKind.GOAL if goal else None
+
+
+def _goal_parts(text: str) -> tuple[str, str, str]:
+    """The outcome, the check, and the horizon as written: split at the first `. Check: ` and
+    the last `. By: `, each non-empty"""
+    form = GoalKind.GOAL.form
+    check_at, by_at = text.find(_CHECK), text.rfind(_BY)
+    if check_at < 0:
+        raise ReleaseError(f"`. By: ` with no `. Check: ` before it; a goal is {form}")
+    if by_at < check_at:
+        raise ReleaseError(f"`. Check: ` with no `. By: ` after it; a goal is {form}")
+    parts = text[:check_at], text[check_at + len(_CHECK) : by_at], text[by_at + len(_BY) :]
+    for name, part in zip(("outcome", "check", "horizon"), parts, strict=True):
+        if not part.strip():
+            raise ReleaseError(f"its {name} is empty; a goal is {form}")
+    return parts
+
+
+def _measure_parts(text: str) -> tuple[str, str, str]:
+    """The statement, the threshold, and the source as written: after `Held: `, split at the
+    first `. Threshold: ` and the last `. Source: `, each non-empty"""
+    form = GoalKind.MEASURE.form
+    threshold_at, source_at = text.find(_THRESHOLD), text.rfind(_SOURCE)
+    if threshold_at < 0 or source_at < threshold_at:
+        raise ReleaseError(f"`Held: ` with no `. Threshold: ` and then `. Source: ` after it; a measure is {form}")
+    parts = (
+        text[len(_HELD) : threshold_at],
+        text[threshold_at + len(_THRESHOLD) : source_at],
+        text[source_at + len(_SOURCE) :],
+    )
+    for name, part in zip(("statement", "threshold", "source"), parts, strict=True):
+        if not part.strip():
+            raise ReleaseError(f"its {name} is empty; a measure is {form}")
+    return parts
+
+
+def _form_record(form: GoalForm | MeasureForm | None, today: dt.date) -> dict[str, Any]:
+    """The fields `product show --json` gives every goal (S-105-4), the other kinds' null"""
+    record: dict[str, Any] = dict.fromkeys(("kind", "outcome", "check", "by", "past", "held", "threshold", "source"))
+    if form is not None:
+        record["kind"] = form.kind.value
+    match form:
+        case GoalForm():
+            record |= {
+                "outcome": form.outcome,
+                "check": form.check,
+                "by": form.by.record(),
+                "past": form.by.past(today),
+            }
+        case MeasureForm():
+            record |= {"held": form.held, "threshold": form.threshold, "source": form.source}
+    return record
+
+
 class Prefix(StrEnum):
     """The prefix of an item's id, one per list section"""
 
@@ -331,13 +533,23 @@ class Item:
     measure: Measure | None = None  # only a goal carries one (spec 027)
     serves: Serves | None = None  # only a component's goal carries one (spec 071)
 
-    def record(self) -> dict[str, Any]:
+    @property
+    def form(self) -> GoalForm | MeasureForm | None:
+        """A goal's text read for its kind (spec 105); None for a goal of neither kind and for
+        every other item, whose text is not read for one. Refused (ReleaseError) for a goal
+        `product check` refuses, which a direction that was read never holds"""
+        return read_goal(self.text) if self.id.prefix is Prefix.GOAL else None
+
+    def record(self, *, today: dt.date) -> dict[str, Any]:
         """A goal's record has a `measure` key, null without one, and a `serves` list, empty
-        without one; other items have neither"""
+        without one; other items have neither. A goal's record also has its kind's fields
+        (spec 105), those of the other kinds null; `past` reads its date horizon against
+        `today`, the date in UTC"""
         record: dict[str, Any] = {"id": str(self.id), "text": self.text}
         if self.id.prefix is Prefix.GOAL:
             record["measure"] = None if self.measure is None else self.measure.record()
             record["serves"] = [] if self.serves is None else self.serves.ids()
+            record |= _form_record(self.form, today)
         return record
 
     def lines(self) -> str:
@@ -390,19 +602,20 @@ class Direction:
     def all_items(self) -> tuple[Item, ...]:
         return self.users + self.goals + self.non_goals + self.quality
 
-    def record(self, sections: Sequence[Section] = ()) -> dict[str, Any]:
-        """The JSON shape of spec 024: the whole direction, or only the sections given"""
+    def record(self, sections: Sequence[Section] = (), *, today: dt.date) -> dict[str, Any]:
+        """The JSON shape of spec 024: the whole direction, or only the sections given; a goal's
+        `past` reads against `today`, the date in UTC (spec 105)"""
         if not sections:
-            return {"name": self.name} | self._record(Section)
-        return self._record(sections)
+            return {"name": self.name} | self._record(Section, today)
+        return self._record(sections, today)
 
-    def _record(self, sections: Iterable[Section]) -> dict[str, Any]:
+    def _record(self, sections: Iterable[Section], today: dt.date) -> dict[str, Any]:
         record: dict[str, Any] = {}
         for section in _ordered(sections):
             if section is Section.MISSION:
                 record[section.key] = self.mission
             else:
-                record[section.key] = [item.record() for item in self.items(section)]
+                record[section.key] = [item.record(today=today) for item in self.items(section)]
         return record
 
     def render(self, sections: Sequence[Section] = ()) -> str:
@@ -673,11 +886,12 @@ class Inherited:
         goals, its non-goals with non-goals, both when none is asked"""
         return tuple(s for s in _INHERITED if not sections or s in sections)
 
-    def record(self, sections: Sequence[Section]) -> dict[str, Any]:
-        """The `product` key of `product show --json` (S-071-5)"""
+    def record(self, sections: Sequence[Section], *, today: dt.date) -> dict[str, Any]:
+        """The `product` key of `product show --json` (S-071-5), its goals read for their kind as
+        this repo's are (spec 105)"""
         record: dict[str, Any] = {"home": self.home, "name": self.direction.name}
         for section in self.wanted(sections):
-            record[section.key] = [item.record() for item in self.direction.items(section)]
+            record[section.key] = [item.record(today=today) for item in self.direction.items(section)]
         return record
 
     def render(self, sections: Sequence[Section]) -> str:
@@ -970,6 +1184,13 @@ class _Parser:
                 self.fail(body.path, number, f"{item.id} again; it is already on {first}")
                 continue
             self.seen[item.id] = f"{body.path}:{number}"
+            try:
+                if prefix is Prefix.GOAL:  # S-105-2: a goal's text read for its kind, refused when malformed
+                    read_goal(item.text)
+            except ReleaseError as exc:
+                self.fail(body.path, number, f"{item.id}: {exc}")
+                broken = True
+                continue
             items.append(item)
             previous = _Previous.ITEM
         if section.required and not items and not broken:
@@ -1000,6 +1221,15 @@ class _Parser:
             where = "after a blank line" if previous is _Previous.BLANK else "before any goal"
             self.fail(body.path, number, f"a measure line sits right under its goal's item line; this one is {where}")
             return _Previous.BROKEN
+        goal = items[-1]
+        if isinstance(goal.form, GoalForm):
+            self.fail(
+                body.path,
+                number,
+                f"{goal.id} is a goal, which ends on its check, so it carries no measure line; a metric held for "
+                f"good is a measure, {GoalKind.MEASURE.form}: rewrite {goal.id} as one, or delete the line",
+            )
+            return _Previous.MEASURED
         written = _MEASURE_LINE.match(line)
         if written is None:
             self.fail(

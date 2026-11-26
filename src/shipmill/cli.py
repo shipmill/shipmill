@@ -4834,9 +4834,10 @@ def _product(root: Path, args: argparse.Namespace, reach: HomeReach) -> int:
     home = _home_of(root, args, reach) if Inherited.wanted(sections) else None
     product_part = None if home is None else home()  # read whole before a line is printed (S-071-7)
     if args.json:
-        record = direction.record(sections)
+        today = dt.datetime.now(dt.UTC).date()  # a date horizon's `past` reads in UTC (S-105-5)
+        record = direction.record(sections, today=today)
         if product_part is not None:
-            record["product"] = product_part.record(sections)
+            record["product"] = product_part.record(sections, today=today)
         print(json.dumps(record, indent=2, ensure_ascii=False))
     elif product_part is None:
         sys.stdout.write(direction.render(sections))

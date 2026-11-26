@@ -1,0 +1,3 @@
+### Added
+
+- The direction tells a goal from a standing measure (spec 105): `shipmill product check` reads each goal of `## Goals` as a goal, `<outcome>. Check: <check>. By: <YYYY-MM-DD or X.Y.Z>`, a measure, `Held: <statement>. Threshold: <threshold>. Source: <source>`, or neither, and refuses a malformed one, or a `  measure:` line under a goal, naming the file, the line, the goal, and the form it takes; `shipmill product show --json` gives every goal its `kind`, `outcome`, `check`, `by`, `past`, `held`, `threshold`, and `source`, and a component reads its product's goals the same way (#1726)
