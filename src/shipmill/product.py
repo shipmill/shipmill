@@ -1581,7 +1581,9 @@ def retire(root: Path, id: ItemId) -> Edited:
 
 def measure(root: Path, id: ItemId, written: Measure | None) -> Edited | None:
     """Write a goal's measure line right under its item line, replacing the one it has, or
-    remove it when `written` is None (spec 027). None when there was nothing to remove"""
+    remove it when `written` is None (spec 027). None when there was nothing to remove. Refused,
+    writing nothing, when the direction it would leave fails `check`, as a measure line under a
+    goal of kind goal does (S-105-8)"""
     if id.prefix is not Prefix.GOAL:
         raise ReleaseError(f"only a goal carries a measure; {id} is not a G-n id")
     direction, bodies = _editable(root)
@@ -1593,14 +1595,14 @@ def measure(root: Path, id: ItemId, written: Measure | None) -> Edited | None:
             return None
         removed = document.content(number)
         document.delete(number)
-        document.write()
+        _write_checked(root, body.path, document)
         return Edited(body.path, number + 1, removed)
     line = str(written)
     if had:
         document.replace(number, line)  # the measure line, right under the item line
     else:
         document.insert(number, [line])
-    document.write()
+    _write_checked(root, body.path, document)
     return Edited(body.path, number + 1, line)
 
 

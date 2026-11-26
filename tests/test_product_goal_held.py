@@ -248,6 +248,42 @@ def test_s105_8_edit_refuses_a_goal_form_over_a_measure_line(tmp_path: Path) -> 
     assert (root / DIRECTION).read_text() == WELL_FORMED
 
 
+def test_s105_8_measure_refuses_a_measure_line_under_a_goal_of_kind_goal(tmp_path: Path) -> None:
+    """#1759: `product measure` checks the direction it would leave, as `add` and `edit` do"""
+    root = write(tmp_path)
+    before = (root / DIRECTION).read_bytes()
+    with pytest.raises(ReleaseError) as refused:  # the CLI's entry point exits 2 on it
+        run(root, "measure", "G-1", "human_touch <= 20%")
+    message = str(refused.value)
+    assert "\n  docs/product.md:14: G-1 is a goal, which ends on its check" in message, message
+    assert "nothing was written" in message
+    assert (root / DIRECTION).read_bytes() == before
+    assert check(root) == ()
+
+
+def test_s105_8_measure_in_a_moved_goals_section_names_that_file(tmp_path: Path) -> None:
+    root = write(write(tmp_path, MOVED), MOVED_GOALS, Path("docs/product/goals.md"))
+    with pytest.raises(ReleaseError, match=r"\n  docs/product/goals\.md:4: G-1 is a goal, which ends on its check"):
+        product.measure(root, ItemId.parse("G-1"), product.Measure.parse("human_touch <= 20%"))
+    assert (root / "docs/product/goals.md").read_text() == MOVED_GOALS
+
+
+def test_s105_8_measure_still_writes_and_clears_a_measure_or_a_goal_of_no_kind(tmp_path: Path) -> None:
+    root = write(tmp_path)
+    assert run(root, "measure", "G-2", "change_failure_rate <= 2%") == 0  # kind measure: replaced
+    assert run(root, "measure", "G-3", "lead_time_p90 < 2d") == 0  # kind none: written
+    assert run(root, "measure", "G-4", "--clear") == 0  # kind none: removed
+    written = (
+        WELL_FORMED.replace("change_failure_rate <= 5%", "change_failure_rate <= 2%")
+        .replace("- G-3: Widgets are cheap\n", "- G-3: Widgets are cheap\n  measure: lead_time_p90 < 2d\n")
+        .replace("  measure: human_touch <= 20%\n", "")
+    )
+    assert (root / DIRECTION).read_text() == written
+    assert product.measure(root, ItemId.parse("G-1"), None) is None  # nothing to remove: nothing written
+    assert (root / DIRECTION).read_text() == written
+    assert check(root) == ()
+
+
 def test_s105_8_add_and_edit_still_write_a_well_formed_goal(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = repo(tmp_path, {str(DIRECTION): WELL_FORMED})
     assert run(root, "add", "goals", "Held: it stays up. Threshold: 99%. Source: the probe") == 0
