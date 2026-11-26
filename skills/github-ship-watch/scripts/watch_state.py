@@ -279,6 +279,11 @@ Intake (github-issue-triage's triage_state.py):
                   --sweep read: only the maintainer answers a plan. A plan noted "unclear
                   accept asked" (spec 096) is in no plan row: its question is
                   NEEDS_DECISION's while it waits
+  PLAN_HELD       in an --item read only (spec 098, S-098-13), from the same run: the
+                  plan issues intake_state.py reads PLAN_HELD, each `#N until <condition>`
+                  as its hold names it, trusted as PLAN_OPEN; `shipmill status --item`
+                  reads a held plan's condition from it. The full report lists no held
+                  plan (spec 098's Out of scope), so this row is in no other read
   SPEC_DUE        from the same intake_state.py run (spec 074): `ACCEPTED #N ...`, every
                   opportunity the maintainer accepted that triage hasn't taken, oldest first;
                   the session runs github-issue-triage's spec gate on each. An agent's row at
@@ -684,6 +689,9 @@ PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_HELD", "
 # keeps the two equal)
 PLAN_OPEN = "PLAN_OPEN"
 PLAN_OPEN_FIX = "answer the goal plan"
+# Spec 098: intake_state.py's held plans, `#N until <condition>`, read in an --item read only
+PLAN_HELD = "PLAN_HELD"
+HELD_UNTIL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}|release|(?:[\w.-]+/[\w.-]+)?#[1-9][0-9]*", re.IGNORECASE)
 # Spec 096: intake_state.py's PLAN_OPEN note once the session asked about an unclear accept; the
 # plan's question is NEEDS_DECISION's then, never the PLAN_OPEN row's
 UNCLEAR_ACCEPT_ASKED = "unclear accept asked"
@@ -4308,6 +4316,29 @@ def plans_waiting(text: str, repo: str, bot_login: str | None = None, trusted_on
     return [Row(PLAN_OPEN, repo, " ".join(waiting), PLAN_OPEN_FIX)] if waiting else []
 
 
+def plans_held(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> list[Row]:
+    """S-098-13: PLAN_HELD from intake_state.py --plans --json's lines, the plan issues it reads
+    PLAN_HELD, each `#N until <condition>` as its hold object names the condition, trusted as
+    plans_waiting trusts a plan (D-16). Read in an --item read only: the full report lists no
+    held plan (spec 098's Out of scope). A condition intake_state.py could not have written
+    (not a date, an item, or release) is refused, so no issue's text reaches the row"""
+    held: list[str] = []
+    for line in text.splitlines():
+        row = plan_line(line)
+        if row is None or row["kind"] != "plan" or row["state"] != PLAN_HELD:
+            continue
+        hold, association = row.get("hold"), row.get("association")
+        until = hold.get("until") if isinstance(hold, dict) else None
+        if not isinstance(until, str) or HELD_UNTIL.fullmatch(until) is None:
+            raise Refused(f"error: intake_state.py printed a malformed held plan row: {line[:200]!r}")
+        if association is not None and not isinstance(association, str):
+            raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+        ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+        if ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS):
+            held.append(f"#{row['number']} until {until}")
+    return [Row(PLAN_HELD, repo, "; ".join(held))] if held else []
+
+
 # -- handed-over requests and accepted opportunities (spec 074) ------------------------------
 
 
@@ -7268,6 +7299,8 @@ def item_row(row: Row, number: int) -> bool:
         return True
     if row.state == "GATE_PAUSED":  # spec 089: the whole gate waits, this item too
         return True
+    if row.state == PLAN_HELD:  # S-098-13: names a held plan, read for its condition
+        return any(part.startswith(f"#{number} ") for part in row.detail.split("; "))
     return names_item(row, number) and (row.state in GATE_WAITS or bool(row.json()["agent"]))
 
 
@@ -7370,6 +7403,8 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
             plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
             feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
         rows += plans.rows + feedback.rows
+        if planned and not isinstance(lines, PypiWait):  # S-098-13: a held plan's condition
+            rows += plans_held(lines, args.repo, args.bot_login, args.trusted_only)
         if not (isinstance(lines, PypiWait) and args.trusted_only):
             code, triaged = triage_read.result() if triage_read is not None else triage()
             directions = triage_directions(triaged) if table is not None else frozenset()
