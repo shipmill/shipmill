@@ -7,6 +7,20 @@ bot.
 
 ## [Unreleased]
 
+## [0.179.0] - 2026-11-26
+
+### Fixed
+
+- `shipmill queue`, `status --item`, and `status --summary` no longer hold a user's request triaged as an opportunity as the maintainer's: one no open opportunity issue names yet is the agent's, waiting for product intake to group it, and one an open opportunity issue's Evidence section names waits on that opportunity (`waits_on`), so it counts once, through its opportunity; only issues labelled `opportunity` or `goal-plan` keep holder `maintainer` and `accept`, from triage_state.py's new `proposal` and `grouped` keys, read with no new query (S-094-6 and S-088-8 amended) (#1643)
+
+### Changed
+
+- The hand-off of a `role:maintainer` (or `human`) item names `claude "/shipmill:github-issue-resolve <owner>/<repo>#<n>"`, the command that opens an interactive session on it in the repo's checkout, since the gate hands such an item to no headless session to work it (#1651)
+
+### Added
+
+- App: the gate tick's read token, an installation token asking only reads over the gate's repo and its product's repos of the same owner, scope-checked and cached apart in `app-token-tick.json` with mode 0600; a dry run caches none (#1653)
+
 ## [0.178.0] - 2026-11-25
 
 ### Changed
@@ -3163,7 +3177,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.178.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.179.0...HEAD
+[0.179.0]: https://github.com/shipmill/shipmill/compare/v0.178.0...v0.179.0
 [0.178.0]: https://github.com/shipmill/shipmill/compare/v0.177.0...v0.178.0
 [0.177.0]: https://github.com/shipmill/shipmill/compare/v0.176.0...v0.177.0
 [0.176.0]: https://github.com/shipmill/shipmill/compare/v0.175.0...v0.176.0
