@@ -988,7 +988,8 @@ LINE_CLOSER = re.compile(rf"^\s*(?:[-*]\s*)?{KEYWORDS}:?\s+#(\d+)\b", re.IGNOREC
 TITLE_CLOSER = re.compile(rf"\b{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`+[^`]*`+")
 FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
-# A PR's "Part of #N", read by the same rule (#1678): a mid-line, backticked, or fenced one links nothing
+# A PR's "Part of #N" (#1678): at the start of a body line or sentence, or in the title, outside code;
+# a mid-sentence, backticked, or fenced one links nothing
 PART_OF = r"part of:?\s+#(\d+)\b"
 LINE_PART_OF = re.compile(rf"^\s*(?:[-*]\s*)?{PART_OF}", re.IGNORECASE)
 TITLE_PART_OF = re.compile(rf"\b{PART_OF}", re.IGNORECASE)
@@ -1516,36 +1517,41 @@ def veto_windows(
     return {n: " | ".join(holds[path]) for n, path in builds.items() if path is not None and path in holds}
 
 
-def named_refs(title: str, body: str, in_title: re.Pattern[str], on_line: re.Pattern[str]) -> set[int]:
-    """The issue numbers a PR's title names outside code spans by ``in_title``, and its body
-    names by ``on_line`` on a line outside a code fence"""
-    found = {int(n) for n in in_title.findall(CODE_SPAN.sub("", title))}
+def keyword_closes(title: str, body: str) -> set[int]:
+    """The issue numbers a PR's closing keywords name: one in the title outside code spans, or
+    one starting a line of the body (after an optional list bullet) outside a code fence. A
+    keyword quoted mid-line, in backticks, or in a fence names nothing (#368, #416)"""
+    found = {int(n) for n in TITLE_CLOSER.findall(CODE_SPAN.sub("", title))}
     fenced = False
     for line in body.splitlines():
         if FENCE.match(line):
             fenced = not fenced
         elif not fenced:
-            found |= {int(n) for n in on_line.findall(line)}
+            found |= {int(n) for n in LINE_CLOSER.findall(line)}
     return found
 
 
-def keyword_closes(title: str, body: str) -> set[int]:
-    """The issue numbers a PR's closing keywords name: one in the title outside code spans, or
-    one starting a line of the body (after an optional list bullet) outside a code fence. A
-    keyword quoted mid-line, in backticks, or in a fence names nothing (#368, #416)"""
-    return named_refs(title, body, TITLE_CLOSER, LINE_CLOSER)
-
-
 def part_of(title: str, body: str) -> set[int]:
-    """The issue numbers a PR names as "Part of #N" by keyword_closes' rule: in the title outside
-    code spans, or starting a line of the body (after an optional list bullet) outside a code
-    fence. One quoted mid-line, in backticks, or in a fence names nothing (#1678)"""
-    return named_refs(title, body, TITLE_PART_OF, LINE_PART_OF)
+    """The issue numbers a PR names as "Part of #N": in the title outside code spans, as
+    keyword_closes reads a title, or in the body outside code spans and fences at the start of a
+    line (after an optional list bullet) or of a sentence, where SENTENCE ends one. One quoted
+    mid-sentence, in backticks, or in a fence names nothing (#1678)"""
+    found = {int(n) for n in TITLE_PART_OF.findall(CODE_SPAN.sub("", title))}
+    fenced = False
+    for line in body.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            # a code span stands as one word, so it neither starts a sentence nor ends one
+            for sentence in SENTENCE.split(CODE_SPAN.sub("_", line)):
+                found |= {int(n) for n in LINE_PART_OF.findall(sentence)}
+    return found
 
 
 def closes(pr: dict[str, Any], number: int, *, partial: bool = False) -> bool:
     """A closing keyword naming the issue by keyword_closes' rule (or, with ``partial``, a
-    "Part of #N" naming it by the same rule, part_of, for a PR covering part of the issue);
+    "Part of #N" naming it at the start of a line or a sentence, part_of, for a PR covering
+    part of the issue);
     GitHub's own willCloseTarget misses some"""
     title, body = pr.get("title") or "", pr.get("body") or ""
     if number in keyword_closes(title, body):
