@@ -419,6 +419,7 @@ NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
 SERVING_STATUSES = ("draft", "approved")
 AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
 PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET"}
+# PLAN_OVERDUE (spec 106): an open plan past its answer date, no action
 PLAN_ORDER = (
     "PLAN_DUE",
     "PLAN_MALFORMED",
@@ -428,6 +429,7 @@ PLAN_ORDER = (
     "PLAN_HOLD_MET",
     "PLAN_WAITS",
     "PLAN_OPEN",
+    "PLAN_OVERDUE",
     "PLAN_HELD",
     "PLAN_FILED",
     "PLAN_DECLINED",
@@ -436,6 +438,9 @@ READ_CLOSED = ("NOT_PLANNED", "COMPLETED")  # the closed plans whose comments ar
 PLAN_OPENER = "<!-- shipmill:plan "  # a first line that means to be the plan marker, well-formed or not
 SHIPMILL_MARKER = "<!-- shipmill:"  # a session's own marked comment, never an answer
 REVISED = re.compile(r"^<!-- shipmill:plan-revised rev=([1-9][0-9]*) -->$")
+# spec 106: a trusted reply whose first line sets the plan's answer date; it answers nothing
+ANSWER_BY = re.compile(r"^answer by ([0-9]{4}-[0-9]{2}-[0-9]{2})\.?$", re.IGNORECASE)
+ANSWER_DAYS = 7  # a plan's answer is due this many days after its newest revision (or re-check)
 # spec 096: a first line starting with the word `accept` (not `accepted` or `acceptable`) is
 # an accept, `accept`, `accept W-1, W-3`, or `accept except W-2`, or an unclear one
 ACCEPT_WORD = re.compile(r"^accept(?!\w)", re.IGNORECASE)
@@ -1039,6 +1044,7 @@ class PlanRow:
     # spec 098: on a PLAN_HELD, PLAN_HOLD_MET, or a re-checked PLAN_OPEN row, the hold's
     # condition as written and when it was met (ISO 8601 UTC, None while not met); None otherwise
     hold: tuple[str, str | None] | None = None
+    answer_by: str | None = None  # spec 106: a PLAN_OPEN or PLAN_OVERDUE row's answer date, YYYY-MM-DD
 
 
 # Reads the direction's goals, in the direction's order
@@ -1514,6 +1520,8 @@ def plan_answer(
             if not answerer(comment, bot_login, marker):
                 continue
             answer = body
+        if ANSWER_BY.match(PLANS.first_line(answer)):  # spec 106: it sets the answer date, no answer
+            continue
         if found is None or at >= found.at:
             first = PLANS.first_line(answer)
             found = Answer(answer_kind(first), at, answer)
@@ -1635,6 +1643,84 @@ def rechecked(issue: dict[str, Any], bot_login: str | None, hold: Hold, met: dt.
         if by_bot and first == RECHECK_MARKER and at > met and at > hold.at:
             return True
     return False
+
+
+def revision_at(issue: dict[str, Any], bot_login: str | None) -> dt.datetime:
+    """When the plan's newest revision was written: its opening, or the newest `plan-revised`
+    comment by the --bot-login whose rev is higher than the revision before it, as plan_answer
+    reads it"""
+    since, rev = timestamp(issue["createdAt"]), 0
+    for comment in sorted(issue["comments"]["nodes"], key=lambda c: timestamp(c["createdAt"])):
+        revised = REVISED.match(PLANS.first_line(comment.get("body") or ""))
+        by_bot = bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower()
+        at = timestamp(comment["createdAt"])
+        if revised is not None and by_bot and int(revised.group(1)) > rev and at >= since:
+            rev, since = int(revised.group(1)), at
+    return since
+
+
+def recheck_at(issue: dict[str, Any], bot_login: str | None, met: dt.datetime) -> dt.datetime | None:
+    """The time of the --bot-login's newest plan-recheck comment after the hold was met (spec
+    098), from which a re-checked plan's answer date counts (spec 106); None without one"""
+    times = [
+        timestamp(c["createdAt"])
+        for c in issue["comments"]["nodes"]
+        if bot_login is not None
+        and PLANS.login(c.get("author")).lower() == bot_login.lower()
+        and PLANS.first_line(c.get("body") or "") == RECHECK_MARKER
+        and timestamp(c["createdAt"]) > met
+    ]
+    return max(times) if times else None
+
+
+def answer_date(
+    issue: dict[str, Any], since: dt.datetime, bot_login: str | None, marker: str, maintainers: frozenset[str]
+) -> dt.date:
+    """S-106-7: a plan's answer date, ANSWER_DAYS days after since (its newest revision, or its
+    re-check), unless a trusted reply newer than since whose first line is `answer by
+    YYYY-MM-DD` sets another (an OWNER, MEMBER, or COLLABORATOR other than the --bot-login, or
+    the --bot-login's relay naming a maintainer, D-68); the newest such reply counts, and an
+    invalid date in it is no date set"""
+    found: tuple[dt.datetime, dt.date] | None = None
+    for comment in issue["comments"]["nodes"]:
+        at = timestamp(comment["createdAt"])
+        if at <= since:
+            continue
+        body = relayed_answer(comment, bot_login, marker, maintainers)
+        if body is None and answerer(comment, bot_login, marker):
+            body = comment.get("body") or ""
+        written = ANSWER_BY.match(PLANS.first_line(body or ""))
+        if written is None:
+            continue
+        try:
+            day = dt.date.fromisoformat(written.group(1))
+        except ValueError:
+            continue
+        if found is None or at >= found[0]:
+            found = (at, day)
+    return found[1] if found is not None else (since + dt.timedelta(days=ANSWER_DAYS)).date()
+
+
+def dated(
+    row: PlanRow,
+    issue: dict[str, Any],
+    now: dt.datetime,
+    bot_login: str | None,
+    marker: str,
+    maintainers: frozenset[str],
+) -> PlanRow:
+    """S-106-7, S-106-8: a PLAN_OPEN row with its answer date, its note ending `answer by
+    <date>`, and PLAN_OVERDUE in its place once that date has ended in UTC. A re-checked plan's
+    seven days count from its re-check; a held plan (PLAN_HELD, PLAN_HOLD_MET) has none"""
+    if row.state != "PLAN_OPEN":
+        return row
+    since = revision_at(issue, bot_login)
+    if row.hold is not None and row.hold[1] is not None:  # spec 098: re-checked after its hold was met
+        since = recheck_at(issue, bot_login, timestamp(row.hold[1])) or since
+    day = answer_date(issue, since, bot_login, marker, maintainers)
+    note = "; ".join(part for part in (row.note, f"answer by {day.isoformat()}") if part)
+    state = "PLAN_OVERDUE" if now.astimezone(UTC).date() > day else "PLAN_OPEN"
+    return replace(row, state=state, note=note, answer_by=day.isoformat())
 
 
 def held_row(
@@ -1806,8 +1892,10 @@ def plan_issue_rows(
     filing: FilingReader,
     maintainers: frozenset[str] = frozenset(),
     holds: HoldReader | None = None,
+    now: dt.datetime | None = None,
 ) -> list[PlanRow]:
     found: list[PlanRow] = []
+    now = now or dt.datetime.now(UTC)
     newest = {issue["number"] for issue in newest_plans(plan_issues).values()}
     for issue in plan_issues:
         if is_plan(issue, bot_login):
@@ -1822,6 +1910,7 @@ def plan_issue_rows(
                 holds=holds,
             )
             if row is not None:
+                row = dated(row, issue, now, bot_login, marker, maintainers)
                 opener = PLANS.login(issue.get("author"))
                 found.append(replace(row, author=opener, association=str(issue.get("authorAssociation") or "NONE")))
     return found
@@ -2000,6 +2089,7 @@ def fetch_plans(
         filing=filing or gh_filing(repo, bot_login, run),
         maintainers=maintainers,
         holds=holds,
+        now=now,
     )
     by_goal = plan_rows(
         direction,
@@ -2932,6 +3022,8 @@ def plan_json(row: PlanRow) -> dict[str, Any]:
         found.update(follows=row.follows, missing=list(row.missing or ()))
     if row.hold is not None:  # spec 098: a held plan's condition and when it was met
         found["hold"] = {"until": row.hold[0], "met_at": row.hold[1]}
+    if row.answer_by is not None:  # spec 106: a PLAN_OPEN or PLAN_OVERDUE plan's answer date
+        found["answer_by"] = row.answer_by
     return found
 
 

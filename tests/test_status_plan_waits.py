@@ -16,7 +16,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import Action, decide, parse_findings
 from shipmill.status import Row, Verdict, report
 
-from .test_intake_plans import Fake, open_plan
+from .test_intake_plans import PLANS_NOW, Fake, open_plan
 from .test_status_picture import REPO, facts, lines
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +133,7 @@ def test_intake_names_a_plans_openers_association(ist: ModuleType) -> None:
         room=lambda limit: 1,
         run=Fake(plans=[by_bot, by_hand]),
         filing=lambda issue, body: ("PLAN_FILED", ""),
+        now=PLANS_NOW,  # before the plans' answer date (spec 106)
     )
     shown = {r.number: ist.plan_json(r) for r in found if r.kind == "plan"}
     assert {n: (line["state"], line["association"]) for n, line in shown.items()} == {

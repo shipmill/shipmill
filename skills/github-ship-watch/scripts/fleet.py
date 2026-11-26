@@ -566,6 +566,7 @@ INTAKE_KINDS = {
     ("opportunity", "OPPORTUNITY_OPEN"): OPPORTUNITY,
     ("opportunity", "NO_REASON"): NO_REASON,
     ("plan", "PLAN_OPEN"): PLAN,
+    ("plan", "PLAN_OVERDUE"): PLAN,  # spec 106: past its answer date, it still waits on your answer
 }
 WITH_PERSON_SINCE = re.compile(r"\bsince (\S+)")  # triage_state.py's WITH_PERSON note: "... since <time> ..."
 # intake_state.py's REVISED (tests/test_fleet_queue.py keeps the two equal): a plan's revision comment

@@ -1,5 +1,6 @@
 """intake_state.py --plans: the goals a plan is due for (spec 028, #510), without gh or the network"""
 
+import datetime as dt
 import importlib.util
 import re
 import subprocess
@@ -27,6 +28,24 @@ def ist() -> ModuleType:
 
 def at(hour: int) -> str:
     return f"2026-10-01T{hour:02d}:00:00Z"
+
+
+# The plans here are read a day after they were written, so no answer date (spec 106) has
+# passed; the date is spec 106's to prove (tests/test_intake_plans_answer_by.py), so these
+# helpers set the note's `answer by <date>` aside and test what they did before
+PLANS_NOW = dt.datetime(2026, 10, 2, 12, tzinfo=dt.UTC)
+ANSWER_BY = re.compile(r"(?:; )?answer by [0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
+def undated(note: str) -> str:
+    return ANSWER_BY.sub("", note)
+
+
+def undated_json(line: dict[str, Any]) -> dict[str, Any]:
+    found = {k: v for k, v in line.items() if k != "answer_by"}
+    if isinstance(found.get("note"), str):
+        found["note"] = undated(found["note"])
+    return found
 
 
 def comment(
@@ -205,6 +224,7 @@ def due(
     found = ist.fetch_plans(
         "o/r",
         intake,
+        now=PLANS_NOW,
         goals=lambda: [ist.Goal(*g) for g in goals],
         marker="Triage:",
         bot_login=bot_login,
@@ -213,7 +233,7 @@ def due(
         run=fake,
     )
     assert len(asked) <= 1  # the room is read once at most
-    return {r.goal: (r.state, r.note) for r in found if r.kind == "goal"}
+    return {r.goal: (r.state, undated(r.note)) for r in found if r.kind == "goal"}
 
 
 def test_s028_1_a_goal_nothing_serves_reads_no_work(ist: ModuleType) -> None:
@@ -358,7 +378,15 @@ def test_s028_4_the_room_is_read_only_when_a_goal_waits_on_it(ist: ModuleType) -
     )
     goals = [ist.Goal(i, t) for i, t in GOALS]
     found = ist.fetch_plans(
-        "o/r", intake, goals=lambda: goals, marker="Triage:", bot_login=None, wip=1, room=never, run=Fake([served])
+        "o/r",
+        intake,
+        now=PLANS_NOW,
+        goals=lambda: goals,
+        marker="Triage:",
+        bot_login=None,
+        wip=1,
+        room=never,
+        run=Fake([served]),
     )
     assert found == []
 
@@ -461,6 +489,7 @@ def test_plans_read_the_components_own_goals_so_an_unreadable_home_never_stops_t
     found = ist.fetch_plans(
         "o/r",
         intake,
+        now=PLANS_NOW,
         goals=ist.uvx_goals("shipmill==1.2.3", component_uvx(ran)),
         marker="Triage:",
         bot_login=BOT,
@@ -550,6 +579,7 @@ def plan_states(
     found = ist.fetch_plans(
         "o/r",
         intake,
+        now=PLANS_NOW,
         goals=lambda: [ist.Goal(i, t) for i, t in GOALS],
         marker="Triage:",
         bot_login=bot_login,
@@ -559,7 +589,7 @@ def plan_states(
         filing=filing if filing is not None else (lambda issue, plan: ("PLAN_ACCEPTED", "unfiled")),
         maintainers=maintainers,
     )
-    return {r.number: (r.state, r.note) for r in found if r.kind == "plan"}
+    return {r.number: (r.state, undated(r.note)) for r in found if r.kind == "plan"}
 
 
 def state_of(ist: ModuleType, plan_issue: dict[str, Any], **kwargs: Any) -> tuple[str, str]:
@@ -1066,6 +1096,7 @@ def plan_rows_of(ist: ModuleType, fake: Fake, *, filing: Any = None, **kwargs: A
     found = ist.fetch_plans(
         "o/r",
         intake,
+        now=PLANS_NOW,
         goals=lambda: [ist.Goal(i, t) for i, t in GOALS],
         marker="Triage:",
         bot_login=kwargs.get("bot_login", BOT),
@@ -1075,7 +1106,7 @@ def plan_rows_of(ist: ModuleType, fake: Fake, *, filing: Any = None, **kwargs: A
         filing=filing if filing is not None else (lambda issue, plan: ("PLAN_ACCEPTED", "unfiled")),
         maintainers=kwargs.get("maintainers", frozenset()),
     )
-    return {(r.number if r.kind == "plan" else r.goal): ist.plan_json(r) for r in found}
+    return {(r.number if r.kind == "plan" else r.goal): undated_json(ist.plan_json(r)) for r in found}
 
 
 def answered(ist: ModuleType, *comments: str | dict[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -1292,6 +1323,7 @@ def goal_rows(ist: ModuleType, fake: Fake, *, wip: int | None = None, room: int 
     found = ist.fetch_plans(
         "o/r",
         intake,
+        now=PLANS_NOW,
         goals=lambda: [ist.Goal(i, t) for i, t in GOALS],
         marker="Triage:",
         bot_login=BOT,
