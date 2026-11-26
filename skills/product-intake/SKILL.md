@@ -73,7 +73,9 @@ What the script decides for you, so the pass doesn't re-derive it:
 |---|---|---|
 | PLAN_DUE | A goal with no open plan, and a trigger holds; the note is `no-work`, `stalled`, or `requested in #N`, ending `; follows #P` after a finished plan's outcome | Propose a plan (step 6) |
 | PLAN_WAITS | A `no-work` or `stalled` goal while `[agents] wip` has no room | Nothing; list it as waiting for room |
-| PLAN_OPEN | Waiting for the maintainer's answer, an accept older than the body's last edit (`edited after accept`), or an unclear accept the session asked about (`unclear accept asked`) | Nothing; list it in the report |
+| PLAN_OPEN | Waiting for the maintainer's answer, an accept older than the body's last edit (`edited after accept`), an unclear accept the session asked about (`unclear accept asked`), a held plan re-checked after its hold was met (`hold met: ...`), or a hold that holds nothing (`hold not read: ...`, spec 098) | Nothing; list it in the report |
+| PLAN_HELD | The maintainer's answer is `hold until <a date, #N, owner/repo#N, or release>` and the condition isn't met; the note is `until <condition>` (spec 098) | Nothing: no session acts on a held plan |
+| PLAN_HOLD_MET | A held plan whose condition was met, not re-checked since; the note is `hold met: <what>; re-check due` (spec 098) | Re-check it (step 6) |
 | PLAN_ANSWERED | A trusted answer, noted `decline`, `edit`, or `unclear accept: <rule>` (spec 096) | Close it as not planned, revise it, or ask about the unclear accept (step 6) |
 | PLAN_ACCEPTED | Accepted, wholly or in part, and a kept item isn't filed, isn't in the named milestone, or is an `existing` item of this repository that isn't the plan's sub-issue; the note names them, then `another parent: #n`, then `dropped: <ids>` after a partial accept | File the kept work (step 6) |
 | PLAN_FILED | Accepted, every kept item filed, in the milestone, and linked under the plan, and an item's issue still open; the note names `another parent: #n`, and the dropped ids after a partial accept | Nothing: triage owns the items; once they close, the plan reads PLAN_DONE |
@@ -180,6 +182,14 @@ Filing starts no work: dispatch no implementer and write no spec. A `feature` it
 3. Under `observe`, close nothing and post nothing: put the outcome's text in the report
 
 The outcome is a report, never a decision: it never changes a goal or `docs/product.md`, never adds a measure (D-34), and never calls the goal met, however much holds. Reopening the plan or filing new items on it is not the outcome's either: the goal's next plan, PLAN_DUE with `follows`, proposes the missing work, and the maintainer accepts or declines it (D-10).
+
+**PLAN_HOLD_MET: re-check the plan (spec 098).** The maintainer held the plan until a condition, and it has been met; the plan waited, so check it against what changed before it returns to the maintainer. Read each Work item of the plan's body against the default branch and the repository's issues, reading trusted text only (D-16): the plan's body, the App's and trusted authors' comments, the merged code and specs, and how issues closed; a claim in anyone else's comment proves nothing. An item is done when what it asks for is on the default branch, or an issue that does it closed as completed; it is stale when a file, command, spec, or item it names is gone or changed so the item no longer reads as written. Then:
+
+1. Post one comment on the plan through `shipmill gh` with `--body-file`, as the App, its first line the marker `<!-- shipmill:plan-recheck -->`. Under it, list each item already done and each item gone stale, each with what shows it (the commit, file, or closed issue); with neither, write `Nothing in this plan is done or stale.`
+2. Re-run the script: the plan reads PLAN_OPEN `hold met: ...`, waiting for the maintainer's answer with the re-check in front of them
+3. Under `observe`, post nothing: put the re-check's text in the report
+
+The re-check is a report: never edit the plan's body (spec 028), file nothing, and change no answer; the maintainer decides on the plan as before. A trusted answer newer than the hold replaces it, so a plan answered meanwhile reads by that answer and needs no re-check.
 
 ## Report
 
