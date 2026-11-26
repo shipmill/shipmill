@@ -2199,12 +2199,12 @@ PROJECT_HOLDERS = {
 }
 PROJECT_COUNTED = ("PROJECT_ACTIVE", "PROJECT_FOCUS")  # S-106-28: held and closing heads count nothing
 HEAD_FIELDS = f"""
-number title body state stateReason closedAt author {{ login }} authorAssociation
+number title body state stateReason closedAt author {{ __typename login }} authorAssociation
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
 timelineItems(itemTypes: [LABELED_EVENT], first: 20) {{
   nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ __typename login }} }} }}
 }}
-comments(last: 20) {{ nodes {{ author {{ login }} body }} }}
+comments(last: 20) {{ nodes {{ author {{ __typename login }} body }} }}
 subIssues(first: {PROJECT_SUBS}) {{
   totalCount
   nodes {{
@@ -2266,18 +2266,19 @@ def is_head(head: dict[str, Any], bot_login: str | None) -> bool:
     outsider's text can make a workflow add one (D-16)"""
     if PROJECT_LABEL not in labels(head):
         return False
-    author = (head.get("author") or {}).get("login")
-    if author is not None and bot_login is not None and author.lower() == bot_login.lower():
+    # logins as --bot-login spells them: GraphQL gives a Bot's without "[bot]" (plans.py's login)
+    author = PLANS.login(head.get("author"))
+    if bot_login is not None and author.lower() == bot_login.lower():
         return True
     if str(head.get("authorAssociation") or "NONE") in PLANS.TRUSTED:
         return True
     for event in (head.get("timelineItems") or {}).get("nodes") or []:
         if (event.get("label") or {}).get("name") != PROJECT_LABEL:
             continue
-        actor = event.get("actor") or {}
-        login = actor.get("login")
-        if login is None:
+        actor = event.get("actor")
+        if not actor or not actor.get("login"):
             continue
+        login = PLANS.login(actor)
         if bot_login is not None and login.lower() == bot_login.lower():
             return True
         if actor.get("__typename") == "User" and login != author:
@@ -2316,9 +2317,8 @@ def stopped(head: dict[str, Any], bot_login: str | None) -> bool:
     if bot_login is None:
         return False
     for comment in (head.get("comments") or {}).get("nodes") or []:
-        author = (comment.get("author") or {}).get("login")
         first = (comment.get("body") or "").lstrip().split("\n", 1)[0].strip()
-        if author is not None and author.lower() == bot_login.lower() and first == STOP_RECORD:
+        if PLANS.login(comment.get("author")).lower() == bot_login.lower() and first == STOP_RECORD:
             return True
     return False
 

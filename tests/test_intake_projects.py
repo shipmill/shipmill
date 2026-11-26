@@ -57,9 +57,7 @@ def head(
     closed_at: str | None = None,
 ) -> dict[str, Any]:
     """A head issue as PROJECTS_QUERY reads it"""
-    kind = "Bot" if labelled_by is not None and labelled_by.endswith("[bot]") else "User"
-    actor = {"__typename": kind, "login": labelled_by}
-    events = [] if labelled_by is None else [{"label": {"name": "project"}, "actor": actor}]
+    events = [] if labelled_by is None else [{"label": {"name": "project"}, "actor": who(labelled_by)}]
     return {
         "number": number,
         "title": f"Head {number}",
@@ -67,13 +65,20 @@ def head(
         "state": state,
         "stateReason": reason,
         "closedAt": closed_at,
-        "author": {"login": author},
+        "author": who(author),
         "authorAssociation": association,
         "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
         "timelineItems": {"nodes": events},
-        "comments": {"nodes": [{"author": {"login": a}, "body": b} for a, b in comments]},
+        "comments": {"nodes": [{"author": who(a), "body": b} for a, b in comments]},
         "subIssues": {"totalCount": len(subs), "nodes": list(subs)},
     }
+
+
+def who(login: str) -> dict[str, str]:
+    """An author or actor as GitHub's GraphQL gives it: a Bot's login without its [bot] suffix"""
+    if login.endswith("[bot]"):
+        return {"__typename": "Bot", "login": login.removesuffix("[bot]")}
+    return {"__typename": "User", "login": login}
 
 
 def read(ist: ModuleType, node: dict[str, Any]) -> tuple[str, str] | None:
