@@ -373,6 +373,8 @@ Closing this as done.
 
 A child closed as not planned doesn't stop the close; say so in its line. A feature issue first gets its spec verified ([spec-gate.md](spec-gate.md), Verify the whole spec). A parent with a `## Check` never takes this comment: it closes on its check, below.
 
+A goal plan (labelled `goal-plan`, its newest trusted triage comment product intake's `Triage: **plan**`) whose work has closed reads TRIAGED, `work closed; product intake reports the outcome`, never UNBLOCKED (spec 097): it is product intake's to close with its outcome, and triage never closes it with the parent's close comment. Leave it open: product intake closes it and posts whether the goal moved.
+
 ## A parent's check
 
 A parent with a `## Check` section reads VERIFY_DUE once its holds all close (an issue with one and no sub-issue, once its own pull request merged, #1671), CHECK_FAILED after a check-failed comment, and VERIFY_CLOSED when it closed before its check ran ([triage-rubric.md](triage-rubric.md), A parent's check). Each comment below starts with its marker as the first line, posted through `--body-file`, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author. A check only reads: it runs a command or opens a URL and compares what comes back, and never writes to production.
