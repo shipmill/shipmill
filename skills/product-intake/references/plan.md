@@ -39,6 +39,7 @@ none
 - Work items are `- W-<n> <feature|fix|existing>: <text>`, numbered from W-1 in the order the work should start. `existing` names one open issue that already serves the goal (`#N` or `owner/repo#N`), never proposed a second time. `(after W-k[, W-j])` names earlier items an item depends on
 - A `feature` item states an outcome, never a design: its spec comes later, through the spec gate
 - Milestone is one line: `none`, or the title of the milestone the plan completes (D-38). Name one only when the goal reads as a version's worth of work; `none` is the default
+- A plan for a row with `follows` (spec 097) adds `Follows: #{P}` to the Goal section, on its own line right after the `Measure:` line, naming the finished plan it follows. `plans.py check` accepts one such line there and refuses any other line starting `Follows:`; a goal's first plan has none. Each line of the row's `missing` is answered: a Work item that reaches it, or a line under Notes saying why this plan leaves it out; the Order says what the last plan left missing and how this one reaches it
 
 ```bash
 uv run --no-project python <skill>/scripts/plans.py check tmp/plan-G-{n}.md
@@ -102,3 +103,30 @@ Then make it a sub-issue of the plan with github-issue-triage's `chains.py link 
 ```markdown
 Triage: **plan**: accepted and filed: W-2 #{a}, W-3 #{b}{; milestone {title}}. Triage takes them up within `[agents] wip`.
 ```
+
+## A finished plan's outcome
+
+On PLAN_DONE (spec 097), check the end state the Order names against trusted text only (D-16): the plan's body, the App's and trusted authors' comments, and the code and specs on the default branch, with how each item closed. For an open plan, close it as completed first, then post the outcome, so `intake_state.py` reads it as posted after the last close; on a plan closed already, post the outcome alone:
+
+```bash
+shipmill gh issue close {P} -R {owner/repo} --reason completed
+shipmill gh issue comment {P} -R {owner/repo} --body-file tmp/plan-{P}-outcome.md
+```
+
+```text
+<!-- shipmill:plan-outcome -->
+`@{maintainer}` The work of this plan has closed: W-1 #{a} completed, W-2 #{b} not planned.
+
+The Order said reaching the goal looks like: {the end state, quoted from the Order}
+
+Holds:
+- {a part of the end state that holds, and what shows it}
+
+Still missing:
+- {a part of the end state that doesn't hold, and why}
+```
+
+- The marker is the first line, exactly. An outcome counts only from the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR, and a trusted person's comment carrying the agent marker counts for nothing (D-29, D-62)
+- `` `@{maintainer}` `` is each login the `--role maintainer=` flag gives, in a code span: an outcome is no needs-decision question, so it names the maintainer without notifying them (D-61); without the flag the line starts at `The work`
+- `Holds:` and `Still missing:` each hold list items; a list with no part is `- nothing`. An Order that names no end state is `Still missing:` with `- the Order named no end state`. The goal's next plan reads the `Still missing:` items as its row's `missing`
+- The outcome is a report, never a decision: it changes no goal, adds no measure (D-34), never calls the goal met, and never reopens the plan or files new items on it; the next plan proposes what is missing, for the maintainer to accept or decline (D-10)
