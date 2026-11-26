@@ -4,6 +4,8 @@ gh is a Runner, its reads a Visibility capture. Names are invented: `Acme`, `exa
 
 import io
 import json
+import os
+import pwd
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -29,6 +31,7 @@ from shipmill.leaks import (
     Term,
     Text,
     Visibility,
+    account_home,
     dotenv_secrets,
     high_entropy,
     refusal,
@@ -1465,3 +1468,19 @@ def test_s081_20_a_malformed_repos_entry_refuses_every_write(tmp_path: Path, hos
     root = checkout(tmp_path, HOST_IDENTITY)
     private(host, 'repos = ["acme"]\n')
     failed(root, ["issue", "comment", "250", "--body", CLEAN], host, "repos holds an entry")
+
+
+def test_s081_16_an_account_the_password_database_does_not_resolve_is_one_line() -> None:
+    """#1673: a directory service that fails the lookup is a one-line ReleaseError naming the uid,
+    which cli.run prints after `shipmill: ` and exits 2 on, not a KeyError's traceback; $HOME is
+    never read instead"""
+
+    def unresolved(uid: int) -> pwd.struct_passwd:
+        raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+    with pytest.raises(ReleaseError) as raised:
+        account_home(unresolved)
+    message = str(raised.value)
+    assert "\n" not in message
+    assert f"uid {os.getuid()}" in message
+    assert "retry" in message
