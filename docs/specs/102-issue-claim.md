@@ -222,4 +222,9 @@ A new command (`src/shipmill/cli.py`):
 
 ## Issues
 
+- shipmill/shipmill#1701: S-102-1, S-102-2, S-102-16
+- shipmill/shipmill#1702: S-102-11, S-102-12, S-102-13, S-102-14, S-102-15
+- shipmill/shipmill#1703: S-102-3, S-102-4, S-102-5, S-102-6, S-102-7, S-102-8, S-102-9, S-102-10
+- shipmill/shipmill#1704: S-102-17
+
 ## Verification
