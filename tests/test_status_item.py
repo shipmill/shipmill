@@ -322,6 +322,25 @@ def test_s088_8_the_summary_counts_an_accepted_opportunity_on_the_agents_line() 
     assert found.issues[Holder.AGENT] == (4,) and found.issues[Holder.MAINTAINER] == (14,)
 
 
+# #1707: the watch's PLANS row names the plans intake_state.py reads PLAN_ACCEPTED, items still to file
+PLANS = Row(
+    "PLANS", REPO, "PLAN_DUE G-1; PLAN_ANSWERED #3; PLAN_ACCEPTED #8 #9", True, f"/shipmill:product-intake {REPO}"
+)
+PLAN_ACCEPTED = "triaged as plan and accepted: waits on product intake to file its items"
+PLAN_UNACCEPTED = "triaged as plan: waits on the maintainer's answer to the plan"
+
+
+def test_s088_8_an_accepted_plan_with_items_to_file_waits_on_the_agent() -> None:
+    plans = [Issue(n, "TRIAGED", verdict="plan") for n in (3, 8, 9, 10)]
+    found = facts(PLANS, issues=plans)
+    assert whos(found, 8) == whos(found, 9) == [(PLAN_ACCEPTED, Who.AGENT)]
+    assert whos(found, 10) == [(PLAN_UNACCEPTED, Who.MAINTAINER)]  # not accepted: as before
+    assert whos(found, 3) == [(PLAN_UNACCEPTED, Who.MAINTAINER)]  # answered, not accepted: as before
+    assert whos(facts(issues=plans), 8) == [(PLAN_UNACCEPTED, Who.MAINTAINER)]  # no PLANS row
+    summary = split(found, lambda _: NONE, None)
+    assert summary.issues[Holder.AGENT] == (8, 9) and summary.issues[Holder.MAINTAINER] == (3, 10)
+
+
 def test_s088_8_a_request_handed_to_intake_waits_on_intake_or_on_its_opportunity() -> None:
     """#1643: a request triaged as an opportunity is no opportunity issue itself: intake groups
     it, and once an open opportunity names it, it waits on that opportunity's answer"""
