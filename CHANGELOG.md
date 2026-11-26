@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.179.3] - 2026-11-26
+
+### Fixed
+
+- `shipmill status` now reads WAITS ON YOU for a goal plan waiting on the maintainer's answer: each plan `intake_state.py --plans` reads PLAN_OPEN, opened by the App or by an owner, member, or collaborator, is a reason naming its link with the fix `fleet.py queue` gives, "answer the goal plan", on a new goal plan line, so a repo whose only open work is such a plan no longer reads IDLE or WORKING. The watch reports these plans in a new report-only PLAN_OPEN row, never an action, an agent's row, or a tier's or the sweep's, so the gate starts no session for a plan only the maintainer answers; `intake_state.py --json`'s plan lines also name the opener's author association (#1680)
+
 ## [0.179.2] - 2026-11-26
 
 ### Fixed
@@ -3190,7 +3196,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.179.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.179.3...HEAD
+[0.179.3]: https://github.com/shipmill/shipmill/compare/v0.179.2...v0.179.3
 [0.179.2]: https://github.com/shipmill/shipmill/compare/v0.179.1...v0.179.2
 [0.179.1]: https://github.com/shipmill/shipmill/compare/v0.179.0...v0.179.1
 [0.179.0]: https://github.com/shipmill/shipmill/compare/v0.178.0...v0.179.0
