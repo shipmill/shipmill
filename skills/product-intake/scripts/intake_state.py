@@ -421,15 +421,9 @@ SPEC_SERVES = re.compile(r"^serves:(.*)$")
 NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
 SERVING_STATUSES = ("draft", "approved")
 AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
-PLAN_ACTION = {
-    "PLAN_DUE",
-    "PLAN_MALFORMED",
-    "PLAN_ANSWERED",
-    "PLAN_ACCEPTED",
-    "PLAN_DONE",
-    "PLAN_HOLD_MET",
-    "PLAN_REPLACED",  # spec 106: an older open plan of a goal, to be closed for the newer one
-}
+# PLAN_REPLACED (spec 106): an older open plan of a goal, to be closed for the newer one
+PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET"}
+PLAN_ACTION |= {"PLAN_REPLACED"}
 # PLAN_OVERDUE (spec 106): an open plan past its answer date, no action
 PLAN_ORDER = (
     "PLAN_DUE",
@@ -1960,12 +1954,14 @@ def plan_issue_rows(
                 newest=issue["number"] in newest,
                 holds=holds,
             )
-            if row is not None and int(issue["number"]) in newer:
+            if row is None:
+                continue
+            if int(issue["number"]) in newer:  # S-106-10: the newer plan of its goal replaces it
                 row = replace(row, state="PLAN_REPLACED", note=f"by #{newer[int(issue['number'])]}")
-            elif row is not None:
+            else:
                 row = dated(row, issue, now, bot_login, marker, maintainers)
-                opener = PLANS.login(issue.get("author"))
-                found.append(replace(row, author=opener, association=str(issue.get("authorAssociation") or "NONE")))
+            opener = PLANS.login(issue.get("author"))
+            found.append(replace(row, author=opener, association=str(issue.get("authorAssociation") or "NONE")))
     return found
 
 

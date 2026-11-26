@@ -687,7 +687,16 @@ INTAKE_STATE = SKILLS / "product-intake" / "scripts" / "intake_state.py"
 DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose goals a plan serves
 # intake_state.py's plan states (spec 028): the ones that make it exit 1, in its order, and the rest
 # PLAN_DONE: spec 097; PLAN_HOLD_MET (a held plan's re-check) and PLAN_HELD, no action: spec 098
-PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET")
+# PLAN_REPLACED (spec 106): an older open plan of a goal, its session closes it for the newer one
+PLAN_ACTION = (
+    "PLAN_DUE",
+    "PLAN_MALFORMED",
+    "PLAN_ANSWERED",
+    "PLAN_ACCEPTED",
+    "PLAN_DONE",
+    "PLAN_HOLD_MET",
+    "PLAN_REPLACED",
+)
 # PLAN_OVERDUE (spec 106): an open plan past its answer date, no action, still the maintainer's
 PLAN_STATES = frozenset(
     {*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_OVERDUE", "PLAN_HELD", "PLAN_FILED", "PLAN_DECLINED"}
