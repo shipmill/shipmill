@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.184.0] - 2026-11-26
+
+### Changed
+
+- `fleet.py queue` times a goal plan re-checked after its hold was met from the later of its newest revision and the hold's `met_at`, so a plan held for a month doesn't come back as the oldest item; a held plan, and one whose re-check is due, stay off the queue. product-intake's skill and the plan's triage line give the `hold until <a date, #N, or release>` answer, and the ship-watch skill's Fleet section says a held plan is no `PLAN` row until its condition is met (spec 098) (#1732)
+
 ## [0.183.0] - 2026-11-26
 
 ### Changed
@@ -3240,7 +3246,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.183.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.184.0...HEAD
+[0.184.0]: https://github.com/shipmill/shipmill/compare/v0.183.0...v0.184.0
 [0.183.0]: https://github.com/shipmill/shipmill/compare/v0.182.0...v0.183.0
 [0.182.0]: https://github.com/shipmill/shipmill/compare/v0.181.0...v0.182.0
 [0.181.0]: https://github.com/shipmill/shipmill/compare/v0.180.0...v0.181.0
