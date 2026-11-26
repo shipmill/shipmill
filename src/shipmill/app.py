@@ -157,6 +157,25 @@ READ_PERMISSIONS = (
     Permission("metadata", "Metadata", Access.READ),
 )
 
+# Spec 093: the tick's read token, over the gate's repo and the product's repos the watch reads
+# there: it reads everything a tick reads and writes nothing. Each entry is a permission of the
+# session's table at no more than its access (D-90's rule), so the App needs no new permission
+TICK_READ_PERMISSIONS = (
+    Permission("actions", "Actions", Access.READ),
+    Permission("checks", "Checks", Access.READ),
+    Permission("contents", "Contents", Access.READ),
+    Permission("discussions", "Discussions", Access.READ),
+    Permission("issues", "Issues", Access.READ),
+    Permission("pull_requests", "Pull requests", Access.READ),
+    Permission("statuses", "Commit statuses", Access.READ),
+    Permission("metadata", "Metadata", Access.READ),
+)
+# D-77: the tick's read token asks deployments read too, only where the installation grants it
+TICK_OPTIONAL_PERMISSIONS: tuple[Permission, ...] = tuple(
+    p for p in OPTIONAL_PERMISSIONS if p.key == "deployments" and p.access is Access.READ
+)
+TICK_CACHE = "app-token-tick.json"  # in the gate's state folder, beside and never the session's `app-token.json`
+
 
 # Spec 054: the token `shipmill land --app-key` pushes the protected branches with: the release
 # and sync commits, and a hotfix's cherry-picked merges, which may touch .github/workflows/
@@ -1056,6 +1075,21 @@ def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str
     """S-038-6, S-065-4, mirroring `_scope`: GitHub's answer covers exactly the asked repos and
     grants no permission broader than the kind's table (a key not asked, write where read was,
     or admin)"""
+    _covers_exactly(data, repos, path)
+    granted = data.get("permissions")
+    if not isinstance(granted, dict):
+        raise ReleaseError(f"POST {path} gave a token without its permissions; refusing it")
+    table = {p.key: p.access for p in kind.table}
+    for key, value in granted.items():
+        access = _ACCESS.get(value) if isinstance(value, str) else None
+        wanted = table.get(key) if isinstance(key, str) else None
+        if access is None or wanted is None or not wanted.covers(access) or value == "admin":
+            raise ReleaseError(f"POST {path} gave a token with {key}: {value}, broader than {kind.whose}; refusing it")
+
+
+def _covers_exactly(data: Mapping[str, object], repos: tuple[str, ...], path: str) -> None:
+    """GitHub's answer lists exactly the asked repos, case ignored; an answer without the list,
+    such as one over the whole installation, is refused"""
     listed = data.get("repositories")
     names: list[str] = []
     if isinstance(listed, list):
@@ -1067,15 +1101,6 @@ def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str
     asked = ", ".join(repos)
     if not isinstance(listed, list) or len(names) != len(repos) or not _same_repos(tuple(names), repos):
         raise ReleaseError(f"POST {path} gave a token for other repositories than {asked}; refusing it")
-    granted = data.get("permissions")
-    if not isinstance(granted, dict):
-        raise ReleaseError(f"POST {path} gave a token without its permissions; refusing it")
-    table = {p.key: p.access for p in kind.table}
-    for key, value in granted.items():
-        access = _ACCESS.get(value) if isinstance(value, str) else None
-        wanted = table.get(key) if isinstance(key, str) else None
-        if access is None or wanted is None or not wanted.covers(access) or value == "admin":
-            raise ReleaseError(f"POST {path} gave a token with {key}: {value}, broader than {kind.whose}; refusing it")
 
 
 def mint_product(
@@ -1148,6 +1173,53 @@ def mint_read(
     """Spec 065: one installation token over repos, all of one owner, asking READ_PERMISSIONS;
     refused, never returned, when GitHub's answer covers other repos or grants more (S-065-4)"""
     return mint_product(app_id, repos, key, now, signer, api, _READ)
+
+
+class OtherOwner(ReleaseError):
+    """Spec 093: the product names a repo of another owner than the gate's repo, so no one
+    installation token covers what the tick reads; the message is the tick's `why`"""
+
+    def __init__(self, repo: str) -> None:
+        super().__init__(f"the product lists {repo} of another owner")
+        self.repo = repo
+
+
+def mint_tick(
+    app_id: int, repos: tuple[str, ...], key: Path, now: dt.datetime, signer: Signer, api: Api
+) -> ProductToken:
+    """Spec 093, S-093-4: one installation token over repos, the gate's repo first and all of its
+    owner, asking exactly TICK_READ_PERMISSIONS, plus deployments read where the installation
+    grants it (D-77). GitHub's answer must list exactly the asked repos (an answer over the
+    whole installation lists none, and a `repository_selection` but "selected" is refused too)
+    and grant nothing beyond what was asked, else the token is refused, never returned"""
+    if not repos or not all(is_plain_repo(r) for r in repos):
+        raise ReleaseError(f"the tick's read token covers owner/name repos; got {', '.join(repos) or 'none'}")
+    owner = repos[0].partition("/")[0].lower()
+    for repo in repos:
+        if repo.partition("/")[0].lower() != owner:
+            raise OtherOwner(repo)
+    bearer = jwt(app_id, check_key(key), now, signer)
+    slug = app_slug(app_id, bearer, api)
+    found = [installed(app_id, slug, repo, bearer, api, TICK_READ_PERMISSIONS) for repo in repos]
+    ids = {each.id for each in found}
+    if len(ids) != 1:
+        raise ReleaseError(f"app {slug} has more than one installation over {', '.join(repos)}; refusing the token")
+    path = f"/app/installations/{ids.pop()}/access_tokens"
+    asked = TICK_READ_PERMISSIONS + found[0].grants(TICK_OPTIONAL_PERMISSIONS)
+    body = {"repositories": [repo_name(r) for r in repos], "permissions": {p.key: str(p.access) for p in asked}}
+    data = _ok(api.post(path, bearer, body), path, app_id, "POST", 201)
+    value = data.get("token")
+    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+        raise ReleaseError(f"POST {path} gave no token")
+    expires = _expiry(data.get("expires_at"))
+    if expires is None:
+        raise ReleaseError(f"POST {path} gave no expires_at with an offset")
+    selection = data.get("repository_selection", "selected")
+    if selection != "selected":
+        raise ReleaseError(f"POST {path} gave a token over repository_selection {selection!r}; refusing it")
+    _covers_exactly(data, repos, path)
+    _no_broader(data, asked, path)
+    return ProductToken(value, expires, repos, app_id)
 
 
 @dataclass(frozen=True, slots=True)
