@@ -43,7 +43,7 @@ class LinkedFake(SummaryFake):
             self.seen.append(cmd)
             lines = [
                 {"number": 2, "state": "IN_PROGRESS", "title": "t", "note": "#9:open", "verdict": None},
-                {"number": 4, "state": "TRIAGED", "title": "t", "note": "", "verdict": "opportunity"},
+                {"number": 4, "state": "TRIAGED", "title": "t", "note": "", "verdict": "opportunity", "proposal": True},
             ]
             return subprocess.CompletedProcess(cmd, 0, "".join(json.dumps(line) + "\n" for line in lines), "")
         if cmd[:3] == ["gh", "api", "repos/acme/web/issues/2"]:
@@ -215,7 +215,7 @@ def test_s094_5_a_parent_moving_through_its_children_counts_by_its_own_condition
 
 def test_s094_6_opportunities_and_plans_are_marked_to_accept() -> None:
     issues = [
-        Issue(1, "TRIAGED", verdict="opportunity"),
+        Issue(1, "TRIAGED", verdict="opportunity", proposal=True),
         Issue(2, "TRIAGED", verdict="plan"),
         Issue(3, "TRIAGED", verdict="feature"),
         Issue(4, "NEEDS_DECISION"),
@@ -235,7 +235,7 @@ def test_s094_7_the_text_names_each_item_under_its_holder(tmp_path: Path, capsys
     assert out.splitlines() == [
         f"{REPO}: 1 open issue, 1 pull request",
         "  waits on you",
-        "    #4 issue: triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
+        "    #4 issue: triaged as opportunity: waits on the maintainer to accept or decline it"
         " (clears: accept or decline the opportunity)",
         "  agent takes it",
         "    #9 pull: check check failed (clears: a session fixes the cause or reruns a flake)",
@@ -594,3 +594,125 @@ def test_s094_16_item_json_carries_the_queues_parent_and_blocks(
             k: v for k, v in summary[number].items() if k != "number"
         }
     assert summary[4]["parent"] == f"{REPO}#7" and len(summary[4]["blocks"]) == 3
+
+
+# #1643: #1 an opportunity issue (labelled opportunity), #2 a request handed to intake that no
+# opportunity names yet, #3 a request #1's body names, #5 a plan issue (labelled goal-plan)
+INTAKE = "triaged as opportunity: waits for product intake to group it"
+GROUPED = "triaged as opportunity: grouped into #1, which waits on the maintainer's answer"
+
+
+# proves: S-094-6
+def test_s094_6_a_request_waits_on_intake_or_its_opportunity_not_on_the_maintainer() -> None:
+    issues = [
+        Issue(1, "TRIAGED", verdict="opportunity", proposal=True),
+        Issue(2, "TRIAGED", verdict="opportunity"),
+        Issue(3, "TRIAGED", verdict="opportunity", grouped=(1,)),
+        Issue(5, "TRIAGED", verdict="plan", proposal=True),
+    ]
+    got = records(facts(issues=issues))
+    assert [(got[n].accept, got[n].holder) for n in (1, 5)] == [
+        ("opportunity", Holder.MAINTAINER),
+        ("plan", Holder.MAINTAINER),
+    ]
+    assert (got[2].accept, got[2].holder, got[2].via, got[2].waits_on) == (None, Holder.AGENT, None, ())
+    assert (got[2].why, got[2].clears) == (INTAKE, "a product intake pass groups it")
+    assert (got[3].accept, got[3].holder, got[3].via) == (None, Holder.NOBODY, None)  # counted once, through #1
+    assert got[3].waits_on == (f"{REPO}#1",) and got[3].why == GROUPED
+    assert got[3].clears.startswith("#1 accepted or declined; ")
+    assert split(facts(issues=issues), lambda _: NONE, None).issues[SummaryHolder.MAINTAINER] == (1, 5)
+
+
+class IntakeFake(SummaryFake):
+    """SummaryFake's picture with #4 an opportunity issue, #2 a request no opportunity names,
+    and #3 one #4 names"""
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[1].endswith("triage_state.py"):
+            self.seen.append(cmd)
+            triaged = {"state": "TRIAGED", "title": "t", "note": "", "verdict": "opportunity"}
+            lines = [
+                {"number": 2, **triaged},
+                {"number": 3, **triaged, "grouped": [4]},
+                {"number": 4, **triaged, "proposal": True},
+            ]
+            return subprocess.CompletedProcess(cmd, 0, "".join(json.dumps(line) + "\n" for line in lines), "")
+        if cmd[:2] == ["gh", "api"] and cmd[2] in ("repos/acme/web/issues/2", "repos/acme/web/issues/3"):
+            self.seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "open\n", "")
+        return super().__call__(cmd)
+
+
+# proves: S-094-6, S-094-8, S-094-13
+def test_s094_6_queue_item_and_summary_agree_on_a_request_handed_to_intake(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    main(["--repo", str(root), "queue", "--json"], state=IntakeFake(), login=host)
+    found = json.loads(capsys.readouterr().out)
+    queued = {i["number"]: i for i in found["items"]}
+    assert found["split"]["maintainer"]["issues"] == [4]
+    assert found["split"]["agent"]["issues"] == [2] and found["split"]["nobody"]["issues"] == [3]
+    assert [queued[n]["accept"] for n in (2, 3, 4)] == [None, None, "opportunity"]
+    assert queued[3]["waits_on"] == [f"{REPO}#4"] and queued[3]["via"] is None
+    for number in (2, 3, 4):
+        main(["--repo", str(root), "status", "--item", str(number), "--json"], state=IntakeFake(), login=host)
+        item = json.loads(capsys.readouterr().out)
+        assert {k: item[k] for k in queued[number] if k != "number"} == {
+            k: v for k, v in queued[number].items() if k != "number"
+        }
+    main(["--repo", str(root), "status", "--summary", "--json"], state=IntakeFake(), login=host)
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["split"]["maintainer"]["issues"] == [4]
+    assert 2 in summary["split"]["agent"]["issues"] and 3 in summary["split"]["nobody"]["issues"]
+
+
+def test_s094_6_a_proposal_or_grouped_triage_state_doesnt_write_is_refused() -> None:
+    line: dict[str, object] = {"number": 4, "state": "TRIAGED", "title": "t", "note": "", "verdict": "opportunity"}
+    assert parse_issues(json.dumps(line | {"proposal": True}))[0].proposal is True
+    assert parse_issues(json.dumps(line | {"grouped": [7, 9]}))[0].grouped == (7, 9)
+    assert parse_issues(json.dumps(line | {"verdict": "plan", "proposal": True}))[0].proposal is True
+    plain = parse_issues(json.dumps(line))[0]
+    assert (plain.proposal, plain.grouped) == (False, ())
+    malformed: tuple[dict[str, object], ...] = (
+        {"proposal": False},
+        {"proposal": "yes"},
+        {"verdict": "feature", "proposal": True},
+        {"grouped": []},
+        {"grouped": [0]},
+        {"grouped": ["#7"]},
+        {"grouped": [True]},
+        {"grouped": 7},
+        {"verdict": "plan", "grouped": [7]},
+        {"proposal": True, "grouped": [7]},
+    )
+    for bad in malformed:
+        with pytest.raises(ReleaseError, match="proposal|grouped"):
+            parse_issues(json.dumps(line | bad))
+
+
+# proves: S-094-6
+def test_s094_6_triage_state_marks_proposals_and_the_requests_an_opportunity_names(tmp_path: Path) -> None:
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    gh = fakes / "gh"
+    gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
+    gh.chmod(0o700)
+    said = [{"body": "Triage: **opportunity**. A new capability.", "createdAt": "2026-11-01T10:00:00Z"}]
+    opportunity = open_issue(10, said, labels=("opportunity",))
+    opportunity["body"] = "## Evidence\n\n- #11\n- O/R#12\n- https://github.com/o/r/issues/13\n- other/x#14\n- #10"
+    plan = open_issue(16, [{"body": "Triage: **plan**.", "createdAt": "2026-11-01T10:00:00Z"}], labels=("goal-plan",))
+    requests = [open_issue(n, said) for n in (11, 12, 13, 14, 15)]
+    data = tmp_path / "gh.json"
+    data.write_text(json.dumps({"data": {"repository": first_page([opportunity, plan, *requests])}}), encoding="utf-8")
+    env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "FAKE_GH_DATA": str(data)}
+    proc = subprocess.run(
+        [sys.executable, str(TRIAGE_STATE), "o/r", "--json"], capture_output=True, text=True, check=False, env=env
+    )
+    lines = {r["number"]: r for r in map(json.loads, proc.stdout.splitlines()) if r.get("state") == "TRIAGED"}
+    assert sorted(lines) == [10, 11, 12, 13, 14, 15, 16], proc.stderr
+    assert lines[10].get("proposal") is True and "grouped" not in lines[10]  # never grouped into itself
+    assert lines[16].get("proposal") is True and lines[16]["verdict"] == "plan"
+    assert [lines[n].get("grouped") for n in (11, 12, 13)] == [[10], [10], [10]]
+    assert "grouped" not in lines[14] and "grouped" not in lines[15]  # another repo's #14 is not o/r#14
+    assert not any("proposal" in lines[n] for n in (11, 12, 13, 14, 15))
