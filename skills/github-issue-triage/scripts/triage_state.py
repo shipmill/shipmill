@@ -462,7 +462,10 @@ NATIVE_FIELDS = ("blockedBy", "subIssues")
 NATIVE_NODES = (
     "pageInfo { hasNextPage endCursor } nodes { number state stateReason closedAt repository { nameWithOwner } }"
 )
-NATIVE = "".join(f"\n        {field}(first: 50) {{ {NATIVE_NODES} }}" for field in NATIVE_FIELDS)
+# A sub-issue's title and body tell a project's check issue (spec 106): the head is held without one
+SUB_NODES = NATIVE_NODES.replace("nodes { number", "nodes { number title body", 1)
+FIELD_NODES = {"blockedBy": NATIVE_NODES, "subIssues": SUB_NODES}
+NATIVE = "".join(f"\n        {field}(first: 50) {{ {FIELD_NODES[field]} }}" for field in NATIVE_FIELDS)
 # A build issue's feature issue is its sub-issue parent, whose milestone it should share; a
 # person's item reads STALE_HANDOFF once its parent closed (#1313), from the same field
 # (spec 022): one field of the same query, never a call per issue
@@ -566,7 +569,7 @@ query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: Stri
       """
         + field
         + "(first: $size, after: $cursor) { "
-        + NATIVE_NODES
+        + FIELD_NODES[field]
         + """ }
     }
   }
@@ -2475,6 +2478,7 @@ def classify_open(
     revisits: Revisits | None = None,
     window: str | None = None,
     issues: Container[Ref] = frozenset(),
+    project: str | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``issues`` are the holds read as issues,
     the only ones HOLD_UNLINKED names (#1645); ``closes`` says when each closed hold
@@ -2490,10 +2494,13 @@ def classify_open(
     issue reads REVISIT on every stable tag, as one without the line does. ``window``, a build
     issue's hold by its spec's approval at notify (veto_windows, spec 067), reads BLOCKED, its
     note first, whether triaged or not; without it the issue reads as before. A person's item
-    whose sub-issue parent closed reads STALE_HANDOFF before any of these (stale_handoff, #1313)"""
+    whose sub-issue parent closed reads STALE_HANDOFF before any of these (stale_handoff, #1313).
+    ``project``, the issue's note in held_projects, reads BLOCKED with it after that (spec 106)"""
     stale = stale_handoff(issue, bot_login)
     if stale is not None:
         return stale
+    if project is not None:  # S-106-16: a held project is not split into issues
+        return "BLOCKED", project
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -3049,6 +3056,70 @@ def person_state(
     return "WITH_PERSON", f"with {who} since {comments[newest]['createdAt']}"
 
 
+PROJECT_LABEL = "project"
+PROJECT_HELD_LABEL = "held"
+CHECK_TITLE = "Check: "
+CHECK_SECTION = re.compile(r"^##[ \t]+Check[ \t]*$", re.MULTILINE)
+
+
+def node_labels(node: dict[str, Any]) -> set[str]:
+    return {n["name"] for n in ((node.get("labels") or {}).get("nodes") or [])}
+
+
+def is_check(node: dict[str, Any]) -> bool:
+    """spec 042's check issue, as intake_state.py reads a project's: a title starting `Check: `
+    and a `## Check` section"""
+    titled = str(node.get("title") or "").startswith(CHECK_TITLE)
+    return titled and CHECK_SECTION.search(node.get("body") or "") is not None
+
+
+def held_head(node: dict[str, Any]) -> bool:
+    """S-106-16: a project's head reading held, as intake_state.py --projects reads it: labelled
+    project, and labelled held or with no check issue among its sub-issues (every page read by
+    then). Read without sub-issues (a forge that refused them), a head unlabelled held reads as
+    any parent: no check issue can be told there"""
+    names = node_labels(node)
+    if PROJECT_LABEL not in names:
+        return False
+    if PROJECT_HELD_LABEL in names:
+        return True
+    subs = node.get("subIssues")
+    return subs is not None and not any(is_check(sub) for sub in subs.get("nodes") or [])
+
+
+def held_projects(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dict[int, str]:
+    """S-106-16: the note `project #<head> held` for each open held head of the repo, each of
+    its open sub-issues, and each open sub-issue of a check issue under a head labelled held
+    (the parts two levels deep), read from the open issues' own sub-issues, so the query reads
+    no parent's; every other issue reads as any parent does. The labels aren't checked for
+    their author: a hold only stops work, and only someone with write access makes an issue
+    another's sub-issue"""
+    here = f"{repo[0]}/{repo[1]}".lower()
+    by_number = {int(i["number"]): i for i in issues}
+
+    def own_open(node: dict[str, Any]) -> bool:
+        where = str((node.get("repository") or {}).get("nameWithOwner") or here).lower()
+        return where == here and node.get("state") == "OPEN"
+
+    found: dict[int, str] = {}
+    for issue in issues:
+        if not held_head(issue):
+            continue
+        note = f"project #{issue['number']} held"
+        found[int(issue["number"])] = note
+        labelled = PROJECT_HELD_LABEL in node_labels(issue)
+        for sub in (issue.get("subIssues") or {}).get("nodes") or []:
+            if not own_open(sub):
+                continue
+            found.setdefault(int(sub["number"]), note)
+            check = by_number.get(int(sub["number"]))
+            if labelled and check is not None and is_check(sub):
+                for part in (check.get("subIssues") or {}).get("nodes") or []:
+                    if own_open(part):
+                        found.setdefault(int(part["number"]), note)
+    return found
+
+
 def stale_handoff(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
     """STALE_HANDOFF (#1313): an open person's item (labelled human or role:<name>) whose
     sub-issue parent, in any repo, is closed, its note "parent owner/repo#N closed": the work
@@ -3591,6 +3662,7 @@ def main() -> int:
     # Spec 067: the build issues of a spec approved at notify wait out its veto window
     windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql, maintainers=maintainers)
     grouped = grouped_in(issues, (owner, name))  # #1643: the requests open opportunities name
+    held = held_projects(issues, (owner, name))  # spec 106: a held project's issues wait
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(
@@ -3608,6 +3680,7 @@ def main() -> int:
             revisits=revisits,
             window=windows.get(issue["number"]),
             issues=read_issues | frozenset(native),
+            project=held.get(issue["number"]),
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before
