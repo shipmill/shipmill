@@ -291,9 +291,13 @@ Intake (github-issue-triage's triage_state.py):
   FEEDBACK_DUE    from the same run: `NEW_FEEDBACK #N ...`, the requests triage handed to
                   intake (their "handed" not null) at least FEEDBACK_AFTER (24 hours) before
                   the read, oldest hand-off first; one intake pass groups them all. A request
-                  handed over later, one triage never handed over, and a discussion are in
-                  no row. Under [autonomy] intake = "observe" (intake_state.py's autonomy
-                  line) it is report-only: the full report prints it, and no --tier or
+                  handed over later, one triage never handed over, a discussion, and a
+                  request intake reads HELD (waiting for room under [agents] outcomes, spec
+                  101) are in no row; a held one reading NEW_FEEDBACK again keeps its hand-off
+                  time. The autonomy line may carry the product's "outcomes" (spec 101),
+                  checked and otherwise unused. Under [autonomy] intake = "observe"
+                  (intake_state.py's autonomy line) it is report-only: the full report
+                  prints it, and no --tier or
                   --sweep read does; under propose it is an agent's row. With --trusted-only,
                   a request or opportunity whose opener is neither an OWNER, MEMBER, or
                   COLLABORATOR nor the --bot-login is in neither row and in UNTRUSTED (D-16).
@@ -4350,14 +4354,27 @@ class Feedback:
     untrusted: frozenset[int]  # with trusted_only, the outsiders' requests and opportunities
 
 
+def intake_outcomes(value: object) -> bool:
+    """Whether the autonomy line's outcomes (spec 101) is well formed: a limit of at least 1,
+    the in-flight count, and the room, N - K never below 0"""
+    if not isinstance(value, dict) or set(value) != {"limit", "in_flight", "room"}:
+        return False
+    if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value.values()):
+        return False
+    return bool(value["limit"] >= 1 and value["room"] == max(value["limit"] - value["in_flight"], 0))
+
+
 def intake_level(text: str) -> str:
-    """The [autonomy] intake level from the autonomy line intake_state.py --json prints first"""
+    """The [autonomy] intake level from the autonomy line intake_state.py --json prints first,
+    with the product's outcomes in flight when [agents] outcomes is set (spec 101)"""
     first = text.splitlines()[0] if text else ""
     try:
         line = json.loads(first)
     except json.JSONDecodeError:
         line = None
-    level = line.get("autonomy") if isinstance(line, dict) and set(line) == {"autonomy"} else None
+    keys = set(line) if isinstance(line, dict) else set()
+    well_formed = keys == {"autonomy"} or (keys == {"autonomy", "outcomes"} and intake_outcomes(line["outcomes"]))
+    level = line.get("autonomy") if isinstance(line, dict) and well_formed else None
     if level not in INTAKE_LEVELS:
         raise Refused(f"error: intake_state.py printed {first[:200]!r} first, not its autonomy line")
     return str(level)
@@ -4365,7 +4382,8 @@ def intake_level(text: str) -> str:
 
 def feedback_line(line: str) -> dict[str, Any] | None:
     """One of intake_state.py's --json lines when it is a NEW_FEEDBACK or ACCEPTED row,
-    checked; None for the autonomy line, the other feedback states, and the plan rows"""
+    checked; None for the autonomy line, the other feedback states (HELD among them, a request
+    waiting for room under [agents] outcomes, spec 101), and the plan rows"""
     try:
         row = json.loads(line)
     except json.JSONDecodeError as exc:
