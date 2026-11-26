@@ -115,8 +115,10 @@ def test_s091_2_the_gate_line_names_tick_session_result_and_landed(tmp_path: Pat
     write_tick(state, "LAUNCH")
     save_launch(state / RECORD, Launch("fp", "abcdef1234", NOW, item="NEW #774"))
     assert read_gate_state(state, True, landed).text(NOW).startswith("LAUNCH 4 min ago: session abcdef12 on NEW #774;")
-    write_tick(state, "SESSION_DEAD")
-    assert read_gate_state(state, True, landed).running is not None
+    write_tick(state, "SESSION_DEAD")  # #1668: a reason that names no dead session pairs none
+    unnamed = read_gate_state(state, True, landed)
+    assert unnamed.text(NOW).startswith(f"unread {TICK}: SESSION_DEAD names no dead session")
+    assert unnamed.running is None and unnamed.dead is None
     write_tick(state, "QUIET")
     assert "QUIET 4 min ago: no session runs;" in read_gate_state(state, True, landed).text(NOW)
 
@@ -275,6 +277,7 @@ def test_s091_8_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixture
         "tick_error": None,
         "running": None,
         "running_error": None,
+        "dead": None,
         "result": None,
         "result_error": None,
         "landed": {"number": 8, "at": "2026-11-25T11:00:00+00:00"},
