@@ -296,4 +296,13 @@ idle questions reach it as any needs-decision item does.
 
 ## Issues
 
+- shipmill/shipmill#1736: S-106-1, S-106-2, S-106-3, S-106-20
+- shipmill/shipmill#1737: S-106-4, S-106-5, S-106-6
+- shipmill/shipmill#1738: S-106-7, S-106-8
+- shipmill/shipmill#1739: S-106-11, S-106-12, S-106-13, S-106-28
+- shipmill/shipmill#1740: S-106-9, S-106-14, S-106-15
+- shipmill/shipmill#1741: S-106-16, S-106-17, S-106-18, S-106-19, S-106-21
+- shipmill/shipmill#1742: S-106-10, S-106-22, S-106-23, S-106-24
+- shipmill/shipmill#1743: S-106-25, S-106-26, S-106-27
+
 ## Verification

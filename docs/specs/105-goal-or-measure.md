@@ -166,4 +166,8 @@ section's lines for each kind, and `docs/flow.md` says a measure is planned only
 
 ## Issues
 
+- shipmill/shipmill#1726: S-105-1, S-105-2, S-105-3, S-105-4, S-105-5
+- shipmill/shipmill#1730: S-105-6, S-105-7, S-105-8
+- shipmill/shipmill#1731: S-105-9, S-105-10, S-105-11
+
 ## Verification

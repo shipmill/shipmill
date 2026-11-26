@@ -157,4 +157,8 @@ agent keys, and `docs/flow.md` gives a held request its state and what clears it
 
 ## Issues
 
+- shipmill/shipmill#1727: S-101-1, S-101-2
+- shipmill/shipmill#1728: S-101-3, S-101-4, S-101-5, S-101-10
+- shipmill/shipmill#1733: S-101-6, S-101-7, S-101-8, S-101-9, S-101-11
+
 ## Verification
