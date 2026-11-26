@@ -4,9 +4,14 @@ the network"""
 
 import datetime as dt
 import json
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
+from .test_fleet_queue import FakeGh, intake_line, load_script, run_queue
+from .test_fleet_queue_plan_hold import plan_item
 from .test_intake_plans import BOT, MAINTAINERS, comment, ist, open_plan, owner, relay
 from .test_watch_plans import WATCH_STATE, load
 
@@ -65,8 +70,10 @@ def test_s106_7_a_trusted_answer_by_reply_sets_the_date_and_answers_nothing(ist:
     # a relay naming a maintainer counts (D-68)
     relayed = read(ist, open_plan(20, relay("answer by 2026-11-01", 10)), on("2026-10-20"), maintainers=MAINTAINERS)
     assert relayed.answer_by == "2026-11-01"
-    # it is no answer: an accept before it still counts, and none after it is read as one
-    assert read(ist, open_plan(20, owner("answer by 2026-10-30", 10)), on("2026-10-02")).state == "PLAN_OPEN"
+    # it is no answer: an accept before it still counts, and so does one after it
+    before = read(ist, open_plan(20, owner("accept", 10), owner("answer by 2026-10-30", 11)), on("2026-10-02"))
+    after = read(ist, open_plan(20, owner("answer by 2026-10-30", 10), owner("accept", 11)), on("2026-10-02"))
+    assert before.state == after.state == "PLAN_FILED"
 
 
 def test_s106_7_an_untrusted_answer_by_changes_nothing(ist: ModuleType) -> None:
@@ -112,3 +119,13 @@ def test_s106_8_the_watch_reads_an_overdue_plan_as_waiting_on_the_maintainer() -
     asked = {**line, "state": "PLAN_OPEN", "note": f"unclear accept asked; answer by {DUE}"}
     asked_text = "\n".join([json.dumps({"autonomy": "propose"}), json.dumps(asked)]) + "\n"
     assert ws.plans_waiting(asked_text, "o/r", BOT) == []  # its question is NEEDS_DECISION's
+
+
+def test_s106_8_the_queue_still_lists_an_overdue_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """fleet.py queue lists a PLAN_OVERDUE plan as a PLAN row, as it did while it read PLAN_OPEN;
+    its overdue look is #1743's (S-106-26)"""
+    queue = load_script("fleet")
+    lines = [{"autonomy": "propose"}, intake_line(32, "PLAN_OVERDUE", "plan")]
+    github = {"o/r": {32: plan_item(32, 9)}}
+    code, out = run_queue(queue, tmp_path, capsys, FakeGh(intake={"o/r": lines}, github=github), "--bot-login", BOT)
+    assert code == 1 and out.splitlines() == ["o/r PLAN          #32    answer the goal plan: Plan 32 (9d 0h)"]
