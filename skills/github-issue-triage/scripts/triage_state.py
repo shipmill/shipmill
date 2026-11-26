@@ -988,6 +988,10 @@ LINE_CLOSER = re.compile(rf"^\s*(?:[-*]\s*)?{KEYWORDS}:?\s+#(\d+)\b", re.IGNOREC
 TITLE_CLOSER = re.compile(rf"\b{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`+[^`]*`+")
 FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
+# A PR's "Part of #N", read by the same rule (#1678): a mid-line, backticked, or fenced one links nothing
+PART_OF = r"part of:?\s+#(\d+)\b"
+LINE_PART_OF = re.compile(rf"^\s*(?:[-*]\s*)?{PART_OF}", re.IGNORECASE)
+TITLE_PART_OF = re.compile(rf"\b{PART_OF}", re.IGNORECASE)
 
 
 def graphql_cmd(query: str, variables: Variables) -> list[str]:
@@ -1512,28 +1516,41 @@ def veto_windows(
     return {n: " | ".join(holds[path]) for n, path in builds.items() if path is not None and path in holds}
 
 
-def keyword_closes(title: str, body: str) -> set[int]:
-    """The issue numbers a PR's closing keywords name: one in the title outside code spans, or
-    one starting a line of the body (after an optional list bullet) outside a code fence. A
-    keyword quoted mid-line, in backticks, or in a fence names nothing (#368, #416)"""
-    found = {int(n) for n in TITLE_CLOSER.findall(CODE_SPAN.sub("", title))}
+def named_refs(title: str, body: str, in_title: re.Pattern[str], on_line: re.Pattern[str]) -> set[int]:
+    """The issue numbers a PR's title names outside code spans by ``in_title``, and its body
+    names by ``on_line`` on a line outside a code fence"""
+    found = {int(n) for n in in_title.findall(CODE_SPAN.sub("", title))}
     fenced = False
     for line in body.splitlines():
         if FENCE.match(line):
             fenced = not fenced
         elif not fenced:
-            found |= {int(n) for n in LINE_CLOSER.findall(line)}
+            found |= {int(n) for n in on_line.findall(line)}
     return found
 
 
+def keyword_closes(title: str, body: str) -> set[int]:
+    """The issue numbers a PR's closing keywords name: one in the title outside code spans, or
+    one starting a line of the body (after an optional list bullet) outside a code fence. A
+    keyword quoted mid-line, in backticks, or in a fence names nothing (#368, #416)"""
+    return named_refs(title, body, TITLE_CLOSER, LINE_CLOSER)
+
+
+def part_of(title: str, body: str) -> set[int]:
+    """The issue numbers a PR names as "Part of #N" by keyword_closes' rule: in the title outside
+    code spans, or starting a line of the body (after an optional list bullet) outside a code
+    fence. One quoted mid-line, in backticks, or in a fence names nothing (#1678)"""
+    return named_refs(title, body, TITLE_PART_OF, LINE_PART_OF)
+
+
 def closes(pr: dict[str, Any], number: int, *, partial: bool = False) -> bool:
-    """A closing keyword naming the issue by keyword_closes' rule (or, with ``partial``,
-    "Part of #N" anywhere in the PR's title or body, for a PR covering part of the issue);
+    """A closing keyword naming the issue by keyword_closes' rule (or, with ``partial``, a
+    "Part of #N" naming it by the same rule, part_of, for a PR covering part of the issue);
     GitHub's own willCloseTarget misses some"""
     title, body = pr.get("title") or "", pr.get("body") or ""
     if number in keyword_closes(title, body):
         return True
-    return partial and re.search(rf"\bpart of:?\s+#{number}\b", f"{title}\n{body}", re.IGNORECASE) is not None
+    return partial and number in part_of(title, body)
 
 
 def linked_prs(issue: dict[str, Any]) -> list[tuple[int, str, bool]]:
