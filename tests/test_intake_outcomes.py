@@ -190,7 +190,10 @@ def test_s101_4_every_open_opportunity_counts_once(tmp_path: Path) -> None:
     assert [json.loads(r)["number"] for r in rows] == [11, 2, 10, 12, 14, 13, 15]
     text = checkout.run()
     assert text.stdout.splitlines()[:2] == ["intake autonomy: propose", "outcomes in flight: 3 of 3 (product o/r)"]
-    assert text.stdout.splitlines()[2:] == BEFORE_TEXT.splitlines()[1:]
+    # at room 0 the held request #2 reads HELD (S-101-6); every other row is as before
+    held = "#2     HELD             Issue 2  [+1 0; held since 2026-11-24]"
+    before = BEFORE_TEXT.splitlines()[1:]
+    assert text.stdout.splitlines()[2:] == [held if line.startswith("#2 ") else line for line in before]
     assert checkout.product_calls() == []  # a lone repo counts what it read already
 
 

@@ -64,6 +64,17 @@ naming the step and the repo. The text output's second line is then `outcomes in
 of N (product <owner/home>)`, and --json's first line gains "outcomes": {"limit": N,
 "in_flight": K, "room": R}, R being N - K and never below 0. Without the key nothing is
 counted and both outputs are as before (a component still reads its home's config to know).
+With the key, a request issue is held when its newest comment whose first line is
+<!-- shipmill:intake-held --> carries the agent marker (D-62), is by the --bot-login or an
+OWNER, MEMBER, or COLLABORATOR (D-16), and is newer than its newest trusted triage comment:
+  HELD              a held request while the room is 0, noted `held since <date>` (the held
+                    comment's, UTC); no action, so it never sets exit 1
+A held request reads NEW_FEEDBACK noted `held since <date>` once the room is above 0, and
+NEW_FEEDBACK noted `asked by name`, whatever the room, when a reply newer than the held
+comment has the first line `propose` (any case, an optional final period), by an OWNER,
+MEMBER, or COLLABORATOR other than the --bot-login, with no agent marker. NEW_FEEDBACK and
+HELD rows print held requests first, oldest held comment first, then the rest as before. A
+discussion is never held: its comments aren't read.
 A component whose home's config can't be read (no read token, a home that doesn't list it, no
 config on its default branch) has no limit either: output and exit code are as before, with
 one `note:` line on stderr naming the failed read and the home.
@@ -214,7 +225,7 @@ tag's time, null while not met} (spec 098); no other row has it.
 
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
 OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, PLAN_HOLD_MET, or PLAN_MALFORMED
-(PLAN_HELD is no action), 2 on bad input (an
+(PLAN_HELD and HELD are no action), 2 on bad input (an
 issue with more than 100 labels, a malformed config or goals, an existing item naming no
 issue) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
 Python 3.10+, standard library only.
@@ -273,12 +284,15 @@ SKIP_CATEGORIES = ("Announcements",)
 CLOSING_VERDICTS = ("implement", "feature", "duplicate", "won't fix", "won’t fix", "wont fix", "postpone")
 OWN_VERDICT = "opportunity"  # intake's triage comment on an opportunity it opens
 REASON_WINDOW = dt.timedelta(hours=1)  # "close with comment" posts the comment just before the close
-ACTION = {"NEW_FEEDBACK", "ACCEPTED", "NO_REASON", "OVERLAP"}
+ACTION = {"NEW_FEEDBACK", "ACCEPTED", "NO_REASON", "OVERLAP"}  # HELD is no action (spec 101)
+HELD_MARKER = "<!-- shipmill:intake-held -->"  # spec 101: the first line of intake's held comment
+PROPOSE = re.compile(r"^propose\.?$", re.IGNORECASE)  # spec 101: the maintainer asks for a held outcome by name
 ORDER = (
     "OVERLAP",
     "NO_REASON",
     "ACCEPTED",
     "NEW_FEEDBACK",
+    "HELD",
     "OPPORTUNITY_OPEN",
     "HANDED_OFF",
     "DECLINED",
@@ -794,6 +808,52 @@ class Item:
     author: str | None = None
     association: str | None = None
     handed: str | None = None
+    # spec 101: the createdAt of the request's newest held comment newer than its newest
+    # trusted triage comment, None without one; and whether a trusted `propose` reply is newer
+    held: str | None = None
+    asked: bool = False
+
+
+def held_comment(issue: dict[str, Any], marker: str, bot_login: str | None) -> dict[str, Any] | None:
+    """The request's newest held comment (spec 101): first line the held marker, the agent
+    marker in its body (D-62), by the --bot-login or an OWNER, MEMBER, or COLLABORATOR (D-16),
+    and newer than the newest trusted triage comment; None without one"""
+    triage = trusted_triage(issue, marker, bot_login)
+    since = None if triage is None else timestamp(triage["createdAt"])
+    for comment in reversed(issue["comments"]["nodes"]):
+        body = comment.get("body")
+        if not isinstance(body, str) or PLANS.first_line(body) != HELD_MARKER:
+            continue
+        if not AGENT_MARKER.search(body) or not PLANS.trusted(comment, bot_login):
+            continue
+        if since is not None and timestamp(comment["createdAt"]) <= since:
+            return None
+        found: dict[str, Any] = comment
+        return found
+    return None
+
+
+def asked_by_name(issue: dict[str, Any], held: dict[str, Any], bot_login: str | None) -> bool:
+    """A reply newer than the held comment whose first line is `propose` (any case, an optional
+    final period), from an OWNER, MEMBER, or COLLABORATOR other than the --bot-login, with no
+    agent marker (spec 101). A reply whose author or body can't be read is an agent's (D-62)"""
+    since = timestamp(held["createdAt"])
+    for comment in issue["comments"]["nodes"]:
+        body, author = comment.get("body"), comment.get("author")
+        if not isinstance(body, str) or not author or timestamp(comment["createdAt"]) <= since:
+            continue
+        if str(comment.get("authorAssociation") or "NONE") not in PLANS.TRUSTED or AGENT_MARKER.search(body):
+            continue
+        if bot_login is not None and PLANS.login(author).lower() == bot_login.lower():
+            continue
+        if PROPOSE.match(PLANS.first_line(body)):
+            return True
+    return False
+
+
+def held_date(created: str) -> str:
+    """A held comment's date, YYYY-MM-DD in UTC"""
+    return timestamp(created).astimezone(UTC).date().isoformat()
 
 
 @dataclass
@@ -828,20 +888,25 @@ def fetch(
     for issue in opened + opps:
         complete_comments(run, owner, name, issue, marker, bot_login)
     thumbs = {i["number"]: i["reactions"]["totalCount"] for i in opened + opps}
-    feedback = [
-        Item(
-            i["number"],
-            "issue",
-            i["title"],
-            i["reactions"]["totalCount"],
-            feedback=True,
-            author=opener(i),
-            association=i.get("authorAssociation"),
-            handed=handed_at(i, marker, bot_login),
+    feedback = []
+    for i in opened:
+        if not is_feedback(i, skip, marker, bot_login):
+            continue
+        held = held_comment(i, marker, bot_login)
+        feedback.append(
+            Item(
+                i["number"],
+                "issue",
+                i["title"],
+                i["reactions"]["totalCount"],
+                feedback=True,
+                author=opener(i),
+                association=i.get("authorAssociation"),
+                handed=handed_at(i, marker, bot_login),
+                held=None if held is None else str(held["createdAt"]),
+                asked=held is not None and asked_by_name(i, held, bot_login),
+            )
         )
-        for i in opened
-        if is_feedback(i, skip, marker, bot_login)
-    ]
     if first["hasDiscussionsEnabled"]:
         discussions, _ = paged(run, DISCUSSIONS, base, "discussions")
         for d in discussions:
@@ -879,8 +944,31 @@ def member_thumbs(run: Runner, owner: str, name: str, numbers: list[int]) -> dic
     return found
 
 
-def rows(intake: Intake) -> list[Item]:
-    """The opportunities with their evidence, then NEW_FEEDBACK and OVERLAP"""
+def feedback_state(item: Item, room: int | None) -> tuple[str, str]:
+    """A request no opportunity lists (spec 101): with a limit, a held request reads HELD at
+    room 0 and NEW_FEEDBACK above it, noted `held since <date>`, or NEW_FEEDBACK noted `asked
+    by name` whatever the room; without a limit (room None) every one reads NEW_FEEDBACK as before"""
+    if room is None or item.held is None:
+        return "NEW_FEEDBACK", item.kind
+    if item.asked:
+        return "NEW_FEEDBACK", "asked by name"
+    return ("HELD" if room == 0 else "NEW_FEEDBACK"), f"held since {held_date(item.held)}"
+
+
+EARLIEST = dt.datetime.min.replace(tzinfo=UTC)
+
+
+def row_order(row: Item, room: int | None) -> tuple[int, int, dt.datetime, int]:
+    """The rows' order: by state, then, with a limit, held requests first, oldest held comment
+    first (spec 101), then newest number first as before"""
+    if room is None or row.held is None or row.state not in ("NEW_FEEDBACK", "HELD"):
+        return ORDER.index(row.state), 1, EARLIEST, -row.number
+    return ORDER.index(row.state), 0, timestamp(row.held), -row.number
+
+
+def rows(intake: Intake, room: int | None = None) -> list[Item]:
+    """The opportunities with their evidence, then NEW_FEEDBACK, HELD (with a limit's room,
+    spec 101), and OVERLAP"""
     listed: dict[int, list[int]] = {}
     found = [
         replace(o, thumbs=o.thumbs + sum(intake.thumbs.get(m, 0) for m in o.members)) for o in intake.opportunities
@@ -891,8 +979,7 @@ def rows(intake: Intake) -> list[Item]:
                 listed.setdefault(m, []).append(o.number)
     for item in intake.feedback:
         if item.number not in listed:
-            item.state = "NEW_FEEDBACK"
-            item.note = item.kind
+            item.state, item.note = feedback_state(item, room)
             found.append(item)
     states = {o.number: o.state for o in intake.opportunities}
     titles = {i.number: (i.kind, i.title) for i in intake.feedback}
@@ -902,7 +989,7 @@ def rows(intake: Intake) -> list[Item]:
             kind, title = titles.get(number, ("member", ""))
             shown = ", ".join(f"#{o}:{states[o].lower()}" for o in live)
             found.append(Item(number, kind, title, intake.thumbs.get(number, 0), state="OVERLAP", note=shown))
-    found.sort(key=lambda r: (ORDER.index(r.state), -r.number))
+    found.sort(key=lambda r: row_order(r, room))
     return found
 
 
@@ -2726,9 +2813,9 @@ def main() -> int:
         autonomy=autonomy,
         bot_login=args.bot_login,
     )
-    found = rows(intake)
     local_open = sum(1 for issue in intake.opportunity_issues if issue["state"] == "OPEN")
     outcomes = outcomes_in_flight(product, local_open, args.label, product_gh)
+    found = rows(intake, None if outcomes is None else outcomes.room)
     planned: list[PlanRow] = []
     if args.plans:
         planned = fetch_plans(
