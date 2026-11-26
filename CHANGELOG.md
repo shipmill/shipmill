@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.179.2] - 2026-11-26
+
+### Fixed
+
+- A shipmill command run while the host's directory service fails to resolve the account's uid now stops with one `shipmill:` line naming the uid and saying to retry, and exits 2, instead of a `KeyError` traceback; the private file's home still never falls back to `$HOME` (#1673)
+- github-issue-triage's `triage_state.py` now links a pull request to an issue as covering part of it only by a "Part of #N" in its title outside code spans, or at the start of a line or a sentence of its body outside code spans and fences; a "Part of #N" quoted mid-sentence, in backticks, or in a fence no longer makes a merged pull request the issue's own work, so an issue with a `## Check` no longer reads VERIFY_DUE dated against a pull request that only mentions it (#1678)
+
 ## [0.179.1] - 2026-11-26
 
 ### Fixed
@@ -3183,7 +3190,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.179.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.179.2...HEAD
+[0.179.2]: https://github.com/shipmill/shipmill/compare/v0.179.1...v0.179.2
 [0.179.1]: https://github.com/shipmill/shipmill/compare/v0.179.0...v0.179.1
 [0.179.0]: https://github.com/shipmill/shipmill/compare/v0.178.0...v0.179.0
 [0.178.0]: https://github.com/shipmill/shipmill/compare/v0.177.0...v0.178.0
