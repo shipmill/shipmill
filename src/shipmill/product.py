@@ -1410,7 +1410,8 @@ def goal(root: Path, id: ItemId, checked: LineText, by: Horizon) -> Edited:
         raise ReleaseError(
             f"{id} carries a measure line, `{item.measure.text}`, and a goal ends on its check, so it carries none; "
             f"remove the line with `{cli_command()} product measure {id} --clear`, or keep it and write {id} as a "
-            f"measure with `{cli_command()} product held {id}`; nothing was written"
+            f"measure with `{cli_command()} product held {id} --threshold <threshold> --source <source>`; "
+            "nothing was written"
         )
     return _rewrite(root, bodies, id, str(GoalForm(outcome, str(checked), by)))
 

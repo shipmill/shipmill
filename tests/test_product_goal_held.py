@@ -109,6 +109,13 @@ def test_s105_6_goal_exits_2_without_writing(tmp_path: Path, args: tuple[str, ..
     assert (root / DIRECTION).read_text() == WELL_FORMED
 
 
+def test_s105_6_goal_on_a_measure_line_names_a_held_command_that_runs(tmp_path: Path) -> None:
+    root = write(tmp_path)
+    with pytest.raises(ReleaseError, match=r"product held G-4 --threshold <threshold> --source <source>`"):
+        product.goal(root, ItemId.parse("G-4"), LineText("ci"), Horizon.parse("0.7.0"))
+    assert (root / DIRECTION).read_text() == WELL_FORMED
+
+
 def test_s105_6_goal_on_a_measure_names_product_edit(tmp_path: Path) -> None:
     root = write(tmp_path)
     with pytest.raises(ReleaseError, match=r"product edit G-2 "):
