@@ -58,10 +58,10 @@ def test_s106_27_flow_gives_each_state() -> None:
 
 def test_s106_27_the_documented_names_are_the_ones_intake_reads() -> None:
     ist = load(INTAKE_STATE, "intake_state_goal_project_docs")
-    assert (ist.PROJECT_LABEL, ist.PROJECT_HELD_LABEL, ist.PROJECT_FOCUS_LABEL) == LABELS[:3]
-    assert (ist.GOAL_PROPOSAL_LABEL, ist.GOAL_REVIEW_LABEL) == LABELS[3:]
+    assert LABELS[:3] == (ist.PROJECT_LABEL, ist.PROJECT_HELD_LABEL, ist.PROJECT_FOCUS_LABEL)
+    assert LABELS[3:] == (ist.GOAL_PROPOSAL_LABEL, ist.GOAL_REVIEW_LABEL)
     assert ist.OVERDUE_MARKER.fullmatch("<!-- shipmill:goal-overdue G-3 by=2026-12-31 -->") is not None
     assert ist.REPLACED_MARKER.fullmatch("<!-- shipmill:plan-replaced #12 -->") is not None
-    assert ist.STOP_RECORD == MARKERS[2]
+    assert MARKERS[2] == ist.STOP_RECORD
     for state in ("GOAL_OVERDUE", "PLAN_REPLACED", "PROJECT_START_DUE", "PROJECT_IDLE", "PROJECT_STOP_DUE"):
         assert state in WATCH, state  # the watch's PLANS row names each action it starts a session for
