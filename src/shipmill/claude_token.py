@@ -32,7 +32,8 @@ OAUTH = "CLAUDE_CODE_OAUTH_TOKEN"
 SCRUB = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"  # Claude Code strips its credentials from its tools' env
 # Claude Code ranks both above CLAUDE_CODE_OAUTH_TOKEN, so a session with a token goes without them
 OUTRANKING = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-MAX_AGE = dt.timedelta(days=330)  # a setup-token token lasts a year; doctor warns before it ends
+LIFETIME = dt.timedelta(days=365)  # what a setup-token token lasts; doctor fails a file older than it
+MAX_AGE = dt.timedelta(days=330)  # doctor warns this long after the file was written, before LIFETIME ends
 # the fixes the gate writes after "; fix: " for a token, which status and the watch pass on:
 # REJECTED_SHAPE a token's authentication failure (the preflight's, a dead session's), and
 # FIX_SHAPE every CLAUDE_AUTH fix a token file brings
