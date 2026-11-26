@@ -162,8 +162,8 @@ identity": the tests of S-004-12 change to this spec's.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-093-1, S-093-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1653: S-093-4, S-093-5, S-093-6, S-093-7
+- shipmill/shipmill#1654: S-093-1, S-093-2, S-093-3, S-093-8, S-093-9, S-093-10, S-093-11, S-093-12, S-093-13
 
 ## Verification
 

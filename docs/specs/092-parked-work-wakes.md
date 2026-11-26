@@ -191,7 +191,10 @@ comment moves `updatedAt`, so the issue waits another `parked_days` at most befo
 
 ## Issues
 
-The build issues, filled in once they are filed.
+- shipmill/shipmill#1656: S-092-1, S-092-2, S-092-3, S-092-4, S-092-6
+- shipmill/shipmill#1657: S-092-5, S-092-7, S-092-8, S-092-9, S-092-10
+- shipmill/shipmill#1658: S-092-11, S-092-12, S-092-13
+- shipmill/shipmill#1659: S-092-14, S-092-15, S-092-16
 
 ## Verification
 
