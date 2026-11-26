@@ -742,6 +742,26 @@ class _WorkTree:
         return _split(text)
 
 
+@dataclass(frozen=True, slots=True)
+class _Pending:
+    """The working tree with one file's edit applied but not yet written: what `check` would
+    read once it is, so an edit that breaks the grammar is refused before a byte is written"""
+
+    root: Path
+    path: Path  # relative to the repo, as the parser names it
+    text: str
+    ref: None = None
+
+    def is_file(self, relative: Path) -> bool:
+        return _WorkTree(self.root).is_file(relative)
+
+    def contained(self, relative: Path, under: Path) -> bool:
+        return _WorkTree(self.root).contained(relative, under)
+
+    def lines(self, relative: Path) -> list[Line]:
+        return _split(self.text) if relative == self.path else _WorkTree(self.root).lines(relative)
+
+
 _SYMLINK = "120000"  # the git mode of a symbolic link, whose blob is the link's target
 _MAX_LINKS = 40  # symlinks followed for one path before it reads as missing, as the kernel's ELOOP
 
@@ -1360,19 +1380,95 @@ def add(root: Path, section: Section, text: LineText) -> Edited:
         index = document.insert(filled[-1][0], [line])  # right after the last item
     else:
         index = document.insert(document.section_start(body.heading - 1), [line], pad=True)
-    document.write()
+    _write_checked(root, body.path, document)  # S-105-8: a malformed goal's text is refused
     return Edited(body.path, index + 1, line)
 
 
 def edit(root: Path, id: ItemId, text: LineText) -> Edited:
     """Rewrite one item's text; its id stays"""
     _, bodies = _editable(root)
+    return _rewrite(root, bodies, id, str(text))
+
+
+def goal(root: Path, id: ItemId, checked: LineText, by: Horizon) -> Edited:
+    """Rewrite a goal into the goal form, `<outcome>. Check: <check>. By: <horizon>` (S-105-6),
+    keeping its outcome: the text before its `. Check: `, or the whole text of a goal of no kind.
+    Refused for a measure, rewritten only with `product edit`, and for a goal with a measure
+    line, which a goal of kind goal never carries"""
+    item, bodies = _goal_item(root, id)
+    match item.form:
+        case MeasureForm():
+            raise ReleaseError(
+                f"{id} is a measure, {GoalKind.MEASURE.form}; turn it into a goal by rewriting its whole text with "
+                f'`{cli_command()} product edit {id} "<outcome>. Check: <check>. By: <horizon>"`; nothing was written'
+            )
+        case GoalForm(outcome=outcome):
+            pass
+        case None:
+            outcome = item.text
+    if item.measure is not None:
+        raise ReleaseError(
+            f"{id} carries a measure line, `{item.measure.text}`, and a goal ends on its check, so it carries none; "
+            f"remove the line with `{cli_command()} product measure {id} --clear`, or keep it and write {id} as a "
+            f"measure with `{cli_command()} product held {id} --threshold <threshold> --source <source>`; "
+            "nothing was written"
+        )
+    return _rewrite(root, bodies, id, str(GoalForm(outcome, str(checked), by)))
+
+
+def held(root: Path, id: ItemId, threshold: LineText, source: LineText) -> Edited:
+    """Rewrite a goal into the measure form, `Held: <statement>. Threshold: <threshold>. Source:
+    <source>` (S-105-7), keeping its statement: the text between `Held: ` and its `. Threshold: `,
+    or the whole text of a goal of no kind, and its measure line. Refused for a goal of kind
+    goal, rewritten only with `product edit`"""
+    item, bodies = _goal_item(root, id)
+    match item.form:
+        case GoalForm():
+            raise ReleaseError(
+                f"{id} is a goal, {GoalKind.GOAL.form}; turn it into a measure by rewriting its whole text with "
+                f'`{cli_command()} product edit {id} "Held: <statement>. Threshold: <threshold>. Source: <source>"`; '
+                "nothing was written"
+            )
+        case MeasureForm(held=statement):
+            pass
+        case None:
+            statement = item.text
+    return _rewrite(root, bodies, id, str(MeasureForm(statement, str(threshold), str(source))))
+
+
+def _goal_item(root: Path, id: ItemId) -> tuple[Item, dict[Section, _Body]]:
+    """The goal `id` of a direction `check` passes, and each section's lines; refused for an id
+    that is not a goal's or that the direction doesn't hold"""
+    if id.prefix is not Prefix.GOAL:
+        raise ReleaseError(f"only a goal is written in a goal's or a measure's form; {id} is not a G-n id")
+    direction, bodies = _editable(root)
+    _located(bodies, id)  # an unknown id is refused naming `product ids`
+    return next(item for item in direction.goals if item.id == id), bodies
+
+
+def _rewrite(root: Path, bodies: dict[Section, _Body], id: ItemId, text: str) -> Edited:
+    """Rewrite one item's line, in the file its section lives in; the lines under it stay"""
     body, number = _located(bodies, id)
-    line = f"- {Item(id, str(text))}"
+    line = f"- {Item(id, text)}"
     document = Document.read(root / body.path)
     document.replace(number - 1, line)
-    document.write()
+    _write_checked(root, body.path, document)
     return Edited(body.path, number, line)
+
+
+def _write_checked(root: Path, path: Path, document: Document) -> None:
+    """Write the edited file only when the direction it leaves passes `check`; else refuse
+    (exit 2) with the lines `check` would give, writing nothing (S-105-8)"""
+    parser = _Parser(_Pending(root, path, document.text()))
+    parser.direction()
+    parser.place(root)
+    if parser.problems:
+        listed = "\n".join(f"  {p}" for p in parser.problems)
+        raise ReleaseError(
+            f"the edit would leave {DIRECTION} failing `{cli_command()} product check`, so nothing was written:\n"
+            f"{listed}"
+        )
+    document.write()
 
 
 def retire(root: Path, id: ItemId) -> Edited:
