@@ -951,3 +951,11 @@ entry that supersedes it, never by editing an old one.
 - Why: In one host's gate logs of 14 days, 1006 of 1109 sessions whose result was no error listed a denied Bash or Monitor call. As an end that drops its hand, a denial would have handed nearly every ok session again on every tick, with no ceiling, undoing spec 061's change-gated launches (#1648's review). A denial is a gap in the allowlist for the maintainer to close, which a notification reaches, not a fault of the item
 - Applies to: src/shipmill/gate.py, src/shipmill/walk.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/095-gate-outside-failure-ends.md, handed.json, denied.json
 - Enforced by: tests of spec 095 (test_s095_1_*, test_s095_7_*), with the implementing PR
+
+## D-114: An accepted goal plan's existing items of this repository become its sub-issues
+
+- Decided: 2026-11-26, in shipmill/shipmill#1706
+- Rule: Refines D-38 and spec 028 (S-028: an existing item is left as it is, except for the milestone): once the maintainer accepts a goal plan, product intake links each existing item of this repository, open or closed (for a partially accepted plan, spec 096, only its kept items), as a sub-issue of the plan, as it does for a filed item, and only then posts the filed line; intake_state.py reads the plan PLAN_ACCEPTED while such an item isn't linked, its note naming them, so a resumed pass doesn't repeat the links. An existing item that already has another parent, or lives in another repository, is named in the filed line and not linked. The plan then waits on its children and, once they close, product intake reports its outcome and closes it as spec 097 says
+- Why: An accepted plan whose items were all existing had no children, so intake read it PLAN_FILED with nothing to file and the plan stayed on the maintainer's list for good (#1706). Linking them gives every plan one way to wait on its work and to close. Zone rule-departure, decided by `@romamo`'s answer on #1706 (option 1, relayed 2026-11-26)
+- Applies to: skills/product-intake/SKILL.md, skills/product-intake/references/plan.md, skills/product-intake/scripts/intake_state.py, docs/specs/028-plan-from-goals.md, docs/specs/097-plan-outcome.md
+- Enforced by: review, until #1706's tests
