@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.185.0] - 2026-11-26
+
+### Changed
+
+- Spec 098 (the maintainer holds a goal plan until a condition they name) is marked built, its Verification naming the tests that check each criterion on the code (#1683)
+- `shipmill status --item` follows a held goal plan: while held, its holder is `postponed`, waiting on the event `held until <condition>`; once the hold is met, product intake's re-check holds it; once re-checked, it waits on the maintainer's answer again. `shipmill status` adds no WAITS ON YOU reason for a held plan or one whose re-check is due. The watch's `--item` read gains a `PLAN_HELD` row naming each held plan's condition, which the full report doesn't list (spec 098) (#1734)
+
+### Added
+
+- The direction tells a goal from a standing measure (spec 105): `shipmill product check` reads each goal of `## Goals` as a goal, `<outcome>. Check: <check>. By: <YYYY-MM-DD or X.Y.Z>`, a measure, `Held: <statement>. Threshold: <threshold>. Source: <source>`, or neither, and refuses a malformed one, or a `  measure:` line under a goal, naming the file, the line, the goal, and the form it takes; `shipmill product show --json` gives every goal its `kind`, `outcome`, `check`, `by`, `past`, `held`, `threshold`, and `source`, and a component reads its product's goals the same way (#1726)
+- product-intake's `intake_state.py` counts the product's outcomes in flight under `[agents] outcomes`: every open opportunity of the repo, or of the product's home and its listed repos (read through `shipmill gh --product`, one call per owner; a component reads the limit from its home's config), printed as `outcomes in flight: K of N` and as an `outcomes` key on `--json`'s first line; without the key its output is unchanged, and the watch accepts the new key and makes no FEEDBACK_DUE row for a held request (#1728)
+
 ## [0.184.0] - 2026-11-26
 
 ### Changed
@@ -3246,7 +3258,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.184.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.185.0...HEAD
+[0.185.0]: https://github.com/shipmill/shipmill/compare/v0.184.0...v0.185.0
 [0.184.0]: https://github.com/shipmill/shipmill/compare/v0.183.0...v0.184.0
 [0.183.0]: https://github.com/shipmill/shipmill/compare/v0.182.0...v0.183.0
 [0.182.0]: https://github.com/shipmill/shipmill/compare/v0.181.0...v0.182.0
