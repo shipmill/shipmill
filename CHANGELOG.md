@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.188.0] - 2026-11-26
+
+### Changed
+
+- `pr_gate.py` prints a `no checks: none ran on <sha7>` line under a PENDING PR whose head ran no checks at all, so a repository that runs no CI on pull requests no longer reads as CI still running; the verdict and its exit code are unchanged (#1776)
+
 ## [0.187.0] - 2026-11-26
 
 ### Added
@@ -3285,7 +3291,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.187.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.188.0...HEAD
+[0.188.0]: https://github.com/shipmill/shipmill/compare/v0.187.0...v0.188.0
 [0.187.0]: https://github.com/shipmill/shipmill/compare/v0.186.0...v0.187.0
 [0.186.0]: https://github.com/shipmill/shipmill/compare/v0.185.0...v0.186.0
 [0.185.0]: https://github.com/shipmill/shipmill/compare/v0.184.0...v0.185.0
