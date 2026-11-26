@@ -632,8 +632,9 @@ def test_1493_children_closed_before_the_newest_triage_comment_still_count(ts: M
     assert found == ("UNBLOCKED", "children 1/1 closed o/r#13:closed(child)")
 
 
-def test_416_github_s_link_and_part_of_anywhere_still_link(ts: ModuleType) -> None:
-    # a cross-repo or full-URL closer reaches triage as GitHub's willCloseTarget
+def test_416_github_s_link_still_links_and_a_mid_line_part_of_does_not(ts: ModuleType) -> None:
+    # a cross-repo or full-URL closer reaches triage as GitHub's willCloseTarget; "part of #12"
+    # quoted mid-line links nothing since #1678, as a mid-line closing keyword doesn't
     linked = {"number": 8, "state": "MERGED", "title": "x", "body": "Fixes https://github.com/o/r/issues/12"}
     part = {"number": 9, "state": "OPEN", "title": "x", "body": "This is part of #12, the parser"}
     item = issue()
@@ -644,7 +645,28 @@ def test_416_github_s_link_and_part_of_anywhere_still_link(ts: ModuleType) -> No
             {"willCloseTarget": False, "isCrossRepository": False, "source": part},
         ]
     }
-    assert ts.linked_prs(item) == [(8, "MERGED", True), (9, "OPEN", False)]
+    assert ts.linked_prs(item) == [(8, "MERGED", True)]
+
+
+@pytest.mark.parametrize(
+    ("title", "body", "expected"),
+    [
+        pytest.param("x", "Part of #12", True, id="own line"),
+        pytest.param("x", "Serves it\n\n- Part of #12\n- Kind: fix", True, id="bullet"),
+        pytest.param("x", "  * part of: #12", True, id="star bullet with colon"),
+        pytest.param("x", "Part of #12 and #13", True, id="first of several"),
+        pytest.param("Serve it (Part of #12)", "", True, id="title"),
+        pytest.param("x", "its build saying Part of #12", False, id="mid-line"),
+        pytest.param("x", "`Part of #12` on its own line", False, id="backticked line"),
+        pytest.param("x", "```\nPart of #12\n```", False, id="fenced"),
+        pytest.param("Serve `Part of #12`", "", False, id="title code span"),
+        pytest.param("x", "Part of #13 and #12", False, id="not the first"),
+        pytest.param("x", "Part of #120", False, id="other number"),
+    ],
+)
+def test_1678_part_of_links_by_the_closing_keyword_rule(ts: ModuleType, title: str, body: str, expected: bool) -> None:
+    assert ts.closes({"title": title, "body": body}, 12, partial=True) is expected
+    assert ts.closes({"title": title, "body": body}, 12) is False
 
 
 def test_416_a_pr_body_quoting_the_closer_leaves_a_mid_line_commit_close_suspect(ts: ModuleType) -> None:

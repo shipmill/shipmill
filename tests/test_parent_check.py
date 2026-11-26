@@ -517,3 +517,37 @@ def test_1671_a_postponed_open_or_unchecked_part_reads_as_before(ts: ModuleType)
         "#21:merged(part) #22:open(part)",
     )
     assert classify(ts, parted([part(21)], body="Serve the new field.\n")) == ("NEEDS_PR", "#21:merged(part)")
+
+
+def quoting(number: int, body: str) -> dict[str, Any]:
+    """A same-repo pull request merged after the check-waiting comment whose body only quotes
+    "Part of #1": #1675's Plan said "its build #1631 saying Part of #1620" in prose"""
+    pr = {
+        "number": number,
+        "state": "MERGED",
+        "title": "Read by its check",
+        "body": body,
+        "mergedAt": "2026-09-07T10:00:00Z",
+    }
+    return {"willCloseTarget": False, "isCrossRepository": False, "source": pr}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("## Plan\n- Proof: its build #31 saying Part of #1 reads VERIFY_DUE", id="mid-line"),
+        pytest.param("## Plan\n`Part of #1` on its own line links it", id="backticked"),
+        pytest.param("Serves it\n\n```\nPart of #1\n```", id="fenced"),
+    ],
+)
+def test_1678_a_pr_quoting_part_of_is_not_the_issue_s_work(ts: ModuleType, body: str) -> None:
+    # #1620: its check-waiting comment stays the newest word once #35, which only quotes it, merges
+    assert classify(ts, parted([part(21), quoting(35, body)], [waiting()])) == (
+        "WITH_PERSON",
+        f"check waiting on @maria since {WAITED} #21:merged(part)",
+    )
+
+
+def test_1678_part_of_on_its_own_line_still_links_the_pr(ts: ModuleType) -> None:
+    for body in ("Serves it\n\nPart of #1", "- Part of: #1\n- Kind: fix"):
+        assert classify(ts, parted([part(21), quoting(35, body)], [waiting()]))[0] == "VERIFY_DUE"
