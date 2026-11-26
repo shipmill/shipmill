@@ -893,6 +893,24 @@ def test_s097_1_with_an_item_still_open_it_reads_filed(ist: ModuleType, still_op
     assert work_done(ist, closed)[0] == ("PLAN_FILED", "filed: #301, #302")
 
 
+def test_s097_1_partial_accept_kept_items_only(ist: ModuleType) -> None:
+    """S-096-6 with S-097-1: a dropped item neither holds a partly accepted plan open nor counts"""
+
+    def read(carriers: list[dict[str, Any]], states: Mapping[int, tuple[str, str | None]]) -> Any:
+        accepted = open_plan(20, owner("accept except W-3", 10))
+        fake = Fake(plans=[accepted], carriers=carriers, states=states)
+        return plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake))[20], fake
+
+    closed = {212: ("CLOSED", "COMPLETED"), 301: ("CLOSED", "COMPLETED")}
+    done = ("PLAN_DONE", "work closed: W-1 #212 completed, W-2 #301 completed; dropped: W-3")
+    assert read([carrier(301, "W-2")], closed)[0] == done  # the dropped W-3 stays unfiled
+    by_hand, fake = read([carrier(301, "W-2"), carrier(302, "W-3")], closed)  # a dropped item filed, still open
+    assert by_hand == done
+    assert not any("s302:" in q for q in fake.asked)  # never read
+    still_open = {212: ("CLOSED", "COMPLETED")}
+    assert read([carrier(301, "W-2")], still_open)[0] == ("PLAN_FILED", "filed: #301; dropped: W-3")
+
+
 def test_s097_1_states_are_read_only_once_the_plan_reads_filed(ist: ModuleType) -> None:
     accepted = open_plan(20, owner("accept", 10), body=full_plan())
     fake = Fake(plans=[accepted], carriers=[carrier(301, "W-2")])
