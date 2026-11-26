@@ -7,6 +7,26 @@ bot.
 
 ## [Unreleased]
 
+## [0.186.0] - 2026-11-26
+
+### Changed
+
+- Spec 105 (a goal or a standing measure) is built and verified, and `docs/direction.md` lists `shipmill product goal` and `shipmill product held` beside `product measure` (#1691)
+
+### Added
+
+- A goal or a standing measure (spec 105): `shipmill product goal G-n --check <check> --by <horizon>` rewrites a goal in the working tree as `<outcome>. Check: <check>. By: <horizon>`, keeping its outcome, and `shipmill product held G-n --threshold <threshold> --source <source>` rewrites it as `Held: <statement>. Threshold: <threshold>. Source: <source>`, keeping its statement and its measure line; each prints the line, edits a Goals section moved to `docs/product/` where it lives, and exits 2 writing nothing for the other kind (naming `product edit`), a horizon that is neither a date nor a version, or, for `goal`, a goal with a measure line (naming `product measure G-n --clear`). `product add` and `product edit` now refuse a text that would leave the direction failing `product check`, such as a malformed goal, with exit 2 and the lines `product check` gives, writing nothing (#1730)
+- A goal plan follows its goal's kind (spec 105): `plans.py check` reads each goal's kind from `docs/product.md` and wants `Check:` and `By:` in the Goal section for a goal, `Threshold:`, `Source:`, then `Measure:` for a standing measure, and `Measure:` alone for a goal in neither form, exiting 2 naming a missing line, a line of the other kind, or one given twice; `Follows:` comes after the last of them. `intake_state.py --plans` reads a goal's `kind` from `product show --json` and proposes no `no-work` plan for a measure, which is planned only on request (`requested in #N`) (#1731)
+- Product intake holds a new outcome while `[agents] outcomes` has no room: `intake_state.py` reads a request with intake's held comment HELD, `held since <date>`, which never sets exit 1; once room comes back held requests read NEW_FEEDBACK first, oldest held first, and the maintainer's `propose` reply asks for one by name past the limit; the skill gains the HELD state, the hold in its workflow, a hard rule, the room in its report, and the held comment's template (spec 101) (#1733)
+- A goal of kind goal ends met or dropped (spec 106): the direction records `. Met: <date>` or `. Dropped: <date>: <reason>` after its horizon, `product check` refuses either on a measure or a goal of no kind, a bad date, an empty reason, or both, `product show --json` gives every goal `state` and `ended`, and `shipmill product met G-n [--on DATE]` and `shipmill product drop G-n --reason TEXT` write the sentence. A met or dropped goal reads no plan trigger, and `specs.py check` refuses a draft or approved spec that serves one. A spec's new `stopped` status needs no Verification section, and `specs.py split` refuses it (#1736)
+- Goal states (spec 106): `intake_state.py --goals` reads GOAL_PROPOSED (a trusted `goal-proposal` issue), then for each goal of kind goal GOAL_MET, GOAL_DROPPED, GOAL_PLANNED (an accepted plan open, or a project head of one of its plans), or GOAL_WRITTEN, with `state`, `holder`, and `by` in `--json`, and GOAL_OVERDUE, an action, for a written or planned goal past its date or with its release tagged, until the App's `goal-review` issue names that goal and horizon. product-intake's skill gives GOAL_OVERDUE's question (extend, rewrite, or drop, the edit a pull request only the maintainer merges) and PLAN_DONE's `Goal check:` line with the pull request proposing the goal met (#1737)
+- Projects (spec 106): `intake_state.py --projects` reads each head issue labelled `project` (a trusted author's, or labelled by someone other than its opener) as PROJECT_HELD, PROJECT_ACTIVE, PROJECT_FOCUS, PROJECT_CLOSING (its note the check issue's unchecked `## Cleanup` lines), PROJECT_CLOSED, or PROJECT_STOPPED, from its `Check: ` sub-issue and its parts, with `state`, `holder`, `check`, and `parts` in `--json`. `[agents] projects = N` caps the product's projects active or in focus at once (1 to wip's ceiling, set in the home only, a component that sets it refused naming the home), counted across the product's repos through `shipmill gh --product`, one call per owner, and printed as `projects active: K of N (product <owner/home>)`. An accepted plan's filed `feature` and `fix` items are labelled `project` (#1739)
+- Projects (spec 106): `intake_state.py --projects` reads PROJECT_IDLE, an action, for an active, in-focus, or closing head whose tree (its comments, check issue, parts, and the pull requests closing them) has had no update for 14 days and no needs-decision question by the `--bot-login` since, and PROJECT_STOP_DUE, an action, on a trusted `stop: <reason>` reply or a `stop` answering that question; a stopped project's row names the reason from its stop record. `triage_state.py` reads a held project's head and its open sub-issues as BLOCKED `project #<head> held`, so nothing is split or built for it. product-intake's skill gives the idle question, the stop's steps, and matches a new request against a stopped project as against a declined opportunity (#1741)
+
+### Fixed
+
+- `shipmill product measure` checks the direction it would leave, as `product add` and `product edit` do: a measure line under a goal of kind goal is refused with exit 2 and `product check`'s lines, writing nothing, instead of leaving `docs/product.md` failing `product check` (#1759)
+
 ## [0.185.0] - 2026-11-26
 
 ### Changed
@@ -3258,7 +3278,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.185.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.186.0...HEAD
+[0.186.0]: https://github.com/shipmill/shipmill/compare/v0.185.0...v0.186.0
 [0.185.0]: https://github.com/shipmill/shipmill/compare/v0.184.0...v0.185.0
 [0.184.0]: https://github.com/shipmill/shipmill/compare/v0.183.0...v0.184.0
 [0.183.0]: https://github.com/shipmill/shipmill/compare/v0.182.0...v0.183.0

@@ -1,3 +1,0 @@
-### Added
-
-- A goal of kind goal ends met or dropped (spec 106): the direction records `. Met: <date>` or `. Dropped: <date>: <reason>` after its horizon, `product check` refuses either on a measure or a goal of no kind, a bad date, an empty reason, or both, `product show --json` gives every goal `state` and `ended`, and `shipmill product met G-n [--on DATE]` and `shipmill product drop G-n --reason TEXT` write the sentence. A met or dropped goal reads no plan trigger, and `specs.py check` refuses a draft or approved spec that serves one. A spec's new `stopped` status needs no Verification section, and `specs.py split` refuses it (#1736)

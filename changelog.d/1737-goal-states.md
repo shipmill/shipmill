@@ -1,3 +1,0 @@
-### Added
-
-- Goal states (spec 106): `intake_state.py --goals` reads GOAL_PROPOSED (a trusted `goal-proposal` issue), then for each goal of kind goal GOAL_MET, GOAL_DROPPED, GOAL_PLANNED (an accepted plan open, or a project head of one of its plans), or GOAL_WRITTEN, with `state`, `holder`, and `by` in `--json`, and GOAL_OVERDUE, an action, for a written or planned goal past its date or with its release tagged, until the App's `goal-review` issue names that goal and horizon. product-intake's skill gives GOAL_OVERDUE's question (extend, rewrite, or drop, the edit a pull request only the maintainer merges) and PLAN_DONE's `Goal check:` line with the pull request proposing the goal met (#1737)

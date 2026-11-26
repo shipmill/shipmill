@@ -1,3 +1,0 @@
-### Added
-
-- Projects (spec 106): `intake_state.py --projects` reads PROJECT_IDLE, an action, for an active, in-focus, or closing head whose tree (its comments, check issue, parts, and the pull requests closing them) has had no update for 14 days and no needs-decision question by the `--bot-login` since, and PROJECT_STOP_DUE, an action, on a trusted `stop: <reason>` reply or a `stop` answering that question; a stopped project's row names the reason from its stop record. `triage_state.py` reads a held project's head and its open sub-issues as BLOCKED `project #<head> held`, so nothing is split or built for it. product-intake's skill gives the idle question, the stop's steps, and matches a new request against a stopped project as against a declined opportunity (#1741)
