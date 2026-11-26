@@ -262,7 +262,9 @@ the worst verdict's, ranked 0, 1, 3, 10, 9, 4, 8, 5, 7, 6.
 a check still pending on its own head (#1028): the question waits until its CI finished, and the
 exit code and its ranking stay as above. A base check is pending only while it reruns a failure
 (#1310), a PR with no checks has none pending, and every other verdict, UNREVIEWED and QUEUED
-too, stops the wait.
+too, stops the wait. A PR whose head ran no checks at all reads PENDING with a `no checks: none
+ran on <sha7>` line (#1776): a repository that runs no CI on pull requests stays PENDING, so
+--wait polls it until its timeout.
 """
 
 from __future__ import annotations
@@ -2861,6 +2863,10 @@ def render(gate: Gate) -> str:
     ]
     lines += [f"  failed: {c.name} ({c.conclusion})" for c in failed]
     lines += [f"  pending: {c.name} ({c.waits})" for c in pending]
+    if not gate.checks and gate.verdict == PENDING:  # the PR head's own checks, not the base's (D-75, #1776)
+        lines.append(
+            f"  no checks: none ran on {gate.head[:7]}; a repository that runs no CI on pull requests stays PENDING"
+        )
     lines += [f"  base: red: {line}" for line in gate.base_red]
     lines += [f"  base: repairs: {line}" for line in gate.base_repairs]
     lines += [f"  base: pending: {line}" for line in gate.base_pending]
