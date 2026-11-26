@@ -104,15 +104,22 @@ in a code span, naming a maintainer the --role flags give (--role maintainer=<lo
 `shipmill roles --flags` prints them; without them no relay counts) is that maintainer's
 answer, read from its first non-blank line after the relay line (D-68):
   PLAN_OPEN         open, with no answer; or its answer is an accept older than the
-                    body's last edit, noted "edited after accept"
+                    body's last edit, noted "edited after accept"; or its answer is an
+                    unclear accept and a comment by the --bot-login whose first line is
+                    <!-- shipmill:needs-decision --> is newer, noted "unclear accept asked"
   PLAN_ANSWERED     open, and the answer's first line starts with `decline` (any case;
-                    noted "decline") or is anything but an accept (noted "edit")
-  PLAN_ACCEPTED     open, the answer's first line is `accept` (any case, an optional
-                    final period), and a feature or fix item has no issue carrying its
-                    plan-item marker (as `plans.py items` reads it), or the Milestone names
-                    a title and a filed item or an existing item of this repo isn't in it;
-                    the note names them
-  PLAN_FILED        accepted, and neither holds
+                    noted "decline"), starts with the word `accept` but is none of the
+                    accept forms (noted "unclear accept: <rule>", spec 096), or is anything
+                    else (noted "edit"; `accepted` and `acceptable` start no accept)
+  PLAN_ACCEPTED     open, the answer's first line is an accept (spec 096): `accept`,
+                    `accept W-1, W-3` (keeps those), or `accept except W-2` (drops those),
+                    any case, ids separated by commas, spaces, or both, an optional final
+                    period, the ids those of the body's Work section; and a kept feature or
+                    fix item has no issue carrying its plan-item marker (as `plans.py items`
+                    reads it), or the Milestone names a title and a kept filed item or a
+                    kept existing item of this repo isn't in it; the note names them, then
+                    `dropped: <ids>` after a partial accept
+  PLAN_FILED        accepted, and neither holds; the note names the dropped ids too
   PLAN_MALFORMED    open, and `plans.py check` refuses the body; the note names the first
                     line and rule
   PLAN_DECLINED     closed as not planned; the note is the reason: the rest of the newest
@@ -122,7 +129,11 @@ A plan closed as completed or as a duplicate reads nothing. With --json, each pl
 goal, kind (goal for a goal's row, plan for a plan issue's), number, state, title, note, and
 author: the plan issue's opener, a Bot's login ending [bot] as --bot-login spells it, or
 null on a goal's row (watch_state.py's trust filter reads it, D-16); and association: the
-opener's author association, null on a goal's row (#1680).
+opener's author association, null on a goal's row (#1680). A PLAN_ACCEPTED or PLAN_FILED row
+also has kept and dropped, the ids in Work order (dropped empty for a full accept), and a
+PLAN_DUE row has dropped: each item an earlier plan of the goal, open or closed as completed,
+dropped by its newest answer, as {"plan": P, "id": "W-n", "text": ...} (spec 096); the
+comments of a plan closed as completed are paged back to its first for it.
 
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
 OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, or PLAN_MALFORMED, 2 on bad input (an
@@ -310,10 +321,17 @@ PLAN_ORDER = (
     "PLAN_FILED",
     "PLAN_DECLINED",
 )
+READ_CLOSED = ("NOT_PLANNED", "COMPLETED")  # the closed plans whose comments are paged back to their first
 PLAN_OPENER = "<!-- shipmill:plan "  # a first line that means to be the plan marker, well-formed or not
 SHIPMILL_MARKER = "<!-- shipmill:"  # a session's own marked comment, never an answer
 REVISED = re.compile(r"^<!-- shipmill:plan-revised rev=([1-9][0-9]*) -->$")
-ACCEPT = re.compile(r"^accept\.?$", re.IGNORECASE)
+# spec 096: a first line starting with the word `accept` (not `accepted` or `acceptable`) is
+# an accept, `accept`, `accept W-1, W-3`, or `accept except W-2`, or an unclear one
+ACCEPT_WORD = re.compile(r"^accept(?!\w)", re.IGNORECASE)
+EXCEPT_WORD = "except"
+ID_SHAPE = re.compile(r"^w-[0-9]+$", re.IGNORECASE)
+ID_SEPARATORS = re.compile(r"[\s,]+")
+DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # triage_state.py's: the first line of a session's question
 DECLINE = re.compile(r"^decline", re.IGNORECASE)
 # An answer given in a session and relayed by the --bot-login (D-68): the first line is the
 # needs-decision relay, the login bare or in a code span (D-61). Copied from triage_state.py's
@@ -757,6 +775,10 @@ class PlanRow:
     kind: str = "goal"  # goal: a row per goal (PLAN_DUE, PLAN_WAITS); plan: a row per plan issue
     author: str | None = None  # a plan issue's opener, as --bot-login spells a login; None for a goal's row
     association: str | None = None  # the opener's author association (#1680); None for a goal's row
+    # spec 096: an accepted plan's kept and dropped ids, in Work order, None on any other row;
+    # on a PLAN_DUE row, dropped holds each item an earlier plan of the goal dropped instead
+    kept: tuple[str, ...] | None = None
+    dropped: tuple[Any, ...] | None = None
 
 
 # Reads the direction's goals, in the direction's order
@@ -914,9 +936,12 @@ def plan_rows(
     bot_login: str | None,
     wip: int | None,
     room: RoomReader,
+    maintainers: frozenset[str] = frozenset(),
 ) -> list[PlanRow]:
-    """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has"""
+    """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has; a
+    PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096)"""
     listed = {g.id for g in goals}
+    cut = dropped_items(plan_issues, frozenset(listed), marker, bot_login, maintainers)
     plans_of: dict[int, str] = {}  # each plan issue's goal
     newest: dict[str, dict[str, Any]] = {}  # each goal's newest plan issue
     planned: set[str] = set()  # goals with an open plan issue
@@ -963,7 +988,8 @@ def plan_rows(
             continue
         if goal.id in requests:
             number = requests[goal.id]
-            found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, f"requested in #{number}", number))
+            note = f"requested in #{number}"
+            found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, note, number, dropped=cut.get(goal.id, ())))
             continue
         # `stalled` reads spec 027's report, which isn't built: until it is, it never fires
         if goal.id in served or goal.id in declined:
@@ -974,9 +1000,39 @@ def plan_rows(
             if left <= 0:
                 found.append(PlanRow(goal.id, "PLAN_WAITS", goal.text, f"{trigger}; waits for room"))
                 continue
-        found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, trigger))
+        found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, trigger, dropped=cut.get(goal.id, ())))
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
     return found
+
+
+def dropped_items(
+    plan_issues: list[dict[str, Any]],
+    goals: frozenset[str],
+    marker: str,
+    bot_login: str | None,
+    maintainers: frozenset[str],
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Each goal's items its plans dropped (spec 096): from every plan issue of the goal, open or
+    closed as completed, whose newest answer is a partial accept, each as {plan, id, text}, the
+    text from that plan's body, by plan number and then in Work order. A plan closed as not
+    planned adds none: its decline already holds"""
+    found: dict[str, list[dict[str, Any]]] = {}
+    for issue in sorted(plan_issues, key=lambda i: int(i["number"])):
+        if not is_plan(issue, bot_login) or (issue["state"] == "CLOSED" and issue["stateReason"] != "COMPLETED"):
+            continue
+        plan, _ = PLANS.parse(issue.get("body") or "", goals)
+        if plan is None:
+            continue
+        answer = plan_answer(issue, bot_login, marker, maintainers)
+        if answer is None or answer.kind != "accept" or edited_after(issue, answer):
+            continue
+        reading = read_accept(PLANS.first_line(answer.body), tuple(i.id for i in plan.items))
+        if isinstance(reading, str):
+            continue
+        for item in plan.items:
+            if item.id in reading.dropped:
+                found.setdefault(plan.goal, []).append({"plan": issue["number"], "id": item.id, "text": item.text})
+    return {goal: tuple(items) for goal, items in found.items()}
 
 
 # -- goal plans (spec 028): where each plan issue stands
@@ -994,7 +1050,7 @@ def is_plan(issue: dict[str, Any], bot_login: str | None) -> bool:
 
 @dataclass(frozen=True)
 class Answer:
-    kind: str  # accept, decline, or edit
+    kind: str  # accept (a first line starting with the word, clear or not: read_accept reads it), decline, or edit
     at: dt.datetime
     body: str
 
@@ -1096,7 +1152,7 @@ def plan_answer(
             answer = body
         if found is None or at >= found.at:
             first = PLANS.first_line(answer)
-            kind = "accept" if ACCEPT.match(first) else "decline" if DECLINE.match(first) else "edit"
+            kind = "accept" if ACCEPT_WORD.match(first) else "decline" if DECLINE.match(first) else "edit"
             found = Answer(kind, at, answer)
     return found
 
@@ -1106,6 +1162,64 @@ def decline_text(answer: Answer) -> str:
     rest = DECLINE.sub("", answer.body.strip(), count=1).lstrip(" \t:.,;-—–")
     lines = [line.strip() for line in rest.splitlines() if line.strip()]
     return lines[0] if lines else ""
+
+
+@dataclass(frozen=True)
+class Accept:
+    """What an accept keeps and drops, each in Work order (spec 096)"""
+
+    kept: tuple[str, ...]
+    dropped: tuple[str, ...]
+
+
+def read_accept(first: str, ids: tuple[str, ...]) -> Accept | str:
+    """An accept's first line read against the Work ids of the body it was given on: `accept`,
+    `accept W-1, W-3`, or `accept except W-2` (any case, ids separated by commas, spaces, or
+    both, an optional final period); for an unclear accept, the rule it breaks"""
+    rest = ACCEPT_WORD.sub("", first.strip(), count=1).strip()
+    if rest.endswith("."):
+        rest = rest[:-1].rstrip()
+    if not rest:
+        return Accept(ids, ())
+    tokens = [t for t in ID_SEPARATORS.split(rest) if t]
+    excepting = bool(tokens) and tokens[0].lower() == EXCEPT_WORD
+    named: list[str] = []
+    for token in tokens[1:] if excepting else tokens:
+        if token.lower() == EXCEPT_WORD:
+            return "words past the ids" if excepting else "both a kept and a dropped list"
+        if not ID_SHAPE.match(token):
+            return "words past the ids"
+        ident = "W-" + token[2:]
+        if ident not in ids:
+            return f"{ident} is not in the plan"
+        if ident in named:
+            return f"{ident} is named twice"
+        named.append(ident)
+    if not named:
+        return "no item named"
+    kept = tuple(i for i in ids if (i in named) != excepting)
+    if not kept:
+        return "drops every item"
+    return Accept(kept, tuple(i for i in ids if i not in kept))
+
+
+def edited_after(issue: dict[str, Any], answer: Answer) -> bool:
+    """The body was edited after the answer: an accept read against it reads nothing (spec 028)"""
+    edited = issue.get("lastEditedAt")
+    return bool(edited) and timestamp(edited) > answer.at
+
+
+def unclear_asked(issue: dict[str, Any], bot_login: str | None, answer: Answer) -> bool:
+    """A comment by the --bot-login whose first line is the needs-decision marker, newer than
+    the unclear accept: the session asked, and the plan waits again (spec 096)"""
+    if bot_login is None:
+        return False
+    for comment in issue["comments"]["nodes"]:
+        by_bot = PLANS.login(comment.get("author")).lower() == bot_login.lower()
+        first = PLANS.first_line(comment.get("body") or "")
+        if by_bot and first == DECISION_MARKER and timestamp(comment["createdAt"]) > answer.at:
+            return True
+    return False
 
 
 def complete_plan_comments(run: Runner, owner: str, name: str, issue: dict[str, Any]) -> None:
@@ -1159,11 +1273,20 @@ def plan_state(
         return PlanRow(goal, "PLAN_OPEN", title, "", number, "plan")
     if answer.kind != "accept":
         return PlanRow(goal, "PLAN_ANSWERED", title, answer.kind, number, "plan")
-    edited = issue.get("lastEditedAt")
-    if edited and timestamp(edited) > answer.at:
+    if edited_after(issue, answer):
         return PlanRow(goal, "PLAN_OPEN", title, "edited after accept", number, "plan")
-    state, note = filing(issue, plan)
-    return PlanRow(goal, state, title, note, number, "plan")
+    reading = read_accept(PLANS.first_line(answer.body), tuple(i.id for i in plan.items))
+    if isinstance(reading, str):
+        if unclear_asked(issue, bot_login, answer):
+            return PlanRow(goal, "PLAN_OPEN", title, "unclear accept asked", number, "plan")
+        return PlanRow(goal, "PLAN_ANSWERED", title, f"unclear accept: {reading}", number, "plan")
+    if not reading.dropped:
+        state, note = filing(issue, plan)
+    else:  # the filing reader looks at the kept items alone
+        kept = tuple(i for i in plan.items if i.id in reading.kept)
+        state, note = filing(issue, replace(plan, items=kept))
+        note = "; ".join(part for part in (note, f"dropped: {', '.join(reading.dropped)}") if part)
+    return PlanRow(goal, state, title, note, number, "plan", kept=reading.kept, dropped=reading.dropped)
 
 
 def plan_issue_rows(
@@ -1213,6 +1336,8 @@ def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
             _, filed = PLANS.plan_carriers(f"{owner}/{name}#{issue['number']}", bot_login, run)
         except PLANS.PlanError as exc:
             fail(str(exc))
+        kept = {item.id for item in plan.items}  # a partial accept's plan holds its kept items alone (spec 096)
+        filed = [(item, carrier) for item, carrier in filed if item.id in kept]
         unfiled = [item.id for item, carrier in filed if item.kind in FILED_KINDS and carrier is None]
         carried = [carrier for item, carrier in filed if item.kind in FILED_KINDS and carrier is not None]
         outside: list[int] = []
@@ -1276,7 +1401,8 @@ def fetch_plans(
     pulls, first = paged(run, PULLS, base, "pullRequests")
     plan_issues, _ = paged(run, PLAN_ISSUES, {**base, "label": PLAN_LABEL}, "issues")
     for issue in plan_issues:
-        if is_plan(issue, bot_login) and (issue["state"] == "OPEN" or issue["stateReason"] == "NOT_PLANNED"):
+        # a plan closed as completed too: the items its newest answer dropped stay dropped (spec 096)
+        if is_plan(issue, bot_login) and (issue["state"] == "OPEN" or issue["stateReason"] in READ_CLOSED):
             complete_plan_comments(run, owner, name, issue)
     by_issue = plan_issue_rows(
         plan_issues,
@@ -1288,6 +1414,7 @@ def fetch_plans(
     )
     by_goal = plan_rows(
         direction,
+        maintainers=maintainers,
         open_issues=intake.open_issues,
         opportunities=intake.opportunity_issues,
         plan_issues=plan_issues,
@@ -1416,9 +1543,15 @@ def json_row(row: Item) -> dict[str, Any]:
 
 def plan_json(row: PlanRow) -> dict[str, Any]:
     """A plan row's --json line: its opener and their author association, which the watch's
-    trust reads (D-16, #1680), null on a goal's row"""
-    found = {"goal": row.goal, "kind": row.kind, "number": row.number, "state": row.state, "title": row.title}
-    return {**found, "note": row.note, "author": row.author, "association": row.association}
+    trust reads (D-16, #1680), null on a goal's row; an accepted plan's row also has kept and
+    dropped, and a PLAN_DUE row dropped, the items the goal's earlier plans dropped (spec 096)"""
+    found: dict[str, Any] = {"goal": row.goal, "kind": row.kind, "number": row.number, "state": row.state}
+    found.update(title=row.title, note=row.note, author=row.author, association=row.association)
+    if row.kept is not None:
+        found["kept"] = list(row.kept)
+    if row.dropped is not None:
+        found["dropped"] = list(row.dropped)
+    return found
 
 
 def main() -> int:
