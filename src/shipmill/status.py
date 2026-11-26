@@ -1008,15 +1008,18 @@ def parked_pulls(rows: Sequence[Row]) -> list[tuple[int, str]]:
     return parked(rows).people
 
 
-def open_plans(rows: Sequence[Row], repo: str) -> list[tuple[int, str]]:
+def open_plans(facts: Facts) -> list[tuple[int, str]]:
     """#1680: the goal plans watch_state.py's PLAN_OPEN rows name, each with its fix, the
-    maintainer's answer; numbers only, never a plan's text (D-16)"""
+    maintainer's answer; numbers only, never a plan's text (D-16). A plan that also waits on a
+    needs-decision question is that question's alone, as fleet.py queue lists it (S-069-6)"""
+    asked = set(waiting(facts).issues)
     found = []
-    for r in rows:
+    for r in facts.rows:
         if r.state == PLAN_OPEN:
             if PLAN_NUMBERS.fullmatch(r.detail) is None:
                 raise ReleaseError(f"watch_state.py's {PLAN_OPEN} row is unreadable: {r.detail!r}")
-            found += [(int(n), row_fix(repo, r)) for n in re.findall(r"#(\d+)", r.detail)]
+            numbers = (int(n) for n in re.findall(r"#(\d+)", r.detail))
+            found += [(n, row_fix(facts.repo, r)) for n in numbers if n not in asked]
     return found
 
 
@@ -1361,7 +1364,7 @@ def verdict(facts: Facts) -> tuple[Verdict, list[Reason], list[str]]:
         yours.append(Reason(f"issue {numbers(wait.issues)} waits on your decision", DECISION_FIX))
     if wait.pulls:
         yours.append(Reason(f"pull request {numbers(wait.pulls)} waits on your decision", DECISION_FIX))
-    yours += [Reason(f"goal plan {item(repo, n, False)} waits on your answer", f) for n, f in open_plans(rows, repo)]
+    yours += [Reason(f"goal plan {item(repo, n, False)} waits on your answer", f) for n, f in open_plans(facts)]
     yours += [r for c in checks if c.check in GATE_CHECKS for r in c.yours]
     yours += [Reason(r.text(), row_fix(repo, r)) for r in rows if r.state in YOURS_ROWS]
     yours += [r for c in checks if c.check not in GATE_CHECKS for r in c.yours]
@@ -1569,7 +1572,7 @@ def item_lines(facts: Facts) -> list[str]:
     wait = waiting(facts)
     decide = [*(item(repo, n, False) for n in wait.issues), *(item(repo, n, True) for n in wait.pulls)]
     lines = _fixed("needs decision", [(v, DECISION_FIX) for v in decide])
-    lines += _fixed("goal plan", [(item(repo, n, False), f) for n, f in open_plans(rows, repo)])  # #1680
+    lines += _fixed("goal plan", [(item(repo, n, False), f) for n, f in open_plans(facts)])  # #1680
     lines += _fixed("hold", [(_subject_item(repo, r), fixed(r)) for r in of("HOLD")])
     lines += _fixed("incident", [(_subject_item(repo, r), fixed(r)) for r in of("INCIDENT_OPEN")])
     lines += _fixed("postmortem", [(_subject_item(repo, r), fixed(r)) for r in of("POSTMORTEM_DUE")])
