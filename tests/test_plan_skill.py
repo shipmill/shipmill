@@ -162,3 +162,42 @@ def test_s028_17_observe_reports_a_due_plan_s_text_and_opens_nothing() -> None:
     assert "put the goal, its trigger, and the plan's full proposed body in the report" in due
     assert "Under `propose`, open it as the plan issue" in due
     assert "under `observe` each due plan's proposed text" in between(skill, "## Report", "## Improve the skill")
+
+
+def test_s105_11_the_skill_gives_the_goal_sections_lines_for_each_kind(plans: ModuleType) -> None:
+    step = between(plan_step(), "**The Goal section follows the goal's kind (spec 105).**", "**A row with")
+    assert (
+        "| goal | `<outcome>. Check: <check>. By: <date or release>` | `Check: <check>`, then `By: <horizon>` |" in step
+    )
+    measure = "| measure | `Held: <statement>. Threshold: <threshold>. Source: <source>` |"
+    assert (
+        measure + " `Threshold: <threshold>`, `Source: <source>`, then `Measure: <the measure line, or none>` |" in step
+    )
+    assert (
+        "| none | neither form, a goal written before spec 105 | `Measure: <the measure line, or none yet>` |" in step
+    )
+    assert "it is planned only on request: `intake_state.py --plans` reads no `no-work` row for it" in step
+    assert "a measure's only `requested in #N` (spec 105)" in flat(read(SKILL))
+    rule = flat(between(read(PLAN), "- The Goal section's lines after `Trigger:`", "\n- The marker"))
+    assert "a goal, `<outcome>. Check: <check>. By: <horizon>`: `Check: {check}`, then `By: {horizon}`" in rule
+    assert '`Threshold: {threshold}`, `Source: {source}`, then `Measure: {the measure line, or "none"}`' in rule
+    assert 'a goal of kind none: `Measure: {the measure line, or "none yet"}`' in rule
+    assert "it gets a plan only when the maintainer asks for one (`requested in #N`), never on `no-work`" in rule
+    flow = flat(read(ROOT / "docs" / "flow.md"))
+    assert "A goal is written `<outcome>. Check: <check>. By: <date or release>` and ends when its check passes" in flow
+    assert "a standing measure is written `Held: <statement>. Threshold: <threshold>. Source: <source>`" in flow
+    assert "a measure is planned only on request" in flow
+    # the plan template with each kind's lines, as the reference gives them, passes plans.py check
+    template = fenced(between(read(PLAN), "## The plan issue", "\n## Intake's"))[0]
+    body = re.sub(r"\{[^}]*\}", "text", template.replace("{n}", "3").replace("{k}", "1").replace("#N", "#7"))
+    lines = {
+        "goal": "Check: text\nBy: 2026-12-31\n",
+        "measure": "Threshold: text\nSource: text\nMeasure: none\n",
+        None: "Measure: text\n",
+    }
+    for kind, written in lines.items():
+        kinded = re.sub(r"Measure: text\n", written, body)
+        assert plans.parse(kinded, frozenset({"G-3"}), {"G-3": kind}) == (plans.parse(kinded, None)[0], []), kind
+        for other, wrong in lines.items():
+            if other != kind:
+                assert plans.parse(re.sub(r"Measure: text\n", wrong, body), None, {"G-3": kind})[1], (kind, other)

@@ -79,6 +79,7 @@ the maintainer ──lists───► milestone "1.5.0" ◄── feature issue
 - **Only the milestone lane waits on the plan.** Other triggers (`quiet_minutes`, `schedule`, by hand) release what is merged, so `dev`, `rc`, and fixes never wait for a goal; a stable release cut by them can take a milestone's version before its goal is done
 - **Today a milestone is done when it has no open issues** and at least one closed (`planner.py`), which says nothing about whether its spec is built
 - **Above all three sits the product's direction**, `docs/product.md`: its goals (`G-n`) decide whether new behaviour is built at all, and its non-goals what is declined. [direction.md](direction.md) explains it for the maintainer who writes it
+- **A goal ends; a measure is held** (spec 105). A goal is written `<outcome>. Check: <check>. By: <date or release>` and ends when its check passes; a standing measure is written `Held: <statement>. Threshold: <threshold>. Source: <source>` and is held for good. Product intake proposes a goal plan for a goal nothing serves (`no-work`), with `Check:` and `By:` in its Goal section; a measure is planned only on request (a `goal-plan` issue you open naming it), with `Threshold:`, `Source:`, and `Measure:`. A goal written in neither form plans as before, with `Measure:` alone
 
 ## Who decides
 

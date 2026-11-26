@@ -75,7 +75,7 @@ With `[agents] outcomes = N` (spec 101), the script counts the product's outcome
 
 | State | Means | Do |
 |---|---|---|
-| PLAN_DUE | A goal with no open plan, and a trigger holds; the note is `no-work`, `stalled`, or `requested in #N`, ending `; follows #P` after a finished plan's outcome | Propose a plan (step 6) |
+| PLAN_DUE | A goal with no open plan, and a trigger holds; the note is `no-work`, `stalled`, or `requested in #N`, ending `; follows #P` after a finished plan's outcome; a measure's only `requested in #N` (spec 105) | Propose a plan (step 6) |
 | PLAN_WAITS | A `no-work` or `stalled` goal while `[agents] wip` has no room | Nothing; list it as waiting for room |
 | PLAN_OPEN | Waiting for the maintainer's answer, an accept older than the body's last edit (`edited after accept`), an unclear accept the session asked about (`unclear accept asked`), a held plan re-checked after its hold was met (`hold met: ...`), or a hold that holds nothing (`hold not read: ...`, spec 098) | Nothing; list it in the report |
 | PLAN_HELD | The maintainer's answer is `hold until <a date, #N, owner/repo#N, or release>` and the condition isn't met; the note is `until <condition>` (spec 098) | Nothing: no session acts on a held plan |
@@ -154,7 +154,17 @@ A plan is the work that reaches one goal of the direction, proposed as its own i
 - Under `propose`, open it as the plan issue, labelled `goal-plan`, and comment intake's triage line on it. For `requested in #N`, comment the plan's link on #N and close #N as completed; the request's own text is never overwritten
 - Under `observe`, open nothing and comment nothing: put the goal, its trigger, and the plan's full proposed body in the report
 
-**A row with `follows` starts from what is missing (spec 097).** When the row's note ends `; follows #P` (with `--json`, its `follows` and `missing`), the goal's last plan #P finished and its outcome comment says what is still missing. Write `Follows: #P` in the new plan's Goal section, on its own line after the `Measure:` line (`plans.py check` accepts one there and nowhere else). Answer each `missing` line in the new plan: a Work item that reaches it, or a line under Notes saying why this plan leaves it out. Say in the Order what the last plan left missing and how this one reaches it. The plan is still a proposal the maintainer accepts or declines (D-10).
+**The Goal section follows the goal's kind (spec 105).** The direction writes each goal in one of two forms, and `shipmill product show --json` gives its `kind`:
+
+| Kind | The goal's text | The plan's Goal section, after `Trigger:` |
+|---|---|---|
+| goal | `<outcome>. Check: <check>. By: <date or release>` | `Check: <check>`, then `By: <horizon>` |
+| measure | `Held: <statement>. Threshold: <threshold>. Source: <source>` | `Threshold: <threshold>`, `Source: <source>`, then `Measure: <the measure line, or none>` |
+| none | neither form, a goal written before spec 105 | `Measure: <the measure line, or none yet>` |
+
+Copy the fields from the goal's text; `plans.py check` reads the kind from `docs/product.md` and refuses a missing line, a line of another kind, or one given twice. A goal ends when its check passes; a measure is held for good, so its children are findings, incidents, and routine fixes, and it is planned only on request: `intake_state.py --plans` reads no `no-work` row for it, only `requested in #N`.
+
+**A row with `follows` starts from what is missing (spec 097).** When the row's note ends `; follows #P` (with `--json`, its `follows` and `missing`), the goal's last plan #P finished and its outcome comment says what is still missing. Write `Follows: #P` in the new plan's Goal section, on its own line after the `Measure:` line, or after the `By:` line for a goal of kind goal (`plans.py check` accepts one there and nowhere else). Answer each `missing` line in the new plan: a Work item that reaches it, or a line under Notes saying why this plan leaves it out. Say in the Order what the last plan left missing and how this one reaches it. The plan is still a proposal the maintainer accepts or declines (D-10).
 
 **Dropped items stay dropped (spec 096).** With `--json`, a PLAN_DUE row's `dropped` lists each item an earlier plan for the goal dropped by a partial accept, as `{"plan": P, "id": "W-n", "text": ...}`. Never propose one of those items again for the goal, under any kind or wording that asks for the same outcome, and name each under the new plan's Notes as left out (`W-2 of #752, dropped by the maintainer`). Propose one again only when the maintainer asks for it: a `requested in #N` plan whose request names it, or an edit answer on the new plan that asks for it. A revision of the same plan follows the same rule: D-10's rule for a declined opportunity, applied to the item the maintainer cut.
 

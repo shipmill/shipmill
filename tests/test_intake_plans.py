@@ -4,7 +4,7 @@ import importlib.util
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -181,7 +181,7 @@ def due(
     *,
     wip: int | None = None,
     room: int = 1,
-    goals: list[tuple[str, str]] = GOALS,
+    goals: Sequence[tuple[str, str] | tuple[str, str, str | None]] = GOALS,  # (id, text) or (id, text, kind)
     bot_login: str | None = BOT,
 ) -> dict[str, tuple[str, str]]:
     """Each goal's plan row as (state, note); records the WIP limits the room was read for"""
@@ -204,7 +204,7 @@ def due(
     found = ist.fetch_plans(
         "o/r",
         intake,
-        goals=lambda: [ist.Goal(i, t) for i, t in goals],
+        goals=lambda: [ist.Goal(*g) for g in goals],
         marker="Triage:",
         bot_login=bot_login,
         wip=wip,
@@ -374,6 +374,44 @@ def test_plans_add_two_queries_to_intakes(ist: ModuleType) -> None:
     fake = Fake()
     due(ist, fake)
     assert len(fake.asked) == 4  # open issues, opportunities, then pull requests with specs, plan issues
+
+
+KINDED: list[tuple[str, str, str | None]] = [
+    ("G-1", "Ship. Check: c. By: 2026-12-31", "goal"),
+    ("G-2", "Held: a bar. Threshold: t. Source: s", "measure"),
+    ("G-3", "People hear", None),
+]
+
+
+def test_s105_10_a_measure_reads_no_no_work_plan(ist: ModuleType) -> None:
+    assert due(ist, Fake(), goals=KINDED) == {"G-1": ("PLAN_DUE", "no-work"), "G-3": ("PLAN_DUE", "no-work")}
+    assert due(ist, Fake(), goals=KINDED, wip=2, room=0) == {
+        "G-1": ("PLAN_WAITS", "no-work; waits for room"),
+        "G-3": ("PLAN_WAITS", "no-work; waits for room"),
+    }
+    # a goal and a goal of no kind read every trigger as before
+    assert due(ist, Fake(), goals=[(i, t) for i, t, _ in KINDED[::2]]) == due(ist, Fake(), goals=KINDED[::2])
+
+
+def test_s105_10_a_measure_reads_its_request_as_before(ist: ModuleType) -> None:
+    request = issue(25, title="Plan G-2", labels=("goal-plan",), association="OWNER")
+    assert due(ist, Fake([request]), goals=KINDED, wip=2, room=0) == {
+        "G-2": ("PLAN_DUE", "requested in #25"),
+        "G-1": ("PLAN_WAITS", "no-work; waits for room"),
+        "G-3": ("PLAN_WAITS", "no-work; waits for room"),
+    }
+    open_plan = plan(20, "G-2")  # an open plan still means no row
+    assert "G-2" not in due(ist, Fake([open_plan, request], plans=[open_plan]), goals=KINDED)
+
+
+def test_s105_10_the_goals_kind_is_read_strictly(ist: ModuleType) -> None:
+    text = '{"goals": [{"id": "G-1", "text": "Ship", "kind": "measure"}, {"id": "G-2", "text": "x", "kind": null}]}'
+    assert ist.parse_goals(text) == [ist.Goal("G-1", "Ship", "measure"), ist.Goal("G-2", "x", None)]
+    goal = '{"goals": [{"id": "G-1", "text": "Ship", "kind": "goal"}]}'
+    assert ist.parse_goals(goal) == [ist.Goal("G-1", "Ship", "goal")]
+    for bad in ('"standing"', '"Measure"', "1", "[]"):
+        with pytest.raises(SystemExit):
+            ist.parse_goals('{"goals": [{"id": "G-1", "text": "Ship", "kind": ' + bad + "}]}")
 
 
 def test_the_goals_are_read_strictly(ist: ModuleType) -> None:

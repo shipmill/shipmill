@@ -126,6 +126,9 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
   PLAN_WAITS        with --wip N, a no-work or stalled trigger holds while
                     `triage_state.py --wip N` reports no room left; the note is the
                     trigger and "waits for room". A request never waits
+A goal whose `kind` is measure (spec 105, a standing measure) is planned only on request:
+it reads `requested in #N` alone, never a no-work or stalled PLAN_DUE or PLAN_WAITS. A goal
+of kind goal, or with no kind (null, or absent from an older shipmill), reads every trigger.
 A goal with an open plan issue reads nothing, whatever its trigger; nor does a goal no
 trigger holds for. When the goal's newest plan was closed as completed with a trusted outcome
 after its last close (spec 097), its PLAN_DUE and PLAN_WAITS notes end `; follows #P`, and
@@ -906,10 +909,14 @@ def rows(intake: Intake) -> list[Item]:
 # -- goal plans (spec 028): which goals a plan is due for
 
 
+GOAL_KINDS = ("goal", "measure")  # spec 105: a goal's kind in `product show --json`, or null
+
+
 @dataclass(frozen=True)
 class Goal:
     id: str  # G-<n>
     text: str
+    kind: str | None = None  # spec 105: goal, measure, or None for neither form (or a shipmill before it)
 
 
 @dataclass
@@ -942,7 +949,9 @@ RoomReader = Callable[[int], int]
 
 
 def parse_goals(text: str) -> list[Goal]:
-    """`shipmill product show --section goals --json`'s output, strictly"""
+    """`shipmill product show --section goals --json`'s output, strictly; a goal's `kind`
+    (spec 105) is `goal`, `measure`, or null, and absent reads as null, as a pinned shipmill
+    before spec 105 prints it"""
     try:
         record = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -956,7 +965,10 @@ def parse_goals(text: str) -> list[Goal]:
         text_ = entry.get("text") if isinstance(entry, dict) else None
         if not isinstance(ident, str) or not GOAL_ID.fullmatch(ident) or not isinstance(text_, str):
             fail(f"shipmill product show --json listed a goal that isn't an id and a text: {entry!r}")
-        goals.append(Goal(ident, text_))
+        kind = entry.get("kind")
+        if kind is not None and kind not in GOAL_KINDS:
+            fail(f"shipmill product show --json listed a goal whose kind isn't goal, measure, or null: {entry!r}")
+        goals.append(Goal(ident, text_, kind))
     return goals
 
 
@@ -1162,6 +1174,8 @@ def plan_rows(
         if goal.id in requests:
             number = requests[goal.id]
             found.append(row(goal, "PLAN_DUE", f"requested in #{number}", number))
+            continue
+        if goal.kind == "measure":  # spec 105: a standing measure is planned only on request
             continue
         # `stalled` reads spec 027's report, which isn't built: until it is, it never fires
         if goal.id in served or goal.id in declined or goal.id in finished:  # the outcome comes first

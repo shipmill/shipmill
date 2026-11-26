@@ -1,0 +1,3 @@
+### Added
+
+- A goal plan follows its goal's kind (spec 105): `plans.py check` reads each goal's kind from `docs/product.md` and wants `Check:` and `By:` in the Goal section for a goal, `Threshold:`, `Source:`, then `Measure:` for a standing measure, and `Measure:` alone for a goal in neither form, exiting 2 naming a missing line, a line of the other kind, or one given twice; `Follows:` comes after the last of them. `intake_state.py --plans` reads a goal's `kind` from `product show --json` and proposes no `no-work` plan for a measure, which is planned only on request (`requested in #N`) (#1731)

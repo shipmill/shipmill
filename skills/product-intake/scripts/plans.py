@@ -17,13 +17,25 @@ directory), the way `shipmill product ids` lists them:
     reference, #N or owner/repo#N; any item may end with `(after W-<k>[, W-<j>])`, naming
     items before it
   - Milestone holds one line: `none`, or a milestone title
-  - at most one `Follows: #<n>` line, in Goal after its `Measure:` line, naming the
-    finished plan this one follows (spec 097); any other line starting `Follows:`, a
-    second one, or one in another section is an error
+  - Goal holds the lines its goal's kind needs (spec 105), each once, after any `Trigger:`
+    line, read from the goal's text in the direction as `shipmill product check` reads it:
+      goal     `<outcome>. Check: <check>. By: <horizon>`: `Check: <check>`, then
+               `By: <horizon>`, a date YYYY-MM-DD or a release X.Y.Z with an optional v
+      measure  `Held: <statement>. Threshold: <threshold>. Source: <source>`:
+               `Threshold: <threshold>`, `Source: <source>`, then `Measure: <line or none>`
+      none     any other text, a goal written before spec 105: `Measure: <line or none yet>`
+    a line of another kind (`Measure:` for a goal, `Check:` for a measure), a missing one,
+    or one given twice is an error
+  - at most one `Follows: #<n>` line, in Goal after the last of its kind's lines (`By:`
+    for a goal, `Measure:` otherwise), naming the finished plan this one follows (spec
+    097); any other line starting `Follows:`, a second one, or one in another section is an
+    error
 
 Exit 0 on a well-formed body; 2 with one `FILE:LINE: rule` line on stderr per problem, or
 when the direction is missing or malformed. check reads no forge: whether an `existing`
-item's issue is open is the session's to see.
+item's issue is open is the session's to see. items reads a plan body as written, its
+goal's kind unknown: it checks no Goal section lines but the `Follows:` one, after the last
+line of the kind the section's lines show.
 
 items reads plan issue #N of owner/repo and lists each item: its id, kind, text (without
 its `(after ...)`), the items it comes after, and the issue in owner/repo whose body's first
@@ -49,6 +61,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -69,7 +82,25 @@ PLAN_REF = re.compile(r"^([\w.-]+)/([\w.-]+)#([1-9][0-9]*)$")
 FOLLOWS_START = "Follows:"
 FOLLOWS = re.compile(r"^Follows: #([1-9][0-9]*)$")
 FOLLOWS_FORM = "Follows: #<n>"
-MEASURE_START = "Measure:"
+# spec 105: the Goal section's lines for each kind of goal, in their order; None is a goal
+# written with neither form's labels
+GOAL = "goal"
+MEASURE = "measure"
+GOAL_LINES: dict[str | None, tuple[str, ...]] = {
+    GOAL: ("Check", "By"),
+    MEASURE: ("Threshold", "Source", "Measure"),
+    None: ("Measure",),
+}
+GOAL_LABELS = ("Check", "By", "Threshold", "Source", "Measure")
+GOAL_LINE_FORMS = {
+    "Check": "Check: <check>",
+    "By": "By: <horizon>",
+    "Threshold": "Threshold: <threshold>",
+    "Source": "Source: <source>",
+    "Measure": "Measure: <the measure line, or none>",
+}
+KIND_NAMES = {GOAL: "a goal", MEASURE: "a measure", None: "a goal of no kind"}
+TRIGGER_START = "Trigger:"
 
 # The direction (spec 024), read as `shipmill product ids` reads it: each list section's
 # `- <prefix>-<n>: <text>` items, a section moved to docs/product/<file>.md through its one
@@ -80,7 +111,16 @@ DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product/"
 LIST_SECTIONS = {"Users": "U", "Goals": "G", "Non-goals": "N", "Quality bar": "Q"}
 DIRECTION_SECTIONS = ("Mission", *LIST_SECTIONS)
-DIRECTION_ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): \S.*$")
+DIRECTION_ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): (\S.*)$")
+# A goal's text read for its kind (spec 105), as src/shipmill/product.py's read_goal reads it:
+# labels case-sensitive and spaced as written
+LABEL_CHECK, LABEL_BY = ". Check: ", ". By: "
+LABEL_HELD, LABEL_THRESHOLD, LABEL_SOURCE = "Held: ", ". Threshold: ", ". Source: "
+GOAL_FORM = "`<outcome>. Check: <check>. By: <YYYY-MM-DD or X.Y.Z>`"
+MEASURE_FORM = "`Held: <statement>. Threshold: <threshold>. Source: <source>`"
+HORIZON_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+HORIZON_RELEASE = re.compile(r"^v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
+HORIZON_FORM = "a date, `YYYY-MM-DD`, or a release, `X.Y.Z` with an optional `v`, with nothing after it"
 DIRECTION_MEASURE = re.compile(r"^  measure: \S.*$")
 DIRECTION_SERVES = re.compile(r"^  serves: \S.*$")
 DIRECTION_MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
@@ -128,12 +168,73 @@ def sections(text: str) -> list[tuple[int, int, str | None, list[tuple[int, str]
 # -- the direction's goal ids
 
 
+def is_horizon(text: str) -> bool:
+    """A goal's horizon (spec 105): `YYYY-MM-DD`, a valid calendar date, or `X.Y.Z` with an
+    optional `v`, and nothing else"""
+    if HORIZON_DATE.match(text) is None:
+        return HORIZON_RELEASE.match(text) is not None
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def goal_kind(text: str) -> str | None:
+    """A goal's kind (spec 105): `goal` for `<outcome>. Check: <check>. By: <horizon>`, split at
+    the first `. Check: ` and the last `. By: `; `measure` for `Held: <statement>. Threshold:
+    <threshold>. Source: <source>`, split at the first `. Threshold: ` and the last `. Source: `;
+    None for a text with neither form's labels. A malformed one is refused (ValueError) with
+    the rule"""
+    goal = LABEL_CHECK in text or LABEL_BY in text
+    measure = text.startswith(LABEL_HELD) or LABEL_THRESHOLD in text or LABEL_SOURCE in text
+    if goal and measure:
+        raise ValueError(
+            f"the text holds both a goal's labels and a measure's; a goal is {GOAL_FORM}, a measure is {MEASURE_FORM}"
+        )
+    if text.startswith(LABEL_HELD):
+        threshold_at, source_at = text.find(LABEL_THRESHOLD), text.rfind(LABEL_SOURCE)
+        if threshold_at < 0 or source_at < threshold_at:
+            raise ValueError(
+                f"`Held: ` with no `. Threshold: ` and then `. Source: ` after it; a measure is {MEASURE_FORM}"
+            )
+        parts = (
+            text[len(LABEL_HELD) : threshold_at],
+            text[threshold_at + len(LABEL_THRESHOLD) : source_at],
+            text[source_at + len(LABEL_SOURCE) :],
+        )
+        for name, part in zip(("statement", "threshold", "source"), parts, strict=True):
+            if not part.strip():
+                raise ValueError(f"its {name} is empty; a measure is {MEASURE_FORM}")
+        return MEASURE
+    if not goal:
+        return None
+    check_at, by_at = text.find(LABEL_CHECK), text.rfind(LABEL_BY)
+    if check_at < 0:
+        raise ValueError(f"`. By: ` with no `. Check: ` before it; a goal is {GOAL_FORM}")
+    if by_at < check_at:
+        raise ValueError(f"`. Check: ` with no `. By: ` after it; a goal is {GOAL_FORM}")
+    parts = text[:check_at], text[check_at + len(LABEL_CHECK) : by_at], text[by_at + len(LABEL_BY) :]
+    for name, part in zip(("outcome", "check", "horizon"), parts, strict=True):
+        if not part.strip():
+            raise ValueError(f"its {name} is empty; a goal is {GOAL_FORM}")
+    if not is_horizon(parts[2]):
+        raise ValueError(f"a horizon is {HORIZON_FORM}; got `{parts[2]}`; a goal is {GOAL_FORM}")
+    return GOAL
+
+
 def goal_ids(root: Path) -> frozenset[str]:
     """Every goal id root/docs/product.md lists, a moved Goals section followed"""
+    return frozenset(goal_kinds(root))
+
+
+def goal_kinds(root: Path) -> dict[str, str | None]:
+    """Every goal root/docs/product.md lists, a moved Goals section followed, with its kind
+    (spec 105): `goal`, `measure`, or None"""
     path = root / DIRECTION
     if not path.is_file():
         raise PlanError(f"no {DIRECTION} under {root}: a plan's goal is one the direction lists")
-    ids: set[str] = set()
+    kinds: dict[str, str | None] = {}
     for _, level, heading, body in sections(path.read_text(encoding="utf-8")):
         if level < 2:  # the text before the name, and the name
             continue
@@ -169,9 +270,15 @@ def goal_ids(root: Path) -> frozenset[str]:
             item = DIRECTION_ITEM.match(line)
             if item is None or item.group(1) != prefix:
                 raise PlanError(f"{file}:{number}: not a `- {prefix}-<n>: <text>` item; run `shipmill product check`")
-            ids.add(f"{prefix}-{item.group(2)}")
             follows = (DIRECTION_MEASURE, DIRECTION_SERVES) if prefix == "G" else ()
-    return frozenset(i for i in ids if i.startswith("G-"))
+            if prefix != "G":
+                continue
+            ident = f"G-{item.group(2)}"
+            try:
+                kinds[ident] = goal_kind(item.group(3))
+            except ValueError as exc:
+                raise PlanError(f"{file}:{number}: {ident}: {exc}; run `shipmill product check`") from None
+    return kinds
 
 
 # -- the plan body's grammar
@@ -195,10 +302,15 @@ class Plan:
     follows: int | None = None  # the plan its `Follows: #<n>` line names (spec 097), None without one
 
 
-def parse(body: str, goals: frozenset[str] | None) -> tuple[Plan | None, list[tuple[int, str]]]:
+def parse(
+    body: str, goals: frozenset[str] | None, kinds: dict[str, str | None] | None = None
+) -> tuple[Plan | None, list[tuple[int, str]]]:
     """The plan a body holds and the problems found, each (line, rule); the plan is None
     when any problem was found. With goals None the marker's goal isn't checked against
-    the direction"""
+    the direction. With kinds, the direction's goals and their kinds (spec 105), the Goal
+    section holds the lines its goal's kind needs; without, or for a goal kinds doesn't
+    list, its lines aren't checked and `Follows:` comes after the last line of the kind
+    they show"""
     problems: list[tuple[int, str]] = []
     lines = body.splitlines()
     first = lines[0].rstrip() if lines else ""
@@ -244,33 +356,93 @@ def parse(body: str, goals: frozenset[str] | None) -> tuple[Plan | None, list[tu
 
     items = work_items(found.get("Work"), end, problems)
     milestone = milestone_line(found.get("Milestone"), end, problems)
-    follows = follows_line(found, problems)
+    goal_body = found.get("Goal")
+    if goal_body is not None and kinds is not None and goal in kinds:
+        kind = kinds[goal]
+        goal_lines(goal, kind, goal_body, problems)
+    else:
+        kind = shown_kind(goal_body or [])
+    follows = follows_line(found, GOAL_LINES[kind][-1], problems)
     if problems:
         return None, sorted(problems, key=lambda problem: problem[0])
     return Plan(goal, rev, tuple(items), milestone, follows), []
 
 
-def follows_line(found: dict[str, list[tuple[int, str]]], problems: list[tuple[int, str]]) -> int | None:
+def goal_label(line: str) -> str | None:
+    """The Goal section line's label of spec 105 (`Check`, `By`, `Threshold`, `Source`, or
+    `Measure`), None for any other line"""
+    return next((label for label in GOAL_LABELS if line.strip().startswith(f"{label}:")), None)
+
+
+def shown_kind(body: list[tuple[int, str]]) -> str | None:
+    """The kind a Goal section's lines show, where the direction isn't read: a goal with a
+    `Check:` or `By:` line, a measure with a `Threshold:` or `Source:` line, else none"""
+    labels = {goal_label(line) for _, line in body}
+    if labels & {"Check", "By"}:
+        return GOAL
+    return MEASURE if labels & {"Threshold", "Source"} else None
+
+
+def goal_lines(goal: str, kind: str | None, body: list[tuple[int, str]], problems: list[tuple[int, str]]) -> None:
+    """The Goal section's lines for its goal's kind (spec 105): each line the kind needs, once,
+    in order, after any `Trigger:` line; a line of another kind is a problem"""
+    needed = GOAL_LINES[kind]
+    named = [f"`{label}:`" for label in needed]
+    lines = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} and {named[-1]}"
+    holds = f"{goal} is {KIND_NAMES[kind]}, whose Goal section holds {lines}"
+    seen: dict[str, int] = {}
+    triggered = not any(line.strip().startswith(TRIGGER_START) for _, line in body)
+    for number, line in body:
+        text = line.strip()
+        if text.startswith(TRIGGER_START):
+            triggered = True
+        label = goal_label(text)
+        if label is None:
+            continue
+        if label not in needed:
+            problems.append((number, f"a `{label}:` line is not for this plan: {holds}"))
+            continue
+        if label in seen:
+            problems.append((number, f"a second `{label}:` line; the Goal section holds one"))
+            continue
+        seen[label] = number
+        value = text[len(label) + 1 :]
+        if not value.startswith(" ") or not value.strip():
+            problems.append((number, f"a {label} line is `{GOAL_LINE_FORMS[label]}`"))
+        elif label == "By" and not is_horizon(value.strip()):
+            problems.append((number, f"a By line's horizon is {HORIZON_FORM}; got `{value.strip()}`"))
+        if not triggered:
+            problems.append((number, f"`{label}:` comes after the Goal section's `{TRIGGER_START}` line"))
+        later = [other for other in needed[needed.index(label) + 1 :] if other in seen]
+        if later:
+            problems.append((number, f"`{label}:` comes before `{later[0]}:`; {holds}, in this order"))
+    end = body[-1][0] if body else 0
+    for label in needed:
+        if label not in seen:
+            problems.append((end, f"the Goal section has no `{GOAL_LINE_FORMS[label]}` line: {holds}"))
+
+
+def follows_line(found: dict[str, list[tuple[int, str]]], last: str, problems: list[tuple[int, str]]) -> int | None:
     """The plan a plan follows (spec 097): at most one `Follows: #<n>` line in the Goal section,
-    after its `Measure:` line; any other `Follows:` line, one outside Goal included, is a
-    problem. None without one"""
+    after its `last` line (spec 105: `By:` for a goal, `Measure:` otherwise); any other
+    `Follows:` line, one outside Goal included, is a problem. None without one"""
     follows: int | None = None
     for heading, body in found.items():
-        measured = False
+        reached = False
         for number, line in body:
             text = line.strip()
-            if heading == "Goal" and text.startswith(MEASURE_START):
-                measured = True
+            if heading == "Goal" and goal_label(text) == last:
+                reached = True
             if not text.startswith(FOLLOWS_START):
                 continue
             if heading != "Goal":
-                problems.append((number, f"a `{FOLLOWS_FORM}` line belongs in the Goal section, after `Measure:`"))
+                problems.append((number, f"a `{FOLLOWS_FORM}` line belongs in the Goal section, after `{last}:`"))
                 continue
             line_form = FOLLOWS.match(text)
             if line_form is None:
                 problems.append((number, f"a Follows line is `{FOLLOWS_FORM}`, the plan this one follows"))
-            elif not measured:
-                problems.append((number, f"`{FOLLOWS_FORM}` comes after the Goal section's `Measure:` line"))
+            elif not reached:
+                problems.append((number, f"`{FOLLOWS_FORM}` comes after the Goal section's `{last}:` line"))
             elif follows is not None:
                 problems.append((number, f"a second `{FOLLOWS_FORM}` line; the Goal section holds one at most"))
             else:
@@ -457,8 +629,8 @@ def plan_carriers(
 def check_command(file: Path, root: Path) -> int:
     if not file.is_file():
         raise PlanError(f"no file {file}")
-    goals = goal_ids(root)
-    _, problems = parse(file.read_text(encoding="utf-8"), goals)
+    kinds = goal_kinds(root)
+    _, problems = parse(file.read_text(encoding="utf-8"), frozenset(kinds), kinds)
     for line, rule in problems:
         print(f"{file}:{line}: {rule}", file=sys.stderr)
     return 2 if problems else 0

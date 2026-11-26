@@ -465,3 +465,182 @@ def test_s097_8_any_other_follows_line_exits_2_naming_it(
     code, err = check(plans, root, body, capsys)
     assert code == 2, name
     assert f"plan.md:{line}: " in err and rule in err, err
+
+
+# -- the Goal section's lines for the goal's kind (spec 105, #1731)
+
+KINDS = DIRECTION + (
+    "- G-4: The maintainer sees what waits on them. Check: `queue --fleet` lists it all. By: 2026-12-31\n"
+    "- G-5: Held: agents keep to the direction. Threshold: every pull request names a goal. Source: the plan check\n"
+    "  measure: issue_to_release_p90 < 2d\n"
+    "- G-7: A release goal. Check: 0.7.0 is out. By: v0.7.0\n"
+)
+GOAL_PLAN = PLAN.replace("goal=G-3", "goal=G-4").replace(
+    "Measure: none yet\n", "Check: `queue --fleet` lists it all\nBy: 2026-12-31\n"
+)
+MEASURE_PLAN = PLAN.replace("goal=G-3", "goal=G-5").replace(
+    "Measure: none yet\n",
+    "Threshold: every pull request names a goal\nSource: the plan check\nMeasure: issue_to_release_p90 < 2d\n",
+)
+
+
+@pytest.fixture
+def kinded(root: Path) -> Path:
+    (root / "docs" / "product.md").write_text(KINDS, encoding="utf-8")
+    return root
+
+
+def test_s105_9_check_reads_each_goals_kind_from_the_direction(plans: ModuleType, kinded: Path) -> None:
+    assert plans.goal_kinds(kinded) == {"G-3": None, "G-6": None, "G-4": "goal", "G-5": "measure", "G-7": "goal"}
+    assert plans.goal_ids(kinded) == frozenset({"G-3", "G-4", "G-5", "G-6", "G-7"})
+
+
+def test_s105_9_check_reads_this_repositorys_direction(plans: ModuleType) -> None:
+    kinds = plans.goal_kinds(SCRIPT.parents[3])
+    assert kinds["G-1"] == "measure" and kinds["G-3"] == "goal"
+
+
+def test_s105_9_check_passes_a_plan_for_each_kind(
+    plans: ModuleType, kinded: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert check(plans, kinded, GOAL_PLAN, capsys) == (0, "")
+    release = GOAL_PLAN.replace("goal=G-4", "goal=G-7").replace("By: 2026-12-31", "By: v0.7.0")
+    assert check(plans, kinded, release, capsys) == (0, "")
+    assert check(plans, kinded, MEASURE_PLAN, capsys) == (0, "")
+    assert check(plans, kinded, PLAN, capsys) == (0, "")  # kind none: `Measure:` alone, as before
+    # spec 097's Follows line comes after the last of the kind's lines
+    following = GOAL_PLAN.replace("By: 2026-12-31\n", "By: 2026-12-31\nFollows: #752\n")
+    assert check(plans, kinded, following, capsys) == (0, "")
+    measured = MEASURE_PLAN.replace("< 2d\n", "< 2d\nFollows: #752\n")
+    assert check(plans, kinded, measured, capsys) == (0, "")
+    # without the direction (`items` reads a plan as written), the lines show the kind
+    plan, problems = plans.parse(following, None)
+    assert problems == [] and plan.follows == 752
+
+
+GOAL_SECTION_REFUSED = [
+    (
+        "goal without Check",
+        GOAL_PLAN.replace("Check: `queue --fleet` lists it all\n", ""),
+        8,
+        "no `Check: <check>` line",
+    ),
+    ("goal without By", GOAL_PLAN.replace("By: 2026-12-31\n", ""), 8, "no `By: <horizon>` line"),
+    (
+        "goal with Measure",
+        GOAL_PLAN.replace("By: 2026-12-31\n", "By: 2026-12-31\nMeasure: none\n"),
+        9,
+        "`Measure:` line",
+    ),
+    ("goal with Source", GOAL_PLAN.replace("By: 2026-12-31\n", "By: 2026-12-31\nSource: x\n"), 9, "`Source:` line"),
+    ("goal By twice", GOAL_PLAN.replace("By: 2026-12-31\n", "By: 2026-12-31\nBy: 0.7.0\n"), 9, "a second `By:` line"),
+    ("goal Check twice", GOAL_PLAN.replace("Check:", "Check: twice\nCheck:"), 8, "a second `Check:` line"),
+    ("goal bad horizon", GOAL_PLAN.replace("By: 2026-12-31", "By: Q4"), 8, "a By line's horizon is a date"),
+    ("goal no calendar date", GOAL_PLAN.replace("By: 2026-12-31", "By: 2026-13-01"), 8, "got `2026-13-01`"),
+    ("goal empty Check", GOAL_PLAN.replace("Check: `queue --fleet` lists it all", "Check:"), 7, "`Check: <check>`"),
+    (
+        "goal By before Check",
+        GOAL_PLAN.replace("Check: `queue --fleet` lists it all\nBy: 2026-12-31\n", "By: 2026-12-31\nCheck: c\n"),
+        8,
+        "`Check:` comes before `By:`",
+    ),
+    (
+        "goal before Trigger",
+        GOAL_PLAN.replace("Trigger: no-work\n", "").replace("By: 2026-12-31\n", "By: 2026-12-31\nTrigger: no-work\n"),
+        6,
+        "comes after the Goal section's `Trigger:` line",
+    ),
+    (
+        "goal Follows before By",
+        GOAL_PLAN.replace("By: 2026-12-31\n", "Follows: #752\nBy: 2026-12-31\n"),
+        8,
+        "comes after the Goal section's `By:` line",
+    ),
+    (
+        "measure without Threshold",
+        MEASURE_PLAN.replace("Threshold: every pull request names a goal\n", ""),
+        9,
+        "no `Threshold: <threshold>` line",
+    ),
+    ("measure without Source", MEASURE_PLAN.replace("Source: the plan check\n", ""), 9, "no `Source: <source>` line"),
+    ("measure without Measure", MEASURE_PLAN.replace("Measure: issue_to_release_p90 < 2d\n", ""), 9, "no `Measure:"),
+    (
+        "measure with Check",
+        MEASURE_PLAN.replace("Trigger: no-work\n", "Trigger: no-work\nCheck: c\n"),
+        7,
+        "`Check:` line",
+    ),
+    ("measure with By", MEASURE_PLAN.replace("< 2d\n", "< 2d\nBy: 2026-12-31\n"), 10, "`By:` line"),
+    (
+        "measure Source twice",
+        MEASURE_PLAN.replace("Source: the plan check\n", "Source: a\nSource: b\n"),
+        9,
+        "a second `Source:`",
+    ),
+    (
+        "measure Measure first",
+        MEASURE_PLAN.replace("Measure: issue_to_release_p90 < 2d\n", "").replace(
+            "Trigger: no-work\n", "Trigger: no-work\nMeasure: none\n"
+        ),
+        8,
+        "`Threshold:` comes before `Measure:`",
+    ),
+    ("none with Check", PLAN.replace("Measure: none yet\n", "Measure: none yet\nCheck: c\n"), 8, "`Check:` line"),
+    (
+        "none with Threshold",
+        PLAN.replace("Measure: none yet\n", "Threshold: t\nMeasure: none yet\n"),
+        7,
+        "`Threshold:` line",
+    ),
+    (
+        "none without Measure",
+        PLAN.replace("Measure: none yet\n", ""),
+        7,
+        "no `Measure: <the measure line, or none>` line",
+    ),
+    (
+        "none Measure twice",
+        PLAN.replace("Measure: none yet\n", "Measure: none yet\nMeasure: none\n"),
+        8,
+        "a second `Measure:`",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "body", "line", "rule"), GOAL_SECTION_REFUSED, ids=[c[0] for c in GOAL_SECTION_REFUSED]
+)
+def test_s105_9_check_refuses_a_goal_section_line_naming_it(
+    plans: ModuleType,
+    kinded: Path,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+    body: str,
+    line: int,
+    rule: str,
+) -> None:
+    code, err = check(plans, kinded, body, capsys)
+    assert code == 2, case
+    assert any(f"plan.md:{line}: " in shown and rule in shown for shown in err.splitlines()), err
+
+
+@pytest.mark.parametrize(
+    ("text", "rule"),
+    [
+        ("Ship. Check: c", "`. Check: ` with no `. By: ` after it"),
+        ("Ship. By: 2026-12-31", "`. By: ` with no `. Check: ` before it"),
+        ("Ship. Check: c. By: 2026-12-31.", "a horizon is a date"),
+        ("Held: x. Source: s", "`Held: ` with no `. Threshold: `"),
+        ("Held: x. Threshold: t. Source: s. Check: c. By: 0.7.0", "both a goal's labels and a measure's"),
+        (". Check: c. By: 0.7.0", "its outcome is empty"),
+    ],
+)
+def test_s105_9_check_stops_on_a_malformed_goal_in_the_direction(
+    plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str], text: str, rule: str
+) -> None:
+    (root / "docs" / "product.md").write_text(DIRECTION.replace("Releases go out on their own", text), encoding="utf-8")
+    with pytest.raises(SystemExit) as stopped:
+        check(plans, root, PLAN, capsys)
+    assert stopped.value.code == 2
+    err = capsys.readouterr().err
+    assert "docs/product.md:9: G-3: " in err and rule in err and "run `shipmill product check`" in err, err

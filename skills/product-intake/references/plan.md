@@ -34,12 +34,18 @@ none
 {What was considered and left out, the D-n rules it runs into. Optional.}
 ```
 
+- The Goal section's lines after `Trigger:` follow the goal's kind (spec 105), as `shipmill product show --json` gives it and `plans.py check` reads it from `docs/product.md`; the template above is a goal of kind none, with `Measure:` alone. Each line once, in this order, its fields copied from the goal's text:
+  - a goal, `<outcome>. Check: <check>. By: <horizon>`: `Check: {check}`, then `By: {horizon}`, a date `YYYY-MM-DD` or a release `X.Y.Z` with an optional `v`, and no `Measure:` line
+  - a measure, `Held: <statement>. Threshold: <threshold>. Source: <source>`: `Threshold: {threshold}`, `Source: {source}`, then `Measure: {the measure line, or "none"}`
+  - a goal of kind none: `Measure: {the measure line, or "none yet"}`, as before spec 105
+  - A missing line, a line of another kind, or one given twice is refused naming the line
+- A measure is held for good: it gets a plan only when the maintainer asks for one (`requested in #N`), never on `no-work`
 - The marker is the first line; `rev` starts at 1 and rises by one with each rewrite
 - Headings Goal, Work, Order, Milestone, and Notes, in this order; Notes may be left out
 - Work items are `- W-<n> <feature|fix|existing>: <text>`, numbered from W-1 in the order the work should start. `existing` names one open issue that already serves the goal (`#N` or `owner/repo#N`), never proposed a second time. `(after W-k[, W-j])` names earlier items an item depends on
 - A `feature` item states an outcome, never a design: its spec comes later, through the spec gate
 - Milestone is one line: `none`, or the title of the milestone the plan completes (D-38). Name one only when the goal reads as a version's worth of work; `none` is the default
-- A plan for a row with `follows` (spec 097) adds `Follows: #{P}` to the Goal section, on its own line right after the `Measure:` line, naming the finished plan it follows. `plans.py check` accepts one such line there and refuses any other line starting `Follows:`; a goal's first plan has none. Each line of the row's `missing` is answered: a Work item that reaches it, or a line under Notes saying why this plan leaves it out; the Order says what the last plan left missing and how this one reaches it
+- A plan for a row with `follows` (spec 097) adds `Follows: #{P}` to the Goal section, on its own line right after the `Measure:` line (the `By:` line for a goal of kind goal), naming the finished plan it follows. `plans.py check` accepts one such line there and refuses any other line starting `Follows:`; a goal's first plan has none. Each line of the row's `missing` is answered: a Work item that reaches it, or a line under Notes saying why this plan leaves it out; the Order says what the last plan left missing and how this one reaches it
 
 ```bash
 uv run --no-project python <skill>/scripts/plans.py check tmp/plan-G-{n}.md
