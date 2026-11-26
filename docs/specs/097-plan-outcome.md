@@ -162,3 +162,6 @@ the still-missing lines, after the plans filed.
 - shipmill/shipmill#1712: S-097-8, S-097-9, S-097-10, S-097-11
 
 ## Verification
+
+- S-097-5: read `classify_open` in `skills/github-issue-triage/scripts/triage_state.py`: once every hold of an issue closed, `goal_plan` (labelled `goal-plan`, its newest triage comment by an OWNER, MEMBER, or COLLABORATOR or the `--bot-login` starting `Triage: **plan**`) returns TRIAGED `work closed; product intake reports the outcome` before the `## Check` and UNBLOCKED branches, and a hold still open returns BLOCKED before it; any other parent reaches UNBLOCKED as before; holds
+- S-097-12: read `skills/github-issue-triage/references/comments.md` (A parent's close) and `triage-rubric.md` (the UNBLOCKED row): both say such a plan reads TRIAGED with that note, is product intake's to close with its outcome, and is never closed with the parent's close comment; holds

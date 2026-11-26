@@ -122,7 +122,7 @@ For each open issue:
                    rules (BLOCKED "labelled blocked", POSTPONED, or its verdict). A
                    sub-issue, a hold whose close time is unknown, one the newest
                    triage comment names, and a person's item's holds count
-                   whenever they closed
+                   whenever they closed. A goal's plan never reads UNBLOCKED (below)
   POSTPONED        has the postponed label. When its newest triage comment has a line
                    "Revisit on: `<path>`, `<path>`" (spec 061), its note is "waits on
                    <paths>"
@@ -141,6 +141,12 @@ For each open issue:
                    goal's plan (labelled goal-plan, spec 028) whose newest triage comment
                    is product intake's own, "Triage: **plan**", reads TRIAGED whatever the
                    rest of that comment says: the maintainer's answer moves it, not triage.
+                   Once its holds (its filed items) have all closed, such a plan, its
+                   newest triage comment by an OWNER, MEMBER, or COLLABORATOR or the
+                   --bot-login being that one, reads TRIAGED with the note "work closed;
+                   product intake reports the outcome" (spec 097), never UNBLOCKED or
+                   VERIFY_DUE: product intake closes it with its outcome, never triage
+                   with the parent's close comment. While a hold is open it reads BLOCKED.
                    With --json its line carries "verdict", the bold word of its newest
                    triage comment when it is one the skills write (opportunity, feature,
                    clarify, needs a decision, plan, postponed, won't fix, duplicate,
@@ -871,6 +877,8 @@ LONGEST_WINDOW = dt.timedelta(hours=168)  # veto_hours' ceiling (spec 030)
 # triage comment on a plan starts with, "Triage: **plan**. ..."
 PLAN_LABEL = "goal-plan"
 PLAN_VERDICT = "**plan**"
+# Spec 097: a plan whose holds have all closed reads TRIAGED with this note, never UNBLOCKED
+PLAN_WORK_CLOSED = "work closed; product intake reports the outcome"
 # A person's item (spec 017): its assignees do it, a hand-off comment tells them it is
 # their turn, and a verified comment records that a session checked a close by hand
 HUMAN_LABEL = "human"
@@ -2640,6 +2648,10 @@ def classify_open(
         if still or not waits:
             coordinator = home_hold_note(still, states, repo, home)
             return "BLOCKED", " | ".join([shown, coordinator]) if coordinator else (shown or "labelled blocked")
+        if not human and goal_plan(issue, marker, bot_login):
+            # S-097-5: a plan's work closed is product intake's to close with its outcome, never
+            # triage's with the parent's close comment, nor run as a ## Check
+            return "TRIAGED", PLAN_WORK_CLOSED
         if not human and children and checked:
             return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
         if own_work:
@@ -2819,6 +2831,21 @@ def relay_refused_to(comments: list[tuple[str, str, str]], asked: int, at: int) 
 def trusted(author: str, association: str, bot_login: str | None) -> bool:
     """D-16: an OWNER, MEMBER, or COLLABORATOR, or the sessions' own bot"""
     return association in TRUSTED or (bot_login is not None and same_login(author, bot_login))
+
+
+def goal_plan(issue: dict[str, Any], marker: str, bot_login: str | None) -> bool:
+    """S-097-5: whether the issue is a goal's plan (spec 028): labelled goal-plan, and its
+    newest triage comment by a trusted author (D-16) is product intake's "Triage: **plan**",
+    its filed line form "Triage: **plan**: accepted and filed: ..." too. An outsider's triage
+    comment neither makes a plan nor takes one away"""
+    if PLAN_LABEL not in {n["name"] for n in issue["labels"]["nodes"]}:
+        return False
+    verdicts = [
+        body.lstrip()
+        for author, association, body in comment_tuples(issue)
+        if body.lstrip().startswith(marker) and trusted(author, association, bot_login)
+    ]
+    return bool(verdicts) and verdicts[-1][len(marker) :].lstrip().lower().startswith(PLAN_VERDICT)
 
 
 def vetoes(comment: tuple[str, str, str], bot_login: str | None) -> bool:
