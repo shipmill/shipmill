@@ -96,7 +96,7 @@ Depends on {owner/repo}#{the issue of W-k}
 shipmill gh issue create -R {owner/repo} --title "{item text}" --label project --body-file tmp/plan-{plan}-W-{n}.md {--milestone "{title}"}
 ```
 
-The `project` label makes the filed item a project's head (spec 106): `intake_state.py --projects` reads its state from its `Check: ` sub-issue and its parts. An item filed before spec 106 has no label and reads no project row; an `existing` item is never labelled by the filing
+The `project` label makes the filed item a project's head (spec 106): `intake_state.py --projects` reads its state from its `Check: ` sub-issue and its parts. An item filed before spec 106 has no label and reads no project row; an `existing` item is never labelled by the filing. When the repo lacks the label, create it first with `shipmill gh label create project --description "A project's head issue (spec 106)"`: `issue create` refuses a label the repo doesn't have
 
 Then make it a sub-issue of the plan with github-issue-triage's `chains.py link {owner/repo}#{plan} --child {owner/repo}#{item} --no-text`: `--no-text` writes GitHub's relation alone, with no `Depends on` line in the plan's body, which stays as accepted
 

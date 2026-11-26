@@ -208,6 +208,8 @@ def test_s106_11_an_accepted_plans_filed_items_are_labelled_project() -> None:
     filing = next(line for line in plan.splitlines() if "issue create" in line and "plan-{plan}-W-{n}" in line)
     assert "--label project" in filing
     assert "filed before spec 106 has no label and reads no project row" in plan
+    # gh refuses --label for a label the repo lacks, so the filing creates it first
+    assert "When the repo lacks the label, create it first with `shipmill gh label create project" in plan
     skill = (root / "SKILL.md").read_text(encoding="utf-8")
     step = next(line for line in skill.splitlines() if line.startswith("1. Open its issue from plan.md"))
     assert "labelled `project`" in step
