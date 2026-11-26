@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from .test_parent_check import CHECK, CLOSED_2, both_closed, parent, part, parted, waiting
+from .test_triage_human import said
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-issue-triage" / "scripts" / "triage_state.py"
 REPO = ("o", "r")
@@ -55,6 +56,21 @@ def test_1671_a_merged_closer_of_an_open_issue_with_a_check_reads_by_its_check(t
     assert read(ts, parted([node]), {}) == ("VERIFY_DUE", "#21:merged: run its ## Check")
     early = parted([node], [waiting(at="2026-09-02T10:00:00Z")])
     assert read(ts, early, {})[0] == "VERIFY_DUE"
+
+
+def test_1671_a_feature_issue_whose_spec_pr_merged_is_work_to_split(ts: ModuleType) -> None:
+    # A feature issue held on its spec PR #40 by a hold comment, with a ## Check, #40 merged and
+    # nothing built yet: the spec merged, so it is split into build issues, not checked
+    item = parent([], body=CHECK)
+    item["comments"]["nodes"] = [
+        said(
+            "Triage: **feature**. The spec is in #40.\n\nOn hold: the build waits on o/r#40, the spec PR.",
+            "2026-09-01T10:00:00Z",
+        )
+    ]
+    states = {("o", "r", 40): "MERGED"}
+    verdict = ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT, {("o", "r", 40): CLOSED_2})
+    assert verdict == ("UNBLOCKED", "o/r#40:merged")
 
 
 def test_1671_a_pull_request_linked_by_hand_dates_its_comments_from_its_merge(ts: ModuleType) -> None:
