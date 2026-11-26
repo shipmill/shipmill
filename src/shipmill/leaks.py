@@ -72,10 +72,19 @@ _EDGE = r"[^\W_]"  # a letter or a digit, in any script
 _KEY_PART = re.compile(r"""[ \t]*(?:"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[A-Za-z0-9_-]+)""")
 
 
-def account_home() -> Path:
+def account_home(lookup: Callable[[int], pwd.struct_passwd] = pwd.getpwuid) -> Path:
     """The home folder of the account this process runs as, from the password database: $HOME
-    names no other private file, since a session can set it (D-94)"""
-    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    names no other private file, since a session can set it (D-94). A lookup the host's directory
+    service fails is a one-line ReleaseError, never a fall back to $HOME (#1673)"""
+    uid = os.getuid()
+    try:
+        entry = lookup(uid)
+    except KeyError as exc:
+        raise ReleaseError(
+            f"the password database did not resolve uid {uid}, so the private file's home is unknown;"
+            " the host's directory service failed the lookup: retry the command"
+        ) from exc
+    return Path(entry.pw_dir)
 
 
 class Detector(StrEnum):
