@@ -375,7 +375,7 @@ A child closed as not planned doesn't stop the close; say so in its line. A feat
 
 ## A parent's check
 
-A parent with a `## Check` section reads VERIFY_DUE once its holds all close, CHECK_FAILED after a check-failed comment, and VERIFY_CLOSED when it closed before its check ran ([triage-rubric.md](triage-rubric.md), A parent's check). Each comment below starts with its marker as the first line, posted through `--body-file`, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author. A check only reads: it runs a command or opens a URL and compares what comes back, and never writes to production.
+A parent with a `## Check` section reads VERIFY_DUE once its holds all close (an issue with one and no sub-issue, once its own pull request merged, #1671), CHECK_FAILED after a check-failed comment, and VERIFY_CLOSED when it closed before its check ran ([triage-rubric.md](triage-rubric.md), A parent's check). Each comment below starts with its marker as the first line, posted through `--body-file`, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author. A check only reads: it runs a command or opens a URL and compares what comes back, and never writes to production.
 
 **VERIFY_DUE**, the check holds: close the parent as completed (`gh issue close <n> --reason completed`), then post the verified comment, after the close so `triage_state.py` dates it there. Never post it with `gh issue close --comment`, which posts the comment before the close. On VERIFY_CLOSED the parent is closed already: the comment alone.
 

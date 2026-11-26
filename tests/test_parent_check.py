@@ -412,3 +412,108 @@ def test_s042_12_a_parent_closes_on_its_check_over_a_scripted_forge(tmp_path: Pa
     assert row(feature) == (1, ("VERIFY_CLOSED", "closed by @shipmill-gate[bot]: run its ## Check"))
     world.comment(feature, f"{VERIFIED}\nThe API returned `colour`. Children: #2, #3, #4 merged.", gate, bot=True)
     assert world.triage("acme/app") == (0, {})
+
+
+# #1671: an issue with a ## Check and no sub-issue reads by its check, as a parent does,
+# once its own work merged: a linked pull request (a closer or "Part of #N") merged
+
+HELD_BODY = f"Depends on o/r#21, o/r#25\n\n{CHECK}"
+HOLD_STATES = {("o", "r", 21): "MERGED", ("o", "r", 25): "MERGED"}
+HOLD_CLOSES = {("o", "r", 21): CLOSED_2, ("o", "r", 25): CLOSED_3}
+HOLDS = "o/r#21:merged o/r#25:merged"
+BUILT = f"{HOLDS} #31:merged(part)"
+
+
+def held(ts: ModuleType, item: dict[str, Any]) -> tuple[str, str]:
+    """#1620's shape: no sub-issue, held on pull requests #21 and #25, both merged"""
+    verdict: tuple[str, str] = ts.classify_open(item, "Triage:", "postponed", HOLD_STATES, None, REPO, BOT, HOLD_CLOSES)
+    return verdict
+
+
+def built(comments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """#1620 as it is: its build #31 (#1631) says "Part of #1" and merged with the newest hold"""
+    return parted([part(31, merged=CLOSED_3)], comments, body=HELD_BODY)
+
+
+def test_1671_an_issue_with_a_check_whose_own_pr_merged_reads_by_its_check(ts: ModuleType) -> None:
+    assert held(ts, built()) == ("VERIFY_DUE", f"{BUILT}: run its ## Check")
+    for comment in (waiting(), waiting(**by("ana", "MEMBER"))):
+        assert held(ts, built([comment])) == (
+            "WITH_PERSON",
+            f"check waiting on @maria since {WAITED} {BUILT}",
+        )
+    failed = said(f"{FAILED}\nNo `colour`.", "2026-09-05T10:00:00Z", **by("maria", "OWNER"))
+    assert held(ts, built([failed])) == (
+        "CHECK_FAILED",
+        f"check failed 2026-09-05T10:00:00Z {BUILT}",
+    )
+    # Its holds merged with no PR of its own: nothing is built yet, so it reads UNBLOCKED
+    assert held(ts, parent([], [waiting()], body=HELD_BODY)) == ("UNBLOCKED", HOLDS)
+
+
+def test_1671_an_untrusted_or_early_check_waiting_comment_changes_nothing(ts: ModuleType) -> None:
+    # An outsider's never counts (D-16), nor one from before the newest hold's close
+    for comment in (waiting(**by("someone", "CONTRIBUTOR")), waiting(at="2026-09-03T12:00:00Z")):
+        assert held(ts, built([comment])) == ("VERIFY_DUE", f"{BUILT}: run its ## Check")
+
+
+def test_1671_without_a_check_or_as_a_person_s_item_it_reads_as_before(ts: ModuleType) -> None:
+    plain = parent([], [waiting()], body="Serve the new field.\n\nDepends on o/r#21, o/r#25\n")
+    assert held(ts, plain) == ("UNBLOCKED", HOLDS)
+    item = person(body=HELD_BODY)
+    assert held(ts, item)[0] == "HANDOFF_DUE"
+
+
+MERGED_AT = "2026-09-03T10:00:00Z"
+
+
+def part(number: int, state: str = "MERGED", merged: str | None = MERGED_AT) -> dict[str, Any]:
+    """A same-repo pull request that covers part of #1, "Part of #1" in its body"""
+    pr = {"number": number, "state": state, "title": "Serve colour", "body": "Part of #1"}
+    if merged is not None:
+        pr["mergedAt"] = merged
+    return {"willCloseTarget": False, "isCrossRepository": False, "source": pr}
+
+
+def parted(
+    prs: list[dict[str, Any]],
+    comments: list[dict[str, Any]] | None = None,
+    body: str = CHECK,
+    labels: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    item = parent([], comments, body=body, labels=labels)
+    item["timelineItems"] = {"nodes": prs}
+    return item
+
+
+def test_1671_a_check_whose_part_of_pull_request_merged_reads_verify_due(ts: ModuleType) -> None:
+    assert classify(ts, parted([part(21)])) == ("VERIFY_DUE", "#21:merged(part): run its ## Check")
+    # Untriaged, it reads by its check too; with nothing merged it stays NEW
+    untriaged = parted([part(21)])
+    untriaged["comments"]["nodes"] = []
+    assert classify(ts, untriaged)[0] == "VERIFY_DUE"
+    fresh = parted([])
+    fresh["comments"]["nodes"] = []
+    assert classify(ts, fresh) == ("NEW", "")
+
+
+def test_1671_its_comments_are_dated_against_the_part_s_merge(ts: ModuleType) -> None:
+    assert classify(ts, parted([part(21)], [waiting()])) == (
+        "WITH_PERSON",
+        f"check waiting on @maria since {WAITED} #21:merged(part)",
+    )
+    failed = said(f"{FAILED}\nNo `colour`.", "2026-09-05T10:00:00Z")
+    assert classify(ts, parted([part(21)], [failed]))[0] == "CHECK_FAILED"
+    # A check-waiting or check-failed comment from before the merge doesn't count
+    for early in (waiting(at="2026-09-02T10:00:00Z"), said(f"{FAILED}\nNo `colour`.", "2026-09-02T10:00:00Z")):
+        assert classify(ts, parted([part(21)], [early]))[0] == "VERIFY_DUE"
+    assert "mergedAt" in ts.OPEN_TIMELINE
+
+
+def test_1671_a_postponed_open_or_unchecked_part_reads_as_before(ts: ModuleType) -> None:
+    assert classify(ts, parted([part(21)], labels=("postponed",)))[0] == "POSTPONED"
+    assert classify(ts, parted([part(21), part(22, "OPEN", None)])) == (
+        "IN_PROGRESS",
+        "#21:merged(part) #22:open(part)",
+    )
+    assert classify(ts, parted([part(21)], body="Serve the new field.\n")) == ("NEEDS_PR", "#21:merged(part)")
