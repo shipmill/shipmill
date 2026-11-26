@@ -203,3 +203,19 @@ def test_s106_23_a_plan_item_naming_an_accepted_opportunity_files_no_issue(ist: 
         "PLAN_ACCEPTED",
         "not filed: W-2",
     )
+
+
+def test_s106_22_a_plan_since_the_accept_answers_it_open_or_closed(ist: ModuleType) -> None:
+    """the goal's plan opened after the accept takes the opportunity; declined, it isn't proposed again"""
+    into = {"G-1": (40, dt.datetime(2026, 10, 2, tzinfo=dt.UTC))}
+    declined = opened(open_plan(20, state="CLOSED", reason="NOT_PLANNED"), "2026-10-03T09:00:00Z")
+    assert "G-1" not in goal_rows(ist, Fake(plans=[declined]), into)
+
+
+def test_s106_23_a_closed_opportunity_still_carries_its_item(ist: ModuleType) -> None:
+    body = full_plan().replace("- W-2 feature: A release cut", "- W-2 feature: #401 the opportunity's outcome")
+    accepted = open_plan(20, owner("accept", 10), body=body)
+    closed = {401: ("CLOSED", "COMPLETED")}
+    fake = Fake(plans=[accepted], carriers=[carrier(302, "W-3")], parents={401: ("o/r", 20)}, states=closed)
+    done = plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake, {401: {"opportunity", "project"}}))[20]
+    assert done[0] in ("PLAN_FILED", "PLAN_DONE") and "not filed" not in done[1]

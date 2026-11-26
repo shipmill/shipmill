@@ -1316,7 +1316,8 @@ def plan_rows(
             found.append(row(goal, "PLAN_DUE", f"requested in #{number}", number))
             continue
         accepted = (into or {}).get(goal.id)
-        if accepted is not None and (goal.id not in opened or accepted[1] > opened[goal.id]):
+        latest = newest.get(goal.id)  # its newest plan in any state: a declined one answered it too
+        if accepted is not None and (latest is None or accepted[1] > timestamp(latest["createdAt"])):
             found.append(row(goal, "PLAN_DUE", f"opportunity #{accepted[0]} accepted", accepted[0]))  # S-106-22
             continue
         if goal.id in planned:
@@ -3472,7 +3473,8 @@ def main() -> int:
             accepted_at = reads[item.number].at if item.number in reads else None
             if item.state == "ACCEPTED_INTO" and accepted_at is not None and item.note not in into:
                 into[item.note] = (item.number, accepted_at)
-        named = {int(i["number"]): labels(i) for i in intake.opportunity_issues if i["state"] == "OPEN"}
+        # every opportunity, open or closed: a plan item's head may close before its plan does
+        named = {int(i["number"]): labels(i) for i in intake.opportunity_issues}
         planned = fetch_plans(
             args.repo,
             intake,
