@@ -5,7 +5,8 @@ where each opportunity issue is in the maintainer's accept or decline.
 Usage: intake_state.py <owner/repo> [--config PATH] [--label opportunity]
                        [--accepted-label planned] [--marker "Triage:"] [--skip-label L]...
                        [--category C]... [--json] [--bot-login LOGIN]
-                       [--plans [--wip N] [--tool SPEC] [--role NAME=FILLER[,FILLER...]]...]
+                       [--plans [--wip N] [--tool SPEC] [--role NAME=FILLER[,FILLER...]]...
+                                [--stable-tag-regex REGEX]]
 
 Feedback is an open issue, or an open discussion when the repo enables Discussions, that:
   - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
@@ -110,7 +111,22 @@ answer, read from its first non-blank line after the relay line (D-68):
   PLAN_OPEN         open, with no answer; or its answer is an accept older than the
                     body's last edit, noted "edited after accept"; or its answer is an
                     unclear accept and a comment by the --bot-login whose first line is
-                    <!-- shipmill:needs-decision --> is newer, noted "unclear accept asked"
+                    <!-- shipmill:needs-decision --> is newer, noted "unclear accept asked";
+                    or (spec 098) its answer is a hold whose condition was met and a
+                    comment by the --bot-login whose first line is
+                    <!-- shipmill:plan-recheck --> is newer than the hold and its met_at,
+                    noted "hold met: <what>"; or a hold whose rest is not one condition,
+                    noted "hold not read: <the first line>", or names an item GitHub answers
+                    null for, noted "hold not read: <ref> can't be read"
+  PLAN_HELD         (spec 098) open, the answer's first line is `hold until <condition>`
+                    (any case, an optional final period), the condition exactly one of
+                    YYYY-MM-DD (met at 00:00 UTC that day), #N or owner/repo#N (met once
+                    that issue or pull request closed, one read per held plan), or
+                    `release` (met once a tag matching --stable-tag-regex, default vX.Y.Z,
+                    was created after the hold), and it isn't met; noted "until <condition>"
+                    as written. A hold is never an edit, and a body edit leaves it as it is
+  PLAN_HOLD_MET     (spec 098) a hold whose condition was met and no re-check is newer;
+                    noted "hold met: <date | ref closed | tag>; re-check due"
   PLAN_ANSWERED     open, and the answer's first line starts with `decline` (any case;
                     noted "decline"), starts with the word `accept` but is none of the
                     accept forms (noted "unclear accept: <rule>", spec 096), or is anything
@@ -152,10 +168,14 @@ opener's author association, null on a goal's row (#1680). A PLAN_ACCEPTED or PL
 also has kept and dropped, the ids in Work order (dropped empty for a full accept), and a
 PLAN_DUE row has dropped: each item an earlier plan of the goal, open or closed as completed,
 dropped by its newest answer, as {"plan": P, "id": "W-n", "text": ...} (spec 096); the
-comments of a plan closed as completed are paged back to its first for it.
+comments of a plan closed as completed are paged back to its first for it. A PLAN_HELD row,
+a PLAN_HOLD_MET row, and a PLAN_OPEN row whose hold was met have hold: {"until": the
+condition as written, "met_at": ISO 8601 UTC, the date's 00:00, the item's closedAt, or the
+tag's time, null while not met} (spec 098); no other row has it.
 
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
-OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, or PLAN_MALFORMED, 2 on bad input (an
+OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, PLAN_HOLD_MET, or PLAN_MALFORMED
+(PLAN_HELD is no action), 2 on bad input (an
 issue with more than 100 labels, a malformed config or goals, an existing item naming no
 issue) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
 Python 3.10+, standard library only.
@@ -329,15 +349,17 @@ SPEC_SERVES = re.compile(r"^serves:(.*)$")
 NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
 SERVING_STATUSES = ("draft", "approved")
 AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
-PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE"}
+PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET"}
 PLAN_ORDER = (
     "PLAN_DUE",
     "PLAN_MALFORMED",
     "PLAN_ANSWERED",
     "PLAN_ACCEPTED",
     "PLAN_DONE",
+    "PLAN_HOLD_MET",
     "PLAN_WAITS",
     "PLAN_OPEN",
+    "PLAN_HELD",
     "PLAN_FILED",
     "PLAN_DECLINED",
 )
@@ -358,6 +380,36 @@ NOTHING = "nothing"  # `- nothing`: a list with no part
 # How a closed item closed, as a plan's PLAN_DONE note names it (spec 097)
 CLOSED_AS = {"COMPLETED": "completed", "NOT_PLANNED": "not planned", "DUPLICATE": "duplicate"}
 DECLINE = re.compile(r"^decline", re.IGNORECASE)
+# spec 098: a first line starting `hold until` is a hold, never an edit; its rest is one condition
+HOLD = re.compile(r"^hold\s+until(?![\w-])", re.IGNORECASE)
+HOLD_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+HOLD_RELEASE = "release"
+RECHECK_MARKER = "<!-- shipmill:plan-recheck -->"  # spec 098: the first line of a held plan's re-check
+UTC = dt.timezone.utc  # noqa: UP017 (dt.UTC needs 3.11)
+# triage_state.py's STABLE and how it reads a tag's time (spec 061): a test checks they agree
+STABLE = re.compile(r"^v?\d+\.\d+\.\d+$")
+TAG_NODES = "nodes { name target { ... on Tag { tagger { date } } ... on Commit { committedDate } } }"
+TAGS = (
+    """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    tags: refs(refPrefix: "refs/tags/", last: 50, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}) {
+      """
+    + TAG_NODES
+    + """
+    }
+  }
+}
+"""
+)
+HELD_ITEM = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) { ... on Issue { state closedAt } ... on PullRequest { state closedAt } }
+  }
+}
+"""
+UNREADABLE = frozenset({"NOT_FOUND", "FORBIDDEN"})  # chains.py's: no such repo or item, or no access
 # An answer given in a session and relayed by the --bot-login (D-68): the first line is the
 # needs-decision relay, the login bare or in a code span (D-61). Copied from triage_state.py's
 # LOGIN_PATTERN and DECISION_BY, which the skill scripts can't import from each other; a test
@@ -460,6 +512,32 @@ def gh_graphql(query: str, variables: Variables) -> dict[str, Any]:
         raise SystemExit(2)
     response: dict[str, Any] = json.loads(proc.stdout)
     return response
+
+
+def gh_graphql_unreadable(query: str, variables: Variables) -> dict[str, Any]:
+    """gh_graphql for a held plan's item (spec 098): a failed call whose answer is data with only
+    NOT_FOUND or FORBIDDEN errors, as GitHub gives for an item or repository the token can't
+    read, is that answer; every other failure still exits 2"""
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        cmd += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        try:
+            answer = json.loads(proc.stdout)
+        except ValueError:
+            answer = None
+        errors = answer.get("errors") if isinstance(answer, dict) else None
+        if isinstance(answer, dict) and isinstance(errors, list) and errors and unreadable(errors):
+            return answer
+        sys.stderr.write(proc.stderr)
+        raise SystemExit(2)
+    response: dict[str, Any] = json.loads(proc.stdout)
+    return response
+
+
+def unreadable(errors: list[Any]) -> bool:
+    return all(isinstance(e, dict) and e.get("type") in UNREADABLE for e in errors)
 
 
 def split_repo(repo: str) -> tuple[str, str]:
@@ -808,6 +886,9 @@ class PlanRow:
     # number and the outcome's `Still missing:` items; None otherwise
     follows: int | None = None
     missing: tuple[str, ...] | None = None
+    # spec 098: on a PLAN_HELD, PLAN_HOLD_MET, or a re-checked PLAN_OPEN row, the hold's
+    # condition as written and when it was met (ISO 8601 UTC, None while not met); None otherwise
+    hold: tuple[str, str | None] | None = None
 
 
 # Reads the direction's goals, in the direction's order
@@ -1146,7 +1227,9 @@ def is_plan(issue: dict[str, Any], bot_login: str | None) -> bool:
 
 @dataclass(frozen=True)
 class Answer:
-    kind: str  # accept (a first line starting with the word, clear or not: read_accept reads it), decline, or edit
+    # accept (a first line starting with the word, clear or not: read_accept reads it), decline,
+    # hold (a first line starting `hold until`, well-formed or not: read_hold reads it, spec 098), or edit
+    kind: str
     at: dt.datetime
     body: str
 
@@ -1248,9 +1331,142 @@ def plan_answer(
             answer = body
         if found is None or at >= found.at:
             first = PLANS.first_line(answer)
-            kind = "accept" if ACCEPT_WORD.match(first) else "decline" if DECLINE.match(first) else "edit"
-            found = Answer(kind, at, answer)
+            found = Answer(answer_kind(first), at, answer)
     return found
+
+
+def answer_kind(first: str) -> str:
+    """An answer's kind from its first line: accept, decline, hold (spec 098), or edit"""
+    if ACCEPT_WORD.match(first):
+        return "accept"
+    if DECLINE.match(first):
+        return "decline"
+    return "hold" if HOLD.match(first) else "edit"
+
+
+@dataclass(frozen=True)
+class Hold:
+    """A well-formed hold (spec 098): its condition as written, the comment's time, and the
+    one condition it names: a date, an item (owner, name, number; owner and name empty for
+    `#N`, this repository), or a release"""
+
+    until: str
+    at: dt.datetime
+    date: dt.date | None = None
+    item: tuple[str, str, int] | None = None
+
+
+def read_hold(answer: Answer) -> Hold | None:
+    """A hold answer's condition: `hold until <YYYY-MM-DD | #N | owner/repo#N | release>`, any
+    case, an optional final period; None when its rest is not exactly one of them"""
+    first = PLANS.first_line(answer.body)
+    rest = HOLD.sub("", first, count=1).strip()
+    if rest.endswith("."):
+        rest = rest[:-1].rstrip()
+    if rest.lower() == HOLD_RELEASE:
+        return Hold(rest, answer.at)
+    if HOLD_DATE.match(rest):
+        try:
+            day = dt.date.fromisoformat(rest)
+        except ValueError:
+            return None
+        return Hold(rest, answer.at, date=day)
+    ref = EXISTING_REF.match(rest)
+    if ref is not None:
+        return Hold(rest, answer.at, item=(ref.group(1) or "", ref.group(2) or "", int(ref.group(3))))
+    return None
+
+
+@dataclass(frozen=True)
+class HoldMet:
+    """How a hold's condition reads: met at a time (None while not), what met it as a note
+    names it, or unreadable (an item GitHub answers null for)"""
+
+    at: dt.datetime | None
+    what: str = ""
+    unreadable: bool = False
+
+
+# Reads whether a hold's condition is met
+HoldReader = Callable[[Hold], HoldMet]
+
+
+def utc(moment: dt.datetime) -> str:
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def gh_holds(repo: str, run: Runner, now: dt.datetime, stable: re.Pattern[str] = STABLE) -> HoldReader:
+    """The default hold reader (spec 098): a date from now; an item with one GraphQL read, an
+    item or repository GitHub answers null for unreadable; a release from the newest tags, read
+    once a run, as triage_state.py reads a stable tag's time"""
+    owner, name = split_repo(repo)
+    tags: list[tuple[dt.datetime, str]] = []
+    read_tags = False
+
+    def read(hold: Hold) -> HoldMet:
+        nonlocal read_tags
+        if hold.date is not None:
+            midnight = dt.datetime(hold.date.year, hold.date.month, hold.date.day, tzinfo=UTC)
+            return HoldMet(midnight if now >= midnight else None, hold.until)
+        if hold.item is not None:
+            item_owner, item_name, number = hold.item
+            item_owner, item_name = (item_owner, item_name) if item_owner else (owner, name)
+            response = run(HELD_ITEM, {"owner": item_owner, "name": item_name, "number": number})
+            errors = response.get("errors") or []
+            if errors and not unreadable(errors):
+                fail(f"GitHub GraphQL errors: {json.dumps(errors)}")
+            node = ((response.get("data") or {}).get("repository") or {}).get("issueOrPullRequest")
+            if node is None:
+                return HoldMet(None, hold.until, unreadable=True)
+            if node.get("state") == "OPEN":
+                return HoldMet(None, f"{hold.until} closed")
+            closed = node.get("closedAt")
+            if not closed:
+                fail(f"{item_owner}/{item_name}#{number} is {node.get('state')!r} with no closedAt")
+            return HoldMet(timestamp(str(closed)), f"{hold.until} closed")
+        if not read_tags:
+            data = repository(run, TAGS, {"owner": owner, "name": name})
+            for tag in data["tags"]["nodes"]:
+                target = tag.get("target") or {}
+                date = (target.get("tagger") or {}).get("date") or target.get("committedDate")
+                if date and stable.match(tag["name"]):
+                    tags.append((timestamp(date), tag["name"]))
+            read_tags = True
+        after = sorted(t for t in tags if t[0] > hold.at)
+        return HoldMet(after[0][0], after[0][1]) if after else HoldMet(None, "")
+
+    return read
+
+
+def rechecked(issue: dict[str, Any], bot_login: str | None, hold: Hold, met: dt.datetime) -> bool:
+    """A comment by the --bot-login whose first line is the plan-recheck marker, newer than the
+    hold's met_at and than the hold itself (spec 098); anyone else's counts for nothing"""
+    if bot_login is None:
+        return False
+    for comment in issue["comments"]["nodes"]:
+        by_bot = PLANS.login(comment.get("author")).lower() == bot_login.lower()
+        first = PLANS.first_line(comment.get("body") or "")
+        at = timestamp(comment["createdAt"])
+        if by_bot and first == RECHECK_MARKER and at > met and at > hold.at:
+            return True
+    return False
+
+
+def held_row(
+    issue: dict[str, Any], answer: Answer, bot_login: str | None, holds: HoldReader
+) -> tuple[str, str, tuple[str, str | None] | None]:
+    """A plan whose answer is a hold (spec 098): (state, note, the --json hold)"""
+    hold = read_hold(answer)
+    if hold is None:
+        return "PLAN_OPEN", f"hold not read: {PLANS.first_line(answer.body)}", None
+    met = holds(hold)
+    if met.unreadable:
+        return "PLAN_OPEN", f"hold not read: {hold.until} can't be read", None
+    if met.at is None:
+        return "PLAN_HELD", f"until {hold.until}", (hold.until, None)
+    if rechecked(issue, bot_login, hold, met.at):
+        return "PLAN_OPEN", f"hold met: {met.what}", (hold.until, utc(met.at))
+    return "PLAN_HOLD_MET", f"hold met: {met.what}; re-check due", (hold.until, utc(met.at))
 
 
 def decline_text(answer: Answer) -> str:
@@ -1348,10 +1564,11 @@ def plan_state(
     filing: FilingReader,
     maintainers: frozenset[str] = frozenset(),
     newest: bool = False,
+    holds: HoldReader | None = None,
 ) -> PlanRow | None:
     """A plan issue's row; None for a plan closed but not as not planned, save its goal's
     newest plan closed as completed with no trusted outcome after its last close, which reads
-    PLAN_DONE (spec 097)"""
+    PLAN_DONE (spec 097). A hold answer reads by holds (spec 098)"""
     goal = plan_goal(issue)
     title = issue.get("title") or ""
     number = issue["number"]
@@ -1372,6 +1589,11 @@ def plan_state(
     answer = plan_answer(issue, bot_login, marker, maintainers)
     if answer is None:
         return PlanRow(goal, "PLAN_OPEN", title, "", number, "plan")
+    if answer.kind == "hold":
+        if holds is None:
+            fail(f"plan #{number} is held, and no hold reader was given")
+        state, note, hold = held_row(issue, answer, bot_login, holds)
+        return PlanRow(goal, state, title, note, number, "plan", hold=hold)
     if answer.kind != "accept":
         return PlanRow(goal, "PLAN_ANSWERED", title, answer.kind, number, "plan")
     if edited_after(issue, answer):
@@ -1398,6 +1620,7 @@ def plan_issue_rows(
     bot_login: str | None,
     filing: FilingReader,
     maintainers: frozenset[str] = frozenset(),
+    holds: HoldReader | None = None,
 ) -> list[PlanRow]:
     found: list[PlanRow] = []
     newest = {issue["number"] for issue in newest_plans(plan_issues).values()}
@@ -1411,6 +1634,7 @@ def plan_issue_rows(
                 filing=filing,
                 maintainers=maintainers,
                 newest=issue["number"] in newest,
+                holds=holds,
             )
             if row is not None:
                 opener = PLANS.login(issue.get("author"))
@@ -1560,12 +1784,17 @@ def fetch_plans(
     run: Runner = gh_graphql,
     filing: FilingReader | None = None,
     maintainers: frozenset[str] = frozenset(),
+    holds: HoldReader | None = None,
+    now: dt.datetime | None = None,
+    stable: re.Pattern[str] = STABLE,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
-    than PAGE, and for each accepted plan its items' issues; triage_state.py only when a goal
-    waits on --wip"""
+    than PAGE, for each accepted plan its items' issues, and for each held plan its item, or
+    the tags once (spec 098); triage_state.py only when a goal waits on --wip"""
     owner, name = split_repo(repo)
+    if holds is None:
+        holds = gh_holds(repo, run, now or dt.datetime.now(UTC), stable)
     base: Variables = {"owner": owner, "name": name}
     direction = goals()
     if not direction:
@@ -1584,6 +1813,7 @@ def fetch_plans(
         bot_login=bot_login,
         filing=filing or gh_filing(repo, bot_login, run),
         maintainers=maintainers,
+        holds=holds,
     )
     by_goal = plan_rows(
         direction,
@@ -1726,6 +1956,8 @@ def plan_json(row: PlanRow) -> dict[str, Any]:
         found["dropped"] = list(row.dropped)
     if row.follows is not None:  # spec 097: the finished plan a goal's row follows, and what it left missing
         found.update(follows=row.follows, missing=list(row.missing or ()))
+    if row.hold is not None:  # spec 098: a held plan's condition and when it was met
+        found["hold"] = {"until": row.hold[0], "met_at": row.hold[1]}
     return found
 
 
@@ -1757,6 +1989,12 @@ def main() -> int:
         help="with --plans: a role's resolved fillers, as `shipmill roles --flags` prints them; a relayed answer "
         "counts only when it names a maintainer (D-68)",
     )
+    parser.add_argument(
+        "--stable-tag-regex",
+        default=STABLE.pattern,
+        help="with --plans: tags that count as stable releases for a plan held `until release` (spec 098), "
+        "as triage_state.py's flag, e.g. '^\\d{4}\\.\\d{2}' for CalVer",
+    )
     args = parser.parse_args()
     if not args.plans and (args.wip is not None or args.role):
         parser.error("--wip and --role go with --plans")
@@ -1768,6 +2006,10 @@ def main() -> int:
         maintainers = maintainer_logins(args.role)
     except ValueError as exc:
         parser.error(str(exc))
+    try:
+        stable = re.compile(args.stable_tag_regex)
+    except re.error as exc:
+        parser.error(f"--stable-tag-regex: {exc}")
 
     autonomy = intake_autonomy(config_file(args.config))
     intake = fetch(
@@ -1792,6 +2034,7 @@ def main() -> int:
             wip=args.wip,
             room=triage_room(args.repo, args.bot_login),
             maintainers=maintainers,
+            holds=gh_holds(args.repo, gh_graphql_unreadable, dt.datetime.now(UTC), stable),
         )
     if args.json:
         print(json.dumps({"autonomy": autonomy}))

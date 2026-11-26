@@ -264,8 +264,10 @@ Intake (github-issue-triage's triage_state.py):
                   --bot-login, and with --plans (with --tool when given, [agents] wip as
                   --wip, and the --role flags) only when the checkout has docs/product.md:
                   PLAN_DUE with its goals (G-n), PLAN_MALFORMED,
-                  PLAN_ANSWERED, PLAN_ACCEPTED, and PLAN_DONE (a finished plan whose
-                  outcome is due, spec 097) with their plan issues (#N); the session
+                  PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE (a finished plan whose
+                  outcome is due, spec 097), and PLAN_HOLD_MET (a held plan whose
+                  condition was met, its re-check due, spec 098; a PLAN_HELD plan is in
+                  no row) with their plan issues (#N); the session
                   runs product intake. With --trusted-only, an open plan issue the
                   --bot-login didn't open is in none of these and in UNTRUSTED, and in no
                   other row (D-16)
@@ -674,8 +676,9 @@ UPSTREAM_STATE = SKILLS / "github-issue-triage" / "scripts" / "upstream_state.py
 INTAKE_STATE = SKILLS / "product-intake" / "scripts" / "intake_state.py"
 DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose goals a plan serves
 # intake_state.py's plan states (spec 028): the ones that make it exit 1, in its order, and the rest
-PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE")  # PLAN_DONE: spec 097
-PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_FILED", "PLAN_DECLINED"})
+# PLAN_DONE: spec 097; PLAN_HOLD_MET (a held plan's re-check) and PLAN_HELD, no action: spec 098
+PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET")
+PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_HELD", "PLAN_FILED", "PLAN_DECLINED"})
 # #1680: the report-only row of the plans waiting on the maintainer's answer, intake_state.py's
 # PLAN_OPEN, and the fix fleet.py queue asks of one (its ASKED[PLAN]; tests/test_status_plan_waits.py
 # keeps the two equal)
@@ -4256,7 +4259,7 @@ def plan_line(line: str) -> dict[str, Any] | None:
 
 def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> Plans:
     """PLANS from intake_state.py --plans --json's lines: each plan state that needs a session
-    (PLAN_DUE, PLAN_MALFORMED, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE) with its goals (G-n) and plan
+    (PLAN_DUE, PLAN_MALFORMED, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, PLAN_HOLD_MET) with its goals (G-n) and plan
     issues (#N). With trusted_only, an open plan issue the --bot-login didn't open is in none
     and in untrusted instead (D-16): an unattended session never starts for it. A goal's row
     (no-work, or a request intake_state.py read from a trusted author only) is the direction's.

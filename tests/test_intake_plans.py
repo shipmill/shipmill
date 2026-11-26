@@ -857,7 +857,8 @@ def test_s028_12_a_plan_closed_as_not_planned_reads_declined_with_the_reason(ist
 
 
 def test_plan_rows_needing_action_exit_1(ist: ModuleType) -> None:
-    assert {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE"} == ist.PLAN_ACTION
+    actions = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET"}
+    assert actions == ist.PLAN_ACTION  # PLAN_HOLD_MET: spec 098
 
 
 def test_a_plans_older_comments_are_paged_back(ist: ModuleType) -> None:
