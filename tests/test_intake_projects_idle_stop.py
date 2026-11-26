@@ -127,6 +127,16 @@ def test_s106_18_stop_answering_the_idle_question_reads_stop_due(ist: ModuleType
     assert action(ist, relayed, frozenset({"maintainer"})) == ("PROJECT_STOP_DUE", "stop: the release moved")
 
 
+def test_s106_18_a_bare_stop_answers_only_the_question_right_before_it(ist: ModuleType) -> None:
+    later = tree(DAYS_13)
+    later["comments"]["nodes"] = [
+        said(BOT, QUESTION, "2026-11-02T10:00:00Z", "NONE"),
+        said("maintainer", "continue", "2026-11-03T10:00:00Z"),
+        said("maintainer", "stop\nchanged my mind", DAYS_13),
+    ]
+    assert action(ist, later)[0] == "PROJECT_ACTIVE"
+
+
 def test_s106_18_an_untrusted_or_older_stop_changes_nothing(ist: ModuleType) -> None:
     outsider = tree(DAYS_13)
     outsider["comments"]["nodes"] = [said("drive-by", "stop: I don't like it", DAYS_13, "NONE")]

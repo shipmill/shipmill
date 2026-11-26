@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from .test_intake_outcomes import FAKE_GH, FAKE_UVX, Checkout, ist, via
+from .test_triage_state import worst_case
 
 BOT = "shipmill-app[bot]"
 NOW = dt.datetime(2026, 11, 26, 12, tzinfo=dt.UTC)
@@ -58,7 +59,7 @@ def head(
     comments: tuple[tuple[str, str], ...] = (),
     closed_at: str | None = None,
 ) -> dict[str, Any]:
-    """A head issue as PROJECTS_QUERY reads it"""
+    """A head issue as OPEN_HEADS reads it"""
     events = [] if labelled_by is None else [{"label": {"name": "project"}, "actor": who(labelled_by)}]
     return {
         "number": number,
@@ -271,6 +272,19 @@ def test_s106_28_the_product_counts_active_and_focus_heads_one_call_per_owner(is
     )
 
 
+def test_s106_28_a_product_count_reads_a_check_issues_parts_as_counts(ist: ModuleType) -> None:
+    """the count's query reads subIssuesSummary for the check issue's parts, no connection"""
+    summed = check()
+    del summed["subIssues"]
+    summed["subIssuesSummary"] = {"total": 2, "completed": 2}
+    closing = head(5, (summed, sub(6, "CLOSED")))
+    assert ist.project_row(closing, BOT).state == "PROJECT_CLOSING"
+    summed["subIssuesSummary"] = {"total": 2, "completed": 1}
+    row = ist.project_row(head(5, (summed, sub(6, "CLOSED"))), BOT)
+    assert (row.state, row.note, row.parts_open, row.parts_closed) == ("PROJECT_ACTIVE", "1 of 3 parts open", 1, 2)
+    assert "subIssuesSummary { total completed }" in ist.heads_query(["o/a"])
+
+
 def test_s106_28_a_failed_read_exits_2_naming_the_repo(ist: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
     product = ist.Product("o/home", ("o/home", "o/api"), 2)
     with pytest.raises(SystemExit) as exited:
@@ -363,3 +377,13 @@ def test_s106_28_the_run_counts_the_homes_product(tmp_path: Path) -> None:
     assert [via(call) for call in checkout.product_calls()] == ["o/api", "o/api"]  # one call a run
     failed = Projects(tmp_path / "f", config, heads, {"heads": {}, "fail": ["o/api"]}).run("--projects")
     assert failed.returncode == 2 and "o/api" in failed.stderr
+
+
+def test_s106_12_the_project_reads_cost_a_few_points(ist: ModuleType) -> None:
+    """A page of heads with their sub-issues and those sub-issues' own, and the pull requests
+    closing them, cost 258 points before the pages shrank (#1741's review); pinned, as
+    tests/test_intake_cost.py pins intake's other queries (#1459)"""
+    assert worst_case(ist.OPEN_HEADS, {}) == (4760, 5)  # the checkout's open heads, a page of 10
+    assert worst_case(ist.CLOSED_HEADS, {}) == (1710, 1)  # a check issue's parts as counts
+    assert worst_case(ist.heads_query(["o/a"]), {})[1] == 1  # a product count, per repo
+    assert worst_case(ist.heads_query(["o/a", "o/b", "o/c"]), {})[1] == 3

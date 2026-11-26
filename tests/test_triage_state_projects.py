@@ -86,3 +86,11 @@ def test_s106_16_the_query_reads_sub_issues_titles_and_bodies_at_no_more_cost(ts
     assert "subIssues(first: 50) { pageInfo { hasNextPage endCursor } nodes { number title body state" in ts.QUERY
     assert "blockedBy(first: 50) { pageInfo { hasNextPage endCursor } nodes { number state" in ts.QUERY
     assert "nodes { number title body" in ts.NATIVE_PAGES["subIssues"]
+
+
+def test_s106_16_a_persons_item_whose_parent_closed_reads_stale_handoff_first(ts: ModuleType) -> None:
+    item = with_subs(open_issue(8, labels=("human",)))
+    item["assignees"] = {"nodes": [{"login": "amy"}]}
+    item["parent"] = {"number": 7, "state": "CLOSED", "closedAt": None, "repository": {"nameWithOwner": "o/r"}}
+    found = ts.classify_open(item, "Triage:", "postponed", {}, None, REPO, project="project #7 held")
+    assert found == ("STALE_HANDOFF", "parent o/r#7 closed")

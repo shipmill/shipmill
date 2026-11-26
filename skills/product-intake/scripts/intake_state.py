@@ -2187,12 +2187,15 @@ CHECK_TITLE = "Check: "
 CHECK_SECTION = re.compile(r"^##[ \t]+Check[ \t]*$", re.MULTILINE)
 CLEANUP_SECTION = re.compile(r"^##[ \t]+Cleanup[ \t]*$", re.MULTILINE)
 UNCHECKED = re.compile(r"^[ \t]*[-*][ \t]+\[ \][ \t]+(.+?)[ \t]*$", re.MULTILINE)
-PROJECT_HEADS = 50  # heads per page, and per repo in a product count
-# sub-issues of a head, and of each of its sub-issues (the check issue's parts): kept small, as
-# GitHub refuses a query past 500,000 nodes and a product count reads every repo of an owner at
-# once (about 31,000 nodes a repo); a head with more is refused, never read short
-PROJECT_SUBS = 30
-PROJECT_PARTS = 15
+# The page sizes keep each read to a few of the host's rate-limit points (#1459): GitHub charges
+# a query by its worst case, one request per node of each nested connection, so a page of heads
+# with their sub-issues and those sub-issues' own is small; tests/test_intake_cost.py pins them
+PROJECT_PAGE = 10  # heads per page of the checkout's own read
+PRODUCT_HEADS = 25  # open heads per repo in a product count, refused past it
+# sub-issues of a head, and of each of its sub-issues (the check issue's parts); a head with
+# more is refused, never read short
+PROJECT_SUBS = 20
+PROJECT_PARTS = 10
 # the states a head reads, and who holds each (spec 106's table): its start, agents and the
 # maintainer's steps, the maintainer's steps first, the person who runs the check, none
 PROJECT_HOLDERS = {
@@ -2212,12 +2215,19 @@ IDLE_DAYS = 14  # S-106-17: a tree with no update this long reads PROJECT_IDLE
 # question with the reason on its next line
 STOP_LINE = re.compile(r"^stop:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE)
 STOP_ANSWER = re.compile(r"^stop\.?$", re.IGNORECASE)
-# the pull requests that close an issue of the tree, read in the checkout's own pass only
+# the pull requests that close the head or one of its sub-issues, read for an open head of the
+# checkout's own only (the idle read); a part's pull request moves the part's own updatedAt
 LINKED = "closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { updatedAt } }"
 
 
-def head_fields(linked: str) -> str:
-    """A head's fields, as GraphQL text; linked adds each issue's pull requests (the idle read)"""
+def head_fields(linked: str, summary: bool = False) -> str:
+    """A head's fields, as GraphQL text; linked adds the head's and its sub-issues' pull requests;
+    summary reads each sub-issue's own sub-issues as counts (subIssuesSummary), no connection"""
+    parts = (
+        "subIssuesSummary { total completed }"
+        if summary
+        else f"subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state updatedAt }} }}"
+    )
     return f"""
 number title body state stateReason createdAt closedAt author {{ __typename login }} authorAssociation {linked}
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
@@ -2229,21 +2239,32 @@ subIssues(first: {PROJECT_SUBS}) {{
   totalCount
   nodes {{
     number title body state updatedAt {linked}
-    subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state updatedAt {linked} }} }}
+    {parts}
   }}
 }}
 """
 
 
-HEAD_FIELDS = head_fields("")  # a product count's: the states alone
-LOCAL_FIELDS = head_fields(LINKED)
-PROJECTS_QUERY = (
-    "query($owner: String!, $name: String!, $since: DateTime, $cursor: String) {"
-    " repository(owner: $owner, name: $name) {"
-    f' issues(labels: ["{PROJECT_LABEL}"], states: STATES, first: {PROJECT_HEADS}, after: $cursor,'
-    " filterBy: {since: $since}, orderBy: {field: CREATED_AT, direction: ASC}) {"
-    " pageInfo { hasNextPage endCursor } nodes { " + LOCAL_FIELDS + " } } } }"
-)
+# a closed head's and a product count's: the states alone, a check issue's parts as counts, so
+# an owner's repos cost a point or two (a part closed as not planned that GitHub doesn't count
+# completed leaves the head active: counted, never a slot given away)
+COUNT_FIELDS = head_fields("", summary=True)
+LOCAL_FIELDS = head_fields(LINKED)  # an open head's of the checkout's own
+
+
+def projects_query(states: str, fields: str) -> str:
+    """One page of the checkout's heads in states, oldest first; the closed ones since $since"""
+    return (
+        "query($owner: String!, $name: String!, $since: DateTime, $cursor: String) {"
+        " repository(owner: $owner, name: $name) {"
+        f' issues(labels: ["{PROJECT_LABEL}"], states: {states}, first: {PROJECT_PAGE}, after: $cursor,'
+        " filterBy: {since: $since}, orderBy: {field: CREATED_AT, direction: ASC}) {"
+        " pageInfo { hasNextPage endCursor } nodes { " + fields + " } } } }"
+    )
+
+
+OPEN_HEADS = projects_query("OPEN", LOCAL_FIELDS)
+CLOSED_HEADS = projects_query("CLOSED", COUNT_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -2372,13 +2393,18 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
     checks = [sub for sub in subs if is_check(sub)]
     check = next((c for c in checks if c["state"] == "OPEN"), checks[0] if checks else None)
     parts = [sub for sub in subs if not is_check(sub)]  # a second check issue is no part
-    if check is not None:
+    counted = (check or {}).get("subIssuesSummary")  # a product count's: the check's parts as counts
+    if check is not None and counted is None:
         parts += complete(check.get("subIssues") or {}, f"check issue #{check['number']}")
     open_parts = sum(1 for part in parts if part["state"] == "OPEN")
+    all_parts = len(parts)
+    if counted is not None:
+        open_parts += int(counted["total"]) - int(counted["completed"])
+        all_parts += int(counted["total"])
     check_number = None if check is None else int(check["number"])
 
     def row(state: str, note: str) -> ProjectRow:
-        return ProjectRow(number, state, title, note, check_number, open_parts, len(parts) - open_parts)
+        return ProjectRow(number, state, title, note, check_number, open_parts, all_parts - open_parts)
 
     if head["state"] != "OPEN":
         if head.get("stateReason") == "COMPLETED":
@@ -2392,10 +2418,10 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
         return row("PROJECT_HELD", "no check issue")
     if check["state"] != "OPEN":  # checked, but the head is still open: whoever closes it next
         return row("PROJECT_CLOSING", f"check #{check_number} closed; the head is open")
-    if parts and open_parts == 0:
+    if all_parts and open_parts == 0:
         return row("PROJECT_CLOSING", cleanup_note(check.get("body") or ""))
     focus = PROJECT_FOCUS_LABEL in names
-    note = f"{open_parts} of {len(parts)} parts open" if parts else "no part filed"
+    note = f"{open_parts} of {all_parts} parts open" if all_parts else "no part filed"
     return row("PROJECT_FOCUS" if focus else "PROJECT_ACTIVE", note)
 
 
@@ -2423,6 +2449,7 @@ def stop_reason(head: dict[str, Any], bot_login: str | None, marker: str, mainta
             answer = comment.get("body") or ""
         if answer is not None:
             newest = (answer, asked)
+            asked = False  # a bare `stop` answers only the question right before it
     if newest is None:
         return None
     lines = [ln.strip() for ln in newest[0].strip().splitlines() if ln.strip()]
@@ -2496,7 +2523,7 @@ def fetch_projects(
     since = (now - dt.timedelta(days=PROJECT_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     found: list[ProjectRow] = []
     for states, after in (("OPEN", None), ("CLOSED", since)):
-        query = PROJECTS_QUERY.replace("STATES", states)
+        query = OPEN_HEADS if states == "OPEN" else CLOSED_HEADS
         variables: Variables = {"owner": owner, "name": name, **({"since": after} if after else {})}
         heads, _ = paged(run, query, variables, "issues")
         for head in heads:
@@ -2514,8 +2541,8 @@ def heads_query(repos: list[str]) -> str:
     for i, repo in enumerate(repos):
         owner, name = split_repo(repo)
         where = f"owner: {json.dumps(owner)}, name: {json.dumps(name)}"
-        connection = f'issues(labels: ["{PROJECT_LABEL}"], states: OPEN, first: {PROJECT_HEADS})'
-        parts.append(f"r{i}: repository({where}) {{ {connection} {{ totalCount nodes {{ {HEAD_FIELDS} }} }} }}")
+        connection = f'issues(labels: ["{PROJECT_LABEL}"], states: OPEN, first: {PRODUCT_HEADS})'
+        parts.append(f"r{i}: repository({where}) {{ {connection} {{ totalCount nodes {{ {COUNT_FIELDS} }} }} }}")
     return "query { " + " ".join(parts) + " }"
 
 
