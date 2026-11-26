@@ -134,9 +134,13 @@ still lands through a pull request:
 | `shipmill product edit <id> "<text>"` | Rewrites one item's text; its id stays |
 | `shipmill product retire <id>` | Removes one item; its id is never handed out again |
 | `shipmill product measure <G-n> "<metric> <comparison> <target>"` | Writes the goal's measure line, or replaces the one it has (spec 027); `--clear` removes it |
+| `shipmill product goal <G-n> --check "<check>" --by <horizon>` | Rewrites the goal as a goal, `<outcome>. Check: <check>. By: <horizon>`, keeping its outcome, and prints the line (spec 105); the horizon is a date, `YYYY-MM-DD`, or a release, `X.Y.Z`. Exits 2 on a measure, a malformed horizon, or a goal with a measure line |
+| `shipmill product held <G-n> --threshold "<threshold>" --source "<source>"` | Rewrites the goal as a standing measure, `Held: <statement>. Threshold: <threshold>. Source: <source>`, keeping its statement and its measure line, and prints the line (spec 105). Exits 2 on a goal |
 | `shipmill product met <G-n> [--on YYYY-MM-DD]` | Records a goal of kind goal as met: appends `. Met: <date>` to its text, the date today in UTC unless given (spec 106); refuses a measure, a goal of no kind, and one already met or dropped |
 | `shipmill product drop <G-n>` | Records a goal of kind goal as dropped, with `--reason "<reason>"`: appends `. Dropped: <today>: <reason>` (spec 106); refuses as `met` does |
 | `shipmill product serves <G-n> <G-n> ...` | In a component (`[product] home`), writes the goal's serves line naming the goals of the product's home direction it serves, or replaces the one it has (spec 071); `--clear` removes it |
+
+Without `uv tool install shipmill`, run each as `uvx shipmill product ...`.
 
 Each takes `--repo DIR` (default: the current directory). An edit command exits 2 without
 writing when the file doesn't pass `check` first. In a session with the shipmill plugin,
