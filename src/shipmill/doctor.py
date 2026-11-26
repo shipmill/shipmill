@@ -3,6 +3,7 @@ workflows the bot calls"""
 
 import datetime as dt
 import importlib.util
+import os
 import re
 import shutil
 import stat
@@ -51,8 +52,10 @@ from shipmill.app_login import client_secret_file, secret_refused, stored_logins
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
+from shipmill.claude_pause import LOGIN as LOGIN_CREDENTIAL
+from shipmill.claude_pause import NAMED, credential_id, load_pause, pauses_dir
 from shipmill.claude_token import FLAG as TOKEN_FLAG
-from shipmill.claude_token import MAX_AGE, SETUP, Credential, Kind, Token
+from shipmill.claude_token import LIFETIME, MAX_AGE, SETUP, Credential, Kind, Token
 from shipmill.config import config_path, policy_branch
 from shipmill.config import read as read_config
 from shipmill.decide import PART_ZONES, VETO_HOURS_KEY, DecisionPolicy, Zone, zones
@@ -69,7 +72,7 @@ from shipmill.downstream import (
     not_installed,
 )
 from shipmill.errors import ReleaseError
-from shipmill.gate import VERIFY, skills_dir, state_dir
+from shipmill.gate import RECORD, VERIFY, Launch, load_launch, skills_dir, state_dir
 from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
@@ -258,6 +261,7 @@ def doctor(
     rules: Callable[[], RulesReader | None] | None = None,
     leaks: LeakProbe | None = None,
     identity: IdentityProbe | None = None,
+    pauses: Path | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -287,7 +291,8 @@ def doctor(
     reads the leak check's private file, secrets, and scanner, only with [agents] (spec 081);
     None checks none. identity reads whether [agents] app_id's token reads repo for the
     identity row, which every repo gets (S-082-10); None, or a probe without the key, leaves
-    the App unchecked"""
+    the App unchecked. pauses is the folder of the host's Claude pause records (spec 089) the
+    token row reads, never writes (#1725); None takes $XDG_STATE_HOME's, as the gate does"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -327,7 +332,12 @@ def doctor(
             checks.extend(optional_permission_checks(session_app, policy.agents.app_id, repo))
         uses = None if credential is None else credential()
         if uses is not None:
-            checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
+            folder, record = None, None
+            if uses.token is not None:  # #1725: the pause records only a token file's row names
+                folder = pauses or pauses_dir(os.environ, Path.home() if home is None else home)
+                git = Git(root)
+                record = state_dir(git) / RECORD if git.ok("rev-parse", "--git-dir") else None
+            checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC), folder, record))
         if auth is not None and (uses is None or uses.refused is None):  # a refused file can't be asked about
             checks.append(auth_check(auth(None if uses is None else uses.token)))
         if policy.agents.verify:  # D-9: no list, no row and no read of the gate's state
@@ -653,11 +663,18 @@ def auth_check(found: ClaudeAuth) -> Check:
     return Check(status, "claude auth", found.line())
 
 
-def token_check(found: Credential, launchd_job: bool, now: dt.datetime) -> Check:
+def token_check(
+    found: Credential, launchd_job: bool, now: dt.datetime, pauses: Path | None = None, record: Path | None = None
+) -> Check:
     """Spec 035: the kind the gate's sessions authenticate with, never the token. A file the
     gate refuses is a FAIL with its reason and fix; the login is a WARN on a host with a launchd
     job, where an unattended gate leans on it; a token whose file is older than MAX_AGE is a
-    WARN, as a setup-token token lasts a year"""
+    WARN, and one older than LIFETIME a FAIL, as a setup-token token lasts a year. A token
+    file's row names its fingerprint, the name of its pause record (spec 089), the date the
+    file was written and its expiry; with pauses, the folder of the pause records, whether one
+    holds for that fingerprint, and with record, the gate's gate.json, a record that still
+    holds for the fingerprint its last launch ran with, which the file no longer holds, as
+    stale (#1725). It reads the records and writes none; one it can't read is a FAIL"""
     path = found.source.path
     if found.refused is not None:
         return Check("FAIL", "claude auth", f"token file: {found.refused.reason}; fix: {found.refused.fix}")
@@ -669,15 +686,52 @@ def token_check(found: Credential, launchd_job: bool, now: dt.datetime) -> Check
             )
             return Check("WARN", "claude auth", detail)
         return Check("PASS", "claude auth", f"{Kind.LOGIN}: no token file at {path}")
-    age = now - found.token.written
+    named = f" ({TOKEN_FLAG})" if found.source.named else ""
+    current = credential_id(found.token)
+    written = found.token.written
+    expires = written + LIFETIME
+    facts = f"fingerprint {current}, written {written:%Y-%m-%d}, expires {expires:%Y-%m-%d}"
+    fix = f"fix: run {SETUP} and save the token to {path}"
+    try:
+        if pauses is not None:
+            facts += pause_note(pauses, current, None if record is None else load_launch(record))
+    except ReleaseError as exc:
+        return Check("FAIL", "claude auth", f"token file {path}{named}: {facts}; {exc}; fix: {exc.fix}")
+    age = now - written
+    if age > LIFETIME:
+        detail = f"token file {path}{named} expired on {expires:%Y-%m-%d}, a year after it was written: {facts}; {fix}"
+        return Check("FAIL", "claude auth", detail)
     if age > MAX_AGE:
         detail = (
-            f"token file {path} was written {age.days} days ago, and a {SETUP} token lasts a year;"
-            f" fix: run {SETUP} and save the token to {path}"
+            f"token file {path}{named} was written {age.days} days ago, and a {SETUP} token lasts a year:"
+            f" {facts}; {fix}"
         )
         return Check("WARN", "claude auth", detail)
-    named = f" ({TOKEN_FLAG})" if found.source.named else ""
-    return Check("PASS", "claude auth", f"token file {path}{named}")
+    return Check("PASS", "claude auth", f"token file {path}{named}: {facts}")
+
+
+def pause_note(folder: Path, current: str, last: Launch | None) -> str:
+    """#1725: whether a pause record holds for the token file's fingerprint (spec 089), and a
+    record that still holds for the one the gate's last launch ran with, which the file no
+    longer holds, as stale: no tick reads it, as each reads its current fingerprint's. Reads
+    the records, never writes one"""
+    mine = load_pause(folder, current)
+    if mine is None:
+        note = "; no pause record"
+    elif mine.lifted is None:
+        note = f"; paused: its pause record holds, {mine.cause.value} since {mine.at.isoformat(timespec='minutes')}"
+    else:
+        note = f"; its pause record lifted at {mine.lifted.isoformat(timespec='minutes')}"
+    before = None if last is None else last.credential
+    if before is None or before in {current, LOGIN_CREDENTIAL} or NAMED.fullmatch(before) is None:
+        return note
+    old = load_pause(folder, before)
+    if old is not None and old.holds:
+        note += (
+            f"; the pause record of {before}, the fingerprint the gate's last launch ran with, is stale:"
+            f" the file no longer holds that token, so the next tick reads {current}'s instead"
+        )
+    return note
 
 
 _DOWNSTREAM_USES = "shipmill/shipmill/.github/workflows/downstream.yml"  # the reusable workflow the caller calls

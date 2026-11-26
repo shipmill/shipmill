@@ -3,6 +3,7 @@ real claude and never a real token: the files hold a sentinel, the runners and s
 fakes, and every output the gate writes is scanned for any 8 characters of it"""
 
 import datetime as dt
+import hashlib
 import json
 import os
 import plistlib
@@ -20,6 +21,7 @@ from shipmill.agents import AgentsConfig
 from shipmill.app import Identity
 from shipmill.autonomy import Hold
 from shipmill.claude_auth import COMMAND, ClaudeAuth, preflight_auth, token_auth
+from shipmill.claude_pause import Pause, save_pause
 from shipmill.claude_token import (
     DEFAULT,
     OAUTH,
@@ -43,10 +45,12 @@ from shipmill.gate import (
     ClaudeCli,
     Decision,
     Finding,
+    Launch,
     Session,
     Wait,
     gate,
     headless_env,
+    save_launch,
     save_waiting,
     state_dir,
     tick_lines,
@@ -55,7 +59,7 @@ from shipmill.gate import (
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.launchd import build, cli_fix
-from shipmill.walk import HANDED
+from shipmill.walk import HANDED, End
 from tests.conftest import Repo
 from tests.test_agent_as_person import add_agents
 from tests.test_status_picture import checked, facts, job, lines
@@ -618,7 +622,7 @@ def test_s035_16_doctor_reports_the_kind_the_refusal_the_login_and_an_old_token(
     path = token_file(home)
     now = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.UTC)
     ok = token_check(credential_of(home), True, now + dt.timedelta(days=30))
-    assert (ok.status, ok.detail) == ("PASS", f"token file {path}")
+    assert ok.status == "PASS" and ok.detail.startswith(f"token file {path}: fingerprint ")
     old = token_check(credential_of(home), True, now + dt.timedelta(days=331))
     assert old.status == "WARN" and "331 days ago" in old.detail and "claude setup-token" in old.detail
     path.chmod(0o640)
@@ -639,9 +643,81 @@ def test_s035_16_doctor_runs_the_token_check_with_agents_and_skips_the_preflight
     assert check.status == "FAIL" and str(path) in check.detail and auth.asked == 0
     path.chmod(0o600)
     auth = FakeAuth([ClaudeAuth(None, token=path)])
-    checks = doctor(repo.root, auth=auth, credential=lambda: credential_of(home), launchd_job=True, now=NOW)
+    checks = doctor(
+        repo.root,
+        auth=auth,
+        credential=lambda: credential_of(home),
+        launchd_job=True,
+        now=NOW,
+        pauses=tmp_path / "pauses",
+    )
     assert [c.status for c in checks if c.name == "claude auth"] == ["PASS", "PASS"]
     assert auth.tokens[0] is not None and auth.tokens[0].value == SENTINEL  # the preflight got the token
+
+
+# 1725: the token row names the fingerprint a pause record is named by, the file's date and
+# expiry, and the pause records for it, read and never written
+
+WRITTEN = dt.datetime(2025, 1, 10, 12, tzinfo=dt.UTC)
+OTHER = SENTINEL[:-6] + "Mb3Vx8"  # another token: the same shape, another fingerprint
+
+
+def written_at(path: Path, at: dt.datetime) -> None:
+    os.utime(path, (at.timestamp(), at.timestamp()))
+
+
+def fingerprint_of(path: Path) -> str:
+    """Spec 089's name for the credential, worked out here rather than by the code under test"""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+@pytest.mark.parametrize(("days", "status"), [(329, "PASS"), (335, "WARN"), (366, "FAIL")])
+def test_1725_the_token_row_names_its_fingerprint_date_and_expiry_and_fails_past_a_year(
+    tmp_path: Path, days: int, status: str
+) -> None:
+    home = tmp_path / "home"
+    path = token_file(home)
+    written_at(path, WRITTEN)
+    found = token_check(credential_of(home), True, WRITTEN + dt.timedelta(days=days), tmp_path / "pauses")
+    facts = f"fingerprint {fingerprint_of(path)}, written 2025-01-10, expires 2026-01-10; no pause record"
+    assert found.status == status and facts in found.detail
+    if status == "PASS":
+        assert found.detail == f"token file {path}: {facts}"
+    else:
+        assert found.detail.endswith(f"; fix: run claude setup-token and save the token to {path}")
+    assert (status == "WARN") == (f"was written {days} days ago" in found.detail)
+    assert (status == "FAIL") == ("expired on 2026-01-10" in found.detail)
+    assert leaks(found.detail) == set()
+    assert not (tmp_path / "pauses").exists()  # read, never written
+
+
+def test_1725_a_new_token_names_another_fingerprint_and_the_old_ones_pause_reads_stale(
+    repo: Repo, tmp_path: Path
+) -> None:
+    add_agents(repo, None)
+    home, pauses = tmp_path / "home", tmp_path / "pauses"
+    path = token_file(home)
+    old = fingerprint_of(path)
+    save_launch(state_dir(Git(repo.root)) / RECORD, Launch("f", str(SESSION), NOW, credential=old))
+    save_pause(pauses, old, Pause(End.AUTH, str(SESSION), NOW))
+    record = (pauses / f"{old}.json").read_bytes()
+
+    def row() -> str:
+        checks = doctor(repo.root, credential=lambda: credential_of(home), now=NOW, pauses=pauses)
+        [check] = [c for c in checks if c.name == "claude auth"]
+        return check.detail
+
+    held = row()
+    assert f"fingerprint {old}," in held and f"paused: its pause record holds, auth since {NOW:%Y-%m-%dT%H:%M}" in held
+    assert "stale" not in held
+    token_file(home, OTHER + "\n")
+    new = fingerprint_of(path)
+    assert new != old
+    replaced = row()
+    assert f"fingerprint {new}," in replaced and "; no pause record;" in replaced
+    assert f"the pause record of {old}, the fingerprint the gate's last launch ran with, is stale" in replaced
+    assert leaks(held + replaced) == set() and leaks(replaced, OTHER) == set()
+    assert (pauses / f"{old}.json").read_bytes() == record and sorted(pauses.iterdir()) == [pauses / f"{old}.json"]
 
 
 # S-035-17
