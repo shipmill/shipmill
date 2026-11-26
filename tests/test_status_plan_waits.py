@@ -16,7 +16,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import Action, decide, parse_findings
 from shipmill.status import Row, Verdict, report
 
-from .test_intake_plans import PLANS_NOW, Fake, open_plan
+from .test_intake_plans import PLANS_NOW, Fake, full_plan, open_plan
 from .test_status_picture import REPO, facts, lines
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,7 +112,9 @@ def test_a_plan_line_with_a_malformed_association_is_refused(ws: ModuleType) -> 
 
 
 def test_intake_names_a_plans_openers_association(ist: ModuleType) -> None:
-    by_bot, by_hand = open_plan(20), open_plan(21, author="maintainer", bot=False, association="OWNER")
+    # two goals' plans: two open plans of one goal would read the older replaced (spec 106)
+    by_bot = open_plan(20)
+    by_hand = open_plan(21, author="maintainer", bot=False, association="OWNER", body=full_plan("G-2"))
     intake = ist.fetch(
         "o/r",
         label="opportunity",
@@ -126,7 +128,7 @@ def test_intake_names_a_plans_openers_association(ist: ModuleType) -> None:
     found = ist.fetch_plans(
         "o/r",
         intake,
-        goals=lambda: [ist.Goal("G-1", "a")],
+        goals=lambda: [ist.Goal("G-1", "a"), ist.Goal("G-2", "b")],
         marker="Triage:",
         bot_login=BOT,
         wip=None,

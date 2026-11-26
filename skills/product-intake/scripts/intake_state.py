@@ -293,6 +293,9 @@ CLOSING_VERDICTS = ("implement", "feature", "duplicate", "won't fix", "won’t f
 OWN_VERDICT = "opportunity"  # intake's triage comment on an opportunity it opens
 REASON_WINDOW = dt.timedelta(hours=1)  # "close with comment" posts the comment just before the close
 ACTION = {"NEW_FEEDBACK", "ACCEPTED", "NO_REASON", "OVERLAP"}  # HELD is no action (spec 101)
+# spec 106: an accepted opportunity's goal; GOAL_PROPOSAL_DUE is an action, ACCEPTED_INTO (its
+# goal's plan takes it), GOAL_PROPOSED, and NEEDS_GOAL (the maintainer's answer) are none
+ACTION |= {"GOAL_PROPOSAL_DUE"}
 HELD_MARKER = "<!-- shipmill:intake-held -->"  # spec 101: the first line of intake's held comment
 PROPOSE = re.compile(r"^propose\.?$", re.IGNORECASE)  # spec 101: the maintainer asks for a held outcome by name
 ORDER = (
@@ -418,7 +421,9 @@ SPEC_SERVES = re.compile(r"^serves:(.*)$")
 NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
 SERVING_STATUSES = ("draft", "approved")
 AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
+# PLAN_REPLACED (spec 106): an older open plan of a goal, to be closed for the newer one
 PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET"}
+PLAN_ACTION |= {"PLAN_REPLACED"}
 # PLAN_OVERDUE (spec 106): an open plan past its answer date, no action
 PLAN_ORDER = (
     "PLAN_DUE",
@@ -427,6 +432,7 @@ PLAN_ORDER = (
     "PLAN_ACCEPTED",
     "PLAN_DONE",
     "PLAN_HOLD_MET",
+    "PLAN_REPLACED",
     "PLAN_WAITS",
     "PLAN_OPEN",
     "PLAN_OVERDUE",
@@ -1221,6 +1227,7 @@ def plan_rows(
     room: RoomReader,
     maintainers: frozenset[str] = frozenset(),
     checked: set[str] | None = None,
+    into: dict[str, tuple[int, dt.datetime]] | None = None,
 ) -> list[PlanRow]:
     """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has; a
     PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096). After
@@ -1232,6 +1239,7 @@ def plan_rows(
     plans_of: dict[int, str] = {}  # each plan issue's goal
     newest = newest_plans(plan_issues)  # each goal's newest plan issue
     planned: set[str] = set()  # goals with an open plan issue
+    opened: dict[str, dt.datetime] = {}  # spec 106: when each goal's newest open plan was opened
     for issue in plan_issues:
         goal = plan_goal(issue)
         if goal is None:
@@ -1239,7 +1247,14 @@ def plan_rows(
         plans_of[issue["number"]] = goal
         if issue["state"] == "OPEN":
             planned.add(goal)
-    declined = {g for g, i in newest.items() if i["state"] == "CLOSED" and i["stateReason"] == "NOT_PLANNED"}
+            at = timestamp(issue["createdAt"])
+            opened[goal] = max(opened.get(goal, at), at)
+    # a replaced plan (spec 106) is neither declined nor answered: its goal's no-work trigger reads on
+    declined = {
+        g
+        for g, i in newest.items()
+        if i["state"] == "CLOSED" and i["stateReason"] == "NOT_PLANNED" and not replaced(i, bot_login)
+    }
     finished: set[str] = set()  # goals whose newest plan reads PLAN_DONE `closed without an outcome`
     follows: dict[str, tuple[int, tuple[str, ...]]] = {}  # the plan a goal's next one follows, and what it left missing
     for goal, issue in newest.items():
@@ -1286,6 +1301,9 @@ def plan_rows(
         named = goal_ids(issue.get("title") or "")
         if len(named) == 1 and named <= listed:
             (goal,) = named
+            asked_at = timestamp(issue["createdAt"]) if issue.get("createdAt") else None
+            if goal in opened and (asked_at is None or asked_at <= opened[goal]):
+                continue  # S-106-10: a plan opened since the request answers it
             requests[goal] = min(requests.get(goal, issue["number"]), issue["number"])
 
     found: list[PlanRow] = []
@@ -1293,11 +1311,16 @@ def plan_rows(
     for goal in goals:
         if goal.state is not None:  # S-106-3: a met or dropped goal reads no trigger, a request's either
             continue
-        if goal.id in planned:
-            continue
-        if goal.id in requests:
+        if goal.id in requests:  # S-106-10: with or without an open plan, which the new one replaces
             number = requests[goal.id]
             found.append(row(goal, "PLAN_DUE", f"requested in #{number}", number))
+            continue
+        accepted = (into or {}).get(goal.id)
+        latest = newest.get(goal.id)  # its newest plan in any state: a declined one answered it too
+        if accepted is not None and (latest is None or accepted[1] > timestamp(latest["createdAt"])):
+            found.append(row(goal, "PLAN_DUE", f"opportunity #{accepted[0]} accepted", accepted[0]))  # S-106-22
+            continue
+        if goal.id in planned:
             continue
         if goal.kind == "measure":  # spec 105: a standing measure is planned only on request
             continue
@@ -1378,6 +1401,19 @@ def plan_outcome(issue: dict[str, Any], bot_login: str | None) -> dict[str, Any]
 
 
 GOAL_CHECK = re.compile(r"^Goal check:[ \t]*holds\b", re.IGNORECASE | re.MULTILINE)
+
+
+REPLACED_MARKER = re.compile(r"^<!-- shipmill:plan-replaced #([1-9][0-9]*) -->$")
+
+
+def replaced(issue: dict[str, Any], bot_login: str | None) -> bool:
+    """spec 106: a plan the App closed for a newer one: its comment whose first line is
+    `<!-- shipmill:plan-replaced #<new> -->`, by the --bot-login alone"""
+    return bot_login is not None and any(
+        PLANS.login(c.get("author")).lower() == bot_login.lower()
+        and REPLACED_MARKER.match(PLANS.first_line(c.get("body") or "")) is not None
+        for c in (issue.get("comments") or {}).get("nodes") or []
+    )
 
 
 def goal_check_holds(body: str) -> bool:
@@ -1846,8 +1882,8 @@ def plan_state(
     if issue["state"] == "CLOSED":
         if issue["stateReason"] == "COMPLETED" and newest and plan_outcome(issue, bot_login) is None:
             return PlanRow(goal, "PLAN_DONE", title, "closed without an outcome", number, "plan")
-        if issue["stateReason"] != "NOT_PLANNED":
-            return None
+        if issue["stateReason"] != "NOT_PLANNED" or replaced(issue, bot_login):
+            return None  # a replaced plan is no decline (spec 106)
         answer = plan_answer(issue, bot_login, marker, maintainers)
         reason = decline_text(answer) if answer is not None and answer.kind == "decline" else ""
         reason = reason or decline_reason(issue, marker, bot_login) or "closed as not planned with no reason"
@@ -1897,6 +1933,16 @@ def plan_issue_rows(
     found: list[PlanRow] = []
     now = now or dt.datetime.now(UTC)
     newest = {issue["number"] for issue in newest_plans(plan_issues).values()}
+    # S-106-10: of a goal's open plans, all but the newest read PLAN_REPLACED by it
+    open_of: dict[str, list[dict[str, Any]]] = {}
+    for issue in plan_issues:
+        goal = plan_goal(issue)
+        if goal is not None and issue["state"] == "OPEN" and is_plan(issue, bot_login):
+            open_of.setdefault(goal, []).append(issue)
+    newer: dict[int, int] = {}
+    for issues in open_of.values():
+        ordered = sorted(issues, key=lambda i: (timestamp(i["createdAt"]), int(i["number"])))
+        newer |= {int(i["number"]): int(ordered[-1]["number"]) for i in ordered[:-1]}
     for issue in plan_issues:
         if is_plan(issue, bot_login):
             row = plan_state(
@@ -1909,10 +1955,14 @@ def plan_issue_rows(
                 newest=issue["number"] in newest,
                 holds=holds,
             )
-            if row is not None:
+            if row is None:
+                continue
+            if int(issue["number"]) in newer:  # S-106-10: the newer plan of its goal replaces it
+                row = replace(row, state="PLAN_REPLACED", note=f"by #{newer[int(issue['number'])]}")
+            else:
                 row = dated(row, issue, now, bot_login, marker, maintainers)
-                opener = PLANS.login(issue.get("author"))
-                found.append(replace(row, author=opener, association=str(issue.get("authorAssociation") or "NONE")))
+            opener = PLANS.login(issue.get("author"))
+            found.append(replace(row, author=opener, association=str(issue.get("authorAssociation") or "NONE")))
     return found
 
 
@@ -1977,10 +2027,23 @@ def closed_states(run: Runner, owner: str, name: str, numbers: list[int]) -> dic
     return found
 
 
-def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
+OPPORTUNITY_ITEM = re.compile(r"^#([1-9][0-9]*)\b")  # spec 106: a feature item naming an accepted opportunity
+
+
+def gh_filing(
+    repo: str, bot_login: str | None, run: Runner, opportunities: dict[int, set[str]] | None = None
+) -> FilingReader:
     """The default filing reader: plans.py's items query, and the existing items' milestones and
-    parents (D-114); once the plan reads filed, how its items' issues closed (spec 097)"""
+    parents (D-114); once the plan reads filed, how its items' issues closed (spec 097). A
+    feature item whose text starts `#N`, N an opportunity of this repo (opportunities, by its
+    labels), files no issue (S-106-23): the opportunity is its carrier, linked as the plan's
+    sub-issue and labelled `project`, the note naming one not yet labelled"""
     owner, name = split_repo(repo)
+    opportunities = opportunities or {}
+
+    def opportunity(item: Any) -> int | None:
+        named = OPPORTUNITY_ITEM.match(item.text) if item.kind == "feature" else None
+        return int(named.group(1)) if named is not None and int(named.group(1)) in opportunities else None
 
     def read(issue: dict[str, Any], plan: Any) -> tuple[str, str]:
         try:
@@ -1989,12 +2052,24 @@ def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
             fail(str(exc))
         kept = {item.id for item in plan.items}  # a partial accept's plan holds its kept items alone (spec 096)
         filed = [(item, carrier) for item, carrier in filed if item.id in kept]
-        unfiled = [item.id for item, carrier in filed if item.kind in FILED_KINDS and carrier is None]
+        unfiled = [
+            item.id
+            for item, carrier in filed
+            if item.kind in FILED_KINDS and carrier is None and opportunity(item) is None
+        ]
         carried = [carrier for item, carrier in filed if item.kind in FILED_KINDS and carrier is not None]
         # each item's issue of this repo, in Work order: a filed item's carrier, an existing item here
         work: list[tuple[str, int]] = []
         here: list[int] = []
+        unlabelled: list[int] = []
         for item, carrier in filed:
+            named = opportunity(item) if carrier is None else None
+            if named is not None:  # S-106-23: the opportunity is the item's head
+                here.append(named)
+                work.append((item.id, named))
+                if PROJECT_LABEL not in opportunities[named]:
+                    unlabelled.append(named)
+                continue
             if item.kind in FILED_KINDS and carrier is not None:
                 work.append((item.id, carrier.number))
             ref = EXISTING_REF.match(item.text) if item.kind == "existing" else None
@@ -2022,6 +2097,8 @@ def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
             notes.append(f"not in milestone {plan.milestone}: {', '.join(f'#{n}' for n in sorted(set(outside)))}")
         if unlinked:
             notes.append(f"not linked: {', '.join(f'#{n}' for n in unlinked)}")
+        if unlabelled:
+            notes.append(f"not labelled project: {', '.join(f'#{n}' for n in unlabelled)}")
         other = f"another parent: {', '.join(f'#{n}' for n in elsewhere)}" if elsewhere else ""
         if notes:
             return "PLAN_ACCEPTED", "; ".join([*notes, other] if other else notes)
@@ -2062,6 +2139,8 @@ def fetch_plans(
     now: dt.datetime | None = None,
     stable: re.Pattern[str] = STABLE,
     checked: set[str] | None = None,
+    into: dict[str, tuple[int, dt.datetime]] | None = None,
+    opportunities: dict[int, set[str]] | None = None,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
@@ -2086,7 +2165,7 @@ def fetch_plans(
         goals=frozenset(g.id for g in direction),
         marker=marker,
         bot_login=bot_login,
-        filing=filing or gh_filing(repo, bot_login, run),
+        filing=filing or gh_filing(repo, bot_login, run, opportunities or {}),
         maintainers=maintainers,
         holds=holds,
         now=now,
@@ -2104,6 +2183,7 @@ def fetch_plans(
         wip=wip,
         room=room,
         checked=checked,
+        into=into,
     )
     found = by_goal + by_issue
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
@@ -3145,6 +3225,117 @@ def goal_json(row: GoalRow) -> dict[str, Any]:
     }
 
 
+# -- spec 106: an accepted opportunity names the goal it serves
+
+# Opportunities accepted (labelled) from this time on name their goal; one accepted before
+# spec 106's build keeps its path to the spec gate (S-106-24)
+GOAL_ACCEPTS_FROM = dt.datetime(2026, 11, 27, tzinfo=UTC)
+ACCEPT_GOAL = re.compile(r"^accept[ \t]+(G-[1-9][0-9]*)[ \t]*\.?$", re.IGNORECASE)
+ACCEPT_NEW_GOAL = re.compile(r"^accept[ \t]+new[ \t]+goal[ \t]*\.?$", re.IGNORECASE)
+NEW_GOAL = "new goal"
+ACCEPTED_OPPORTUNITIES = """
+query($owner: String!, $name: String!, $label: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(labels: [$label], states: OPEN, first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number parent { number }
+        timelineItems(itemTypes: [LABELED_EVENT], last: 10) {
+          nodes { ... on LabeledEvent { createdAt label { name } } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+@dataclass(frozen=True)
+class Accepted:
+    """When an open opportunity was labelled accepted, and its sub-issue parent (spec 106)"""
+
+    at: dt.datetime | None
+    parent: int | None
+
+
+def accepted_reads(repo: str, label: str, run: Runner) -> dict[int, Accepted]:
+    """Each open issue labelled the accept label: when the label was last added, and its parent"""
+    owner, name = split_repo(repo)
+    nodes, _ = paged(run, ACCEPTED_OPPORTUNITIES, {"owner": owner, "name": name, "label": label}, "issues")
+    found: dict[int, Accepted] = {}
+    for node in nodes:
+        events = (node.get("timelineItems") or {}).get("nodes") or []
+        times = [timestamp(e["createdAt"]) for e in events if (e.get("label") or {}).get("name") == label]
+        found[int(node["number"])] = Accepted(max(times) if times else None, (node.get("parent") or {}).get("number"))
+    return found
+
+
+def accept_goal(issue: dict[str, Any], marker: str, bot_login: str | None, maintainers: frozenset[str]) -> str | None:
+    """S-106-22: the goal an accepted opportunity serves: the newest trusted reply whose first
+    line is `accept G-<n>` or `accept new goal` (the App's relay naming a maintainer too, D-68),
+    else the one goal its body's `Serves:` line names; None with neither"""
+    named: str | None = None
+    for comment in (issue.get("comments") or {}).get("nodes") or []:
+        answer = relayed_answer(comment, bot_login, marker, maintainers)
+        if answer is None and answerer(comment, bot_login, marker):
+            answer = comment.get("body") or ""
+        first = PLANS.first_line(answer or "")
+        goal = ACCEPT_GOAL.match(first)
+        if goal is not None:
+            named = goal.group(1).upper()
+        elif ACCEPT_NEW_GOAL.match(first):
+            named = NEW_GOAL
+    if named is not None:
+        return named
+    goals = serves(issue.get("body") or "")
+    return next(iter(goals)) if len(goals) == 1 else None
+
+
+def opportunity_goals(
+    found: list[Item],
+    intake: Intake,
+    goals: list[Goal],
+    reads: dict[int, Accepted],
+    marker: str,
+    bot_login: str | None,
+    maintainers: frozenset[str],
+) -> list[Item]:
+    """S-106-22, S-106-24: an ACCEPTED opportunity accepted from GOAL_ACCEPTS_FROM on reads by
+    the goal it names: ACCEPTED_INTO `G-<n>` for a goal of kind goal still open (written or
+    planned); for `accept new goal`, GOAL_PROPOSAL_DUE until the App's open `goal-proposal`
+    issue is its sub-issue parent, then GOAL_PROPOSED; NEEDS_GOAL for no goal, or one that is a
+    measure, of no kind, met, dropped, or not listed. Any other opportunity reads as before"""
+    issues = {int(i["number"]): i for i in intake.opportunity_issues}
+    proposals = {
+        int(i["number"])
+        for i in intake.open_issues
+        if GOAL_PROPOSAL_LABEL in labels(i)
+        and bot_login is not None
+        and PLANS.login(i.get("author")).lower() == bot_login.lower()
+    }
+    open_goals = {g.id for g in goals if g.kind == "goal" and g.state is None}
+    rows = []
+    for item in found:
+        read = reads.get(item.number)
+        issue = issues.get(item.number)
+        if item.state != "ACCEPTED" or read is None or issue is None or read.at is None or read.at < GOAL_ACCEPTS_FROM:
+            rows.append(item)
+            continue
+        goal = accept_goal(issue, marker, bot_login, maintainers)
+        if goal == NEW_GOAL:
+            if read.parent in proposals:
+                item = replace(item, state="GOAL_PROPOSED", note=f"goal proposal #{read.parent} waits on your answer")
+            else:
+                item = replace(item, state="GOAL_PROPOSAL_DUE", note="open its goal proposal")
+        elif goal in open_goals:
+            item = replace(item, state="ACCEPTED_INTO", note=goal)
+        else:
+            why = "names no goal" if goal is None else f"{goal} is no goal still open"
+            item = replace(item, state="NEEDS_GOAL", note=f"{why}: answer `accept G-<n>` or `accept new goal`")
+        rows.append(item)
+    return rows
+
+
 def show(row: Item) -> str:
     detail = []
     if row.kind == "opportunity":
@@ -3274,10 +3465,22 @@ def main() -> int:
     checked: set[str] = set()  # spec 106: goals whose finished plan's check holds
     if args.plans or args.goals:  # the goals are read once; --goals reads the plans to place each goal
         direction = uvx_goals(args.tool)()
+        # spec 106: an accepted opportunity names its goal, and its goal's plan takes it
+        reads = accepted_reads(args.repo, args.accepted_label, gh_graphql) if direction else {}
+        found = opportunity_goals(found, intake, direction, reads, args.marker, args.bot_login, maintainers)
+        into: dict[str, tuple[int, dt.datetime]] = {}
+        for item in sorted(found, key=lambda i: i.number):
+            accepted_at = reads[item.number].at if item.number in reads else None
+            if item.state == "ACCEPTED_INTO" and accepted_at is not None and item.note not in into:
+                into[item.note] = (item.number, accepted_at)
+        # every opportunity, open or closed: a plan item's head may close before its plan does
+        named = {int(i["number"]): labels(i) for i in intake.opportunity_issues}
         planned = fetch_plans(
             args.repo,
             intake,
             checked=checked,
+            into=into,
+            opportunities=named,
             goals=lambda: direction,
             marker=args.marker,
             bot_login=args.bot_login,

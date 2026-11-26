@@ -19,6 +19,7 @@ from .test_intake_plans import (
     Fake,
     at,
     comment,
+    full_plan,
     open_plan,
     owner,
     relay,
@@ -226,7 +227,9 @@ def test_s098_4_stable_is_triage_states_and_the_flag_is_too(ist: ModuleType) -> 
 
 
 def test_s098_4_the_tags_are_read_once_a_run(ist: ModuleType) -> None:
-    plans = [open_plan(20, owner("hold until release", 10)), open_plan(21, owner("hold until release", 11))]
+    # two goals' plans: two open plans of one goal would read the older replaced (spec 106)
+    second = open_plan(21, owner("hold until release", 11), body=full_plan("G-2"))
+    plans = [open_plan(20, owner("hold until release", 10)), second]
     fake = Held(plans=plans, tags=[("v2.0.0", "2026-10-01T10:30:00Z")])
     found = rows(ist, fake)
     assert [found[n]["state"] for n in (20, 21)] == ["PLAN_HOLD_MET", "PLAN_HELD"]
