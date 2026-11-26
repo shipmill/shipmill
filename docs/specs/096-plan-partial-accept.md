@@ -1,6 +1,6 @@
 # S-096: Accept part of a plan in one reply
 
-status: approved
+status: built
 serves: G-6
 
 ## Problem
@@ -189,3 +189,17 @@ item the maintainer cut.
 - shipmill/shipmill#1709: S-096-10, S-096-11, S-096-12, S-096-13
 
 ## Verification
+
+- S-096-1: `read_accept("Accept w-1 W-3.", (W-1, W-2, W-3))` keeps W-1, W-3 and drops W-2; `test_s096_1_*` reads the row PLAN_ACCEPTED with both lists, passes
+- S-096-2: `read_accept("accept except W-2", ...)` keeps W-1, W-3 and drops W-2; `test_s096_2_*` passes
+- S-096-3: `accept` and `accept W-1,W-2,W-3` keep every item and drop none; `test_s096_3_*` checks the note has no `dropped:` part and only an accepted row has the keys, passes
+- S-096-4: `read_accept` returns each rule (`W-9 is not in the plan`, `W-1 is named twice`, `no item named`, `drops every item`, `both a kept and a dropped list`, `words past the ids`); `test_s096_4_*` checks PLAN_ANSWERED, exit 1, and `accepted`/`acceptable` as edits, passes
+- S-096-5: `test_s096_5_*` reads the `--bot-login`'s needs-decision marker as PLAN_OPEN `unclear accept asked`, a newer answer anew, and anyone else's or an older marker as nothing, passes
+- S-096-6: `test_s096_6_the_filing_reads_the_kept_items_alone` reads the filing over the kept items, dropped ones unfiled and outside the milestone, the note naming `dropped:`, passes
+- S-096-7: `test_s096_7_*` reads a maintainer's relayed partial and unclear accepts as the same, another login's relay as nothing, passes
+- S-096-8: `test_s096_8_*` reads a partial accept older than the body's edit as `edited after accept` and a higher `rev` as stale, passes
+- S-096-9: `test_s096_9_*` lists the earlier plans' dropped items on a PLAN_DUE row, none for a declined or fully accepted plan, with a closed plan's comments paged, passes
+- S-096-10: SKILL.md's PLAN_ACCEPTED step reads the row's `kept` and `dropped`, files the kept feature and fix items in Work order, never files, links, or milestones a dropped one, writes no `Depends on` or relation for an `after` on one, and names the cut in the filed line; `test_s096_10_*` passes
+- S-096-11: SKILL.md's PLAN_ANSWERED step asks once about an unclear accept through the needs-decision protocol, filing and revising nothing, and its "Dropped items stay dropped" paragraph keeps a PLAN_DUE row's `dropped` out of the new plan unless a request or an edit asks, naming each under Notes; `test_s096_11_*` passes
+- S-096-12: plan.md's triage line names `accept W-1, W-3` and `accept except W-2`, and the filed line template has `{; dropped: W-4, W-5}`; `test_s096_12_*` passes
+- S-096-13: `watch_state.py`'s PLANS row lists PLAN_ACCEPTED and PLAN_ANSWERED from intake_state.py's own rows and not PLAN_FILED or the asked plan, which `plans_waiting` now leaves to NEEDS_DECISION; `fleet.py queue` lists the partially accepted and filed plans in no row and the asked plan in QUESTION alone; `test_s096_13_*` in `tests/test_watch_plans.py` and `tests/test_fleet_queue.py` pass

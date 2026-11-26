@@ -49,10 +49,10 @@ shipmill gh issue create -R {owner/repo} --title "Plan for G-{n}: {goal text}" -
 ## Intake's triage line on the plan
 
 ```markdown
-Triage: **plan**. Serves: G-{n}. It waits for the maintainer's answer, a reply whose first line decides: `accept` files the feature and fix items as issues (no build starts until triage takes them up, and each feature still needs its own approved spec), a line starting with `decline` closes the plan as not planned with the rest as the reason, and anything else is read as an edit to make.
+Triage: **plan**. Serves: G-{n}. It waits for the maintainer's answer, a reply whose first line decides: `accept` files every feature and fix item as an issue (no build starts until triage takes them up, and each feature still needs its own approved spec), `accept W-1, W-3` files only the items named and drops the rest, `accept except W-2` files all but the items named, a line starting with `decline` closes the plan as not planned with the rest as the reason, and anything else is read as an edit to make.{ The items most open to cutting: W-k, and why.}
 ```
 
-Never use the word "implement" here: `triage_state.py` reads the newest triage comment's verdict from it.
+Never use the word "implement" here: `triage_state.py` reads the newest triage comment's verdict from it. Name the items most open to cutting, so a cut is one reply (spec 096). A first line that starts with `accept` and is none of the three forms is an unclear accept: the session asks about it once (SKILL.md, PLAN_ANSWERED) and never guesses.
 
 ## A revision
 
@@ -101,8 +101,11 @@ Then make it a sub-issue of the plan with github-issue-triage's `chains.py link 
 ## Intake's line on the plan once filed
 
 ```markdown
-Triage: **plan**: accepted and filed: W-2 #{a}, W-3 #{b}{; milestone {title}}. Triage takes them up within `[agents] wip`.
+Triage: **plan**: accepted and filed: W-2 #{a}, W-3 #{b}{; dropped: W-4, W-5}{; W-3 filed without its after W-4}{; milestone {title}}. Triage takes them up within `[agents] wip`.
 ```
+
+- `dropped:` names each item a partial accept dropped (`accept W-1, W-3` or `accept except W-2`, spec 096), in Work order; a full accept leaves the part out. A dropped item is never filed, linked, or put in the milestone
+- `W-k filed without its after W-j` names each kept item whose `(after W-j)` was on a dropped item: it got no `Depends on` line and no relation for W-j
 
 ## A finished plan's outcome
 
