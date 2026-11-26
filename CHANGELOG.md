@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.180.0] - 2026-11-26
+
+### Changed
+
+- Specs 099 and 102 name their build issues: #1698, #1699, #1700 for finding a spec's contradictions (#1146), and #1701 to #1704 for claiming an issue (#1511)
+
 ## [0.179.3] - 2026-11-26
 
 ### Fixed
@@ -3196,7 +3202,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.179.3...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.180.0...HEAD
+[0.180.0]: https://github.com/shipmill/shipmill/compare/v0.179.3...v0.180.0
 [0.179.3]: https://github.com/shipmill/shipmill/compare/v0.179.2...v0.179.3
 [0.179.2]: https://github.com/shipmill/shipmill/compare/v0.179.1...v0.179.2
 [0.179.1]: https://github.com/shipmill/shipmill/compare/v0.179.0...v0.179.1
