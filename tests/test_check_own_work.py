@@ -57,6 +57,15 @@ def test_1671_a_merged_closer_of_an_open_issue_with_a_check_reads_by_its_check(t
     assert read(ts, early, {})[0] == "VERIFY_DUE"
 
 
+def test_1671_a_pull_request_linked_by_hand_dates_its_comments_from_its_merge(ts: ModuleType) -> None:
+    # A PR linked in the Development sidebar (a ConnectedEvent) merged: a check-waiting comment
+    # from before that merge counts no more than one before a "Part of #N" PR's merge does
+    node = {"subject": {"number": 21, "state": "MERGED", "mergedAt": "2026-09-05T10:00:00Z"}}
+    early = parted([node], [waiting(at="2026-09-04T12:00:00Z")])
+    assert read(ts, early, {}) == ("VERIFY_DUE", "#21:merged: run its ## Check")
+    assert "subject { ... on PullRequest { number state mergedAt" in ts.OPEN_TIMELINE
+
+
 def test_1671_a_postponed_issue_without_sub_issues_reads_postponed_first(ts: ModuleType) -> None:
     held = parted([part(21)], body=BUILD, labels=("postponed",))
     assert read(ts, held)[0] == "POSTPONED"

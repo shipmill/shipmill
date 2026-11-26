@@ -431,7 +431,7 @@ OPEN_TIMELINE = (
     + PR_DRAFT
     + """ } }
             }
-            ... on ConnectedEvent { subject { ... on PullRequest { number state """
+            ... on ConnectedEvent { subject { ... on PullRequest { number state mergedAt """
     + PR_DRAFT
     + """ } } }
           }
@@ -1557,13 +1557,14 @@ def linked_prs(issue: dict[str, Any]) -> list[tuple[int, str, bool]]:
 
 
 def merge_times(issue: dict[str, Any], numbers: list[int]) -> list[str]:
-    """When each same-repo linked PR among ``numbers`` merged (#1671); a PR read without
-    mergedAt adds none"""
+    """When each same-repo linked PR among ``numbers`` merged (#1671), linked by a
+    cross-reference or by hand (a ConnectedEvent's subject), as linked_prs reads them; a PR
+    read without mergedAt adds none"""
     return sorted(
         str(pr["mergedAt"])
         for node in issue["timelineItems"]["nodes"]
-        if "source" in node and not node.get("isCrossRepository")
-        for pr in [node["source"] or {}]
+        if "subject" in node or ("source" in node and not node.get("isCrossRepository"))
+        for pr in [node.get("subject", node.get("source")) or {}]
         if pr.get("number") in numbers and pr.get("mergedAt")
     )
 
