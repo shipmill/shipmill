@@ -155,8 +155,9 @@ contradiction left unsaid.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-099-1, S-099-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1698: S-099-1, S-099-2, S-099-3, S-099-4, S-099-5, S-099-6, S-099-7, S-099-8, S-099-11
+- shipmill/shipmill#1699: S-099-9, S-099-10
+- shipmill/shipmill#1700: S-099-12, S-099-13
 
 ## Verification
 
