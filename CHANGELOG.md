@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.183.0] - 2026-11-26
+
+### Changed
+
+- Specs 098, 101, 105 and 106 name their build issues: #1729, #1732 and #1734 for holding a goal plan (#1683), #1727, #1728 and #1733 for limiting the outcomes that wait on the maintainer (#1510), #1726, #1730 and #1731 for telling a goal from a standing measure (#1691), and #1736 to #1743 for the states of a goal, a plan, and a project (#1688)
+- `doctor`'s `claude auth` row names the token file's fingerprint (the name of its pause record), the date the file was written and its expiry a year later, and whether a pause record holds for it, naming a still-held record for the fingerprint the gate's last launch ran with, which the file no longer holds, as stale; it reads the records and writes none, and the row now FAILs once the token is past a year, with the same fix as its WARN at 330 days (#1725)
+
+### Added
+
+- `[agents] outcomes` in `.github/shipmill.toml`: the most outcomes (open opportunities) the product keeps in flight at once, from 1 up to `[agents] wip`'s ceiling; a bad value is refused naming the key, and a component (`[product] home`) that sets it is refused naming the home, where the product's limit is set (spec 101) (#1727)
+- Product intake: the maintainer holds a goal plan with `hold until <YYYY-MM-DD | #N | owner/repo#N | release>`; `intake_state.py --plans` reads it PLAN_HELD, no action, and once the condition is met PLAN_HOLD_MET, an action the watch's PLANS row lists, until the App's `<!-- shipmill:plan-recheck -->` comment returns it to PLAN_OPEN `hold met: ...`; `--json` rows carry `hold` (`until`, `met_at`), and `--stable-tag-regex` sets which tags are a release (spec 098) (#1729)
+
 ## [0.182.0] - 2026-11-26
 
 ### Changed
@@ -3228,7 +3240,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.182.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.183.0...HEAD
+[0.183.0]: https://github.com/shipmill/shipmill/compare/v0.182.0...v0.183.0
 [0.182.0]: https://github.com/shipmill/shipmill/compare/v0.181.0...v0.182.0
 [0.181.0]: https://github.com/shipmill/shipmill/compare/v0.180.0...v0.181.0
 [0.180.0]: https://github.com/shipmill/shipmill/compare/v0.179.3...v0.180.0
