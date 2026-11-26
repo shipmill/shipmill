@@ -58,11 +58,14 @@ HANDED_OFF), each once. The product is the repo alone without [product] (or with
 in its home ([product] repos), the home and every listed repo; in a component ([product]
 home), the home and every repo the home lists, the limit read from the home's config on its
 default branch (a component that sets the key itself is refused). Other repos are read with
-`shipmill gh --product <repo> api graphql`, one call per owner, and a read that fails exits 2
+`shipmill gh --product <repo> api graphql`, one call per owner, and a count that fails exits 2
 naming the step and the repo. The text output's second line is then `outcomes in flight: K
 of N (product <owner/home>)`, and --json's first line gains "outcomes": {"limit": N,
 "in_flight": K, "room": R}, R being N - K and never below 0. Without the key nothing is
 counted and both outputs are as before (a component still reads its home's config to know).
+A component whose home's config can't be read (no read token, a home that doesn't list it, no
+config on its default branch) has no limit either: output and exit code are as before, with
+one `note:` line on stderr naming the failed read and the home.
 
 With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
 login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
@@ -1768,8 +1771,20 @@ def unique(repos: list[str]) -> tuple[str, ...]:
     return tuple(kept)
 
 
-# Reads a config from a repo's default branch: its text, or None when it has none
+# Reads a config from a repo's default branch: its text, or None when it has none; raises
+# Unreadable when the read fails
 HomeReader = Callable[[str], str | None]
+
+
+class Unreadable(Exception):
+    """A `shipmill gh --product` read that failed, its message naming the step and the repo"""
+
+
+def unlimited(home: str, repo: str, reason: str) -> Product:
+    """A component whose home's config can't be read: no limit, as without the key (S-101-3),
+    and one note on stderr naming the failed read so it isn't silent"""
+    sys.stderr.write(f"note: no [agents] outcomes limit, the home's config is unreadable: {reason}\n")
+    return Product(home, (repo,), None)
 
 
 def product_of(repo: str, path: Path | None, read_home: HomeReader) -> Product:
@@ -1777,8 +1792,10 @@ def product_of(repo: str, path: Path | None, read_home: HomeReader) -> Product:
     [product] says standalone, is its own product; in the product's home ([product] repos), the
     home and the repos it lists; in a component ([product] home), the limit and the repos are
     read from the home's config on its default branch, through read_home, and a component that
-    sets [agents] outcomes itself is refused, naming the home. [product] repos is read only with
-    a limit, so a run without one reads the config as before"""
+    sets [agents] outcomes itself is refused, naming the home. A home whose config can't be read
+    (read_home raises Unreadable, or the home has none) sets no limit: the run goes on as before
+    with one note on stderr (S-101-3). [product] repos is read only with a limit, so a run without
+    one reads the config as before"""
     if path is None:
         return Product(repo, (repo,), None)
     product = config_values(path, "product", ("home", "standalone"))
@@ -1790,9 +1807,12 @@ def product_of(repo: str, path: Path | None, read_home: HomeReader) -> Product:
         if "outcomes" in local:
             fail(f"{path}: [agents] outcomes is the product's, set in its home {home}'s {CONFIG}, not in a component")
         where = f"{home}:{CONFIG}"
-        text = read_home(home)
+        try:
+            text = read_home(home)
+        except Unreadable as failed:
+            return unlimited(home, repo, str(failed))
         if text is None:
-            fail(f"reading the product's limit: GitHub has no {where} on its default branch")
+            return unlimited(home, repo, f"reading the product's limit: GitHub has no {where} on its default branch")
         found = text_values(text, where, "agents", ("outcomes",))
         if "outcomes" not in found:
             return Product(home, (repo,), None)
@@ -1810,8 +1830,9 @@ class ProductGh:
     """`shipmill gh --product <repo> api graphql` from the checkout, as triage_state.py --home
     runs it (spec 065): `uvx shipmill==<the plugin's version> --repo <the checkout> gh`, run
     once more with uv's index refreshed when uv found no such version (#597), the coordinator's
-    token in the home (D-83) and the read token in a component (D-84). A read that fails exits 2
-    naming the step and the repo, never reading it as empty"""
+    token in the home (D-83) and the read token in a component (D-84). A read that fails raises
+    Unreadable naming the step and the repo, never reading it as empty: a count exits 2 on it,
+    and a component reading its home's limit goes on with none (S-101-3)"""
 
     def __init__(self, here: Path, execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_uvx):
         self.here = here
@@ -1826,26 +1847,28 @@ class ProductGh:
         try:
             proc: subprocess.CompletedProcess[str] = watch_module().pinned(cmd, self.execute)
         except FileNotFoundError:
-            fail(f"{step}: uvx is not on PATH, and {via} is read with `shipmill gh --product`")
+            raise Unreadable(f"{step}: uvx is not on PATH, and {via} is read with `shipmill gh --product`") from None
         said = (proc.stderr or "").strip().splitlines()
         if proc.returncode != 0:
-            fail(f"{step}: shipmill gh --product {via} exited {proc.returncode}" + (f": {said[0]}" if said else ""))
+            exited = f"{step}: shipmill gh --product {via} exited {proc.returncode}"
+            raise Unreadable(exited + (f": {said[0]}" if said else ""))
         try:
             response = json.loads(proc.stdout)
         except ValueError:
-            fail(f"{step}: shipmill gh --product {via} printed no JSON: {proc.stdout[:200]!r}")
+            raise Unreadable(f"{step}: shipmill gh --product {via} printed no JSON: {proc.stdout[:200]!r}") from None
         if not isinstance(response, dict) or response.get("errors"):
-            fail(f"{step}: shipmill gh --product {via} answered {json.dumps(response)[:300]}")
+            raise Unreadable(f"{step}: shipmill gh --product {via} answered {json.dumps(response)[:300]}")
         data: dict[str, Any] = response.get("data") or {}
         return data
 
     def home_config(self, home: str) -> str | None:
-        """The home's config on its default branch, None when it has none"""
+        """The home's config on its default branch, None when it has none; raises Unreadable
+        when the read fails or GitHub returns no such repository to the token"""
         owner, name = split_repo(home)
         step = f"reading the product's limit from {home}:{CONFIG}"
         node = self.graphql(home, HOME_CONFIG, {"owner": owner, "name": name}, step).get("repository")
         if node is None:
-            fail(f"{step}: GitHub returned no repository {home}")
+            raise Unreadable(f"{step}: GitHub returned no repository {home}")
         blob = node.get("object")
         return None if blob is None else str(blob.get("text") or "")
 
@@ -1875,7 +1898,10 @@ def outcomes_in_flight(product: Product, local_open: int, label: str, gh: Produc
     for group in owners.values():
         via = next((r for r in group if r.lower() == product.home.lower()), group[0])
         step = f"counting the open opportunities of {', '.join(group)}"
-        data = gh.graphql(via, count_query(group), {"label": label}, step)
+        try:
+            data = gh.graphql(via, count_query(group), {"label": label}, step)
+        except Unreadable as failed:
+            fail(str(failed))
         for i, repo in enumerate(group):
             count = ((data.get(f"r{i}") or {}).get("issues") or {}).get("totalCount")
             if not isinstance(count, int) or isinstance(count, bool):

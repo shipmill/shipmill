@@ -47,6 +47,11 @@ with (here / "uvx.log").open("a") as log:
 data = json.loads((here / "uvx.json").read_text())
 query = next(a[len("query="):] for a in sys.argv if a.startswith("query="))
 if "HEAD:.github/shipmill.toml" in query:
+    if data["home_read"] == "refused":
+        sys.exit("error: no read token for o/home")
+    if data["home_read"] == "unlisted":
+        print(json.dumps({"data": {"repository": None}}))
+        sys.exit(0)
     blob = None if data["home_config"] is None else {"text": data["home_config"]}
     print(json.dumps({"data": {"repository": {"object": blob}}}))
     sys.exit(0)
@@ -105,7 +110,7 @@ class Checkout:
         self.bin.mkdir()
         gh = {"opened": [issue(1), held_request(), issue(3), issue(4)], "opportunities": opportunities()}
         (self.bin / "gh.json").write_text(json.dumps(gh))
-        fake = {"home_config": None, "counts": {}, "fail": [], **(uvx or {})}
+        fake = {"home_config": None, "home_read": "ok", "counts": {}, "fail": [], **(uvx or {})}
         (self.bin / "uvx.json").write_text(json.dumps(fake))
         for name, body in (("gh", FAKE_GH), ("uvx", FAKE_UVX)):
             (self.bin / name).write_text(f"#!{sys.executable}\n{body}")
@@ -235,10 +240,32 @@ def test_s101_5_a_read_that_fails_exits_2_naming_the_repo(tmp_path: Path) -> Non
     assert "refused x/c3" in found.stderr
 
 
-def test_s101_5_a_component_without_its_homes_config_exits_2_naming_the_home(tmp_path: Path) -> None:
-    found = Checkout(tmp_path, '[product]\nhome = "o/home"\n').run()
-    assert found.returncode == 2
-    assert "o/home:.github/shipmill.toml" in found.stderr
+@pytest.mark.parametrize(
+    ("home_read", "said"),
+    [
+        ("refused", "exited 1: error: no read token for o/home"),
+        ("unlisted", "GitHub returned no repository o/home"),
+        ("ok", "GitHub has no o/home:.github/shipmill.toml on its default branch"),
+    ],
+    ids=["read refused", "home unlisted", "no home config"],
+)
+def test_s101_3_a_component_whose_homes_config_cant_be_read_prints_as_before(
+    tmp_path: Path, home_read: str, said: str
+) -> None:
+    # A home with a limit, set should the read succeed: the limit applies only where it is read
+    home = '[agents]\noutcomes = 1\n[product]\nrepos = ["o/r"]\n'
+    uvx = {"home_read": home_read, "home_config": None if home_read == "ok" else home}
+    checkout = Checkout(tmp_path, '[product]\nhome = "o/home"\n', uvx)
+    text = checkout.run()
+    assert (text.returncode, text.stdout) == (1, BEFORE_TEXT), text.stderr
+    note = text.stderr.splitlines()
+    assert len(note) == 1 and note[0].startswith("note: no [agents] outcomes limit"), text.stderr
+    assert "reading the product's limit from o/home" in note[0] or "o/home:.github/shipmill.toml" in note[0]
+    assert said in note[0]
+    lines = checkout.run("--json")
+    assert lines.returncode == 1, lines.stderr
+    assert lines.stdout.splitlines()[0] == '{"autonomy": "propose"}'
+    assert [via(c) for c in checkout.product_calls()] == ["o/home", "o/home"]  # the home's config only
 
 
 def test_s101_5_a_component_never_sets_the_limit_itself(tmp_path: Path) -> None:
