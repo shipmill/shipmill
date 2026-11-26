@@ -108,7 +108,7 @@ def test_s105_2_check_refuses_a_malformed_goal_naming_file_line_and_goal(
     assert len(found) == 1, found
     assert found[0].startswith(f"docs/product.md:13: G-1: {rule}"), found
     assert found[0].endswith(FORM), found
-    assert run(root, "check") == 1  # as every refused line (spec 024); see the PR's decisions
+    assert run(root, "check") == 1  # as every refused line (spec 024)
     assert capsys.readouterr().out.splitlines() == found
 
 
@@ -139,10 +139,12 @@ def test_s105_2_check_refuses_a_malformed_goal_naming_file_line_and_goal(
 def test_s105_2_check_refuses_a_malformed_measure_naming_file_line_and_goal(
     tmp_path: Path, goal: str, rule: str
 ) -> None:
-    found = [str(p) for p in check(write(tmp_path, direction(goal + "\n")))]
+    root = write(tmp_path, direction(goal + "\n"))
+    found = [str(p) for p in check(root)]
     assert len(found) == 1, found
     assert found[0].startswith(f"docs/product.md:13: G-1: {rule}"), found
     assert found[0].endswith(HELD), found
+    assert run(root, "check") == 1
 
 
 @pytest.mark.parametrize(
@@ -154,10 +156,12 @@ def test_s105_2_check_refuses_a_malformed_measure_naming_file_line_and_goal(
     ],
 )
 def test_s105_2_check_refuses_a_text_with_both_forms_labels(tmp_path: Path, goal: str) -> None:
-    found = [str(p) for p in check(write(tmp_path, direction(goal + "\n")))]
+    root = write(tmp_path, direction(goal + "\n"))
+    found = [str(p) for p in check(root)]
     assert len(found) == 1, found
     assert found[0].startswith("docs/product.md:13: G-1: the text holds both a goal's labels"), found
     assert FORM in found[0] and HELD in found[0], found
+    assert run(root, "check") == 1
 
 
 def test_s105_2_check_refuses_a_measure_line_under_a_goal_of_kind_goal(
