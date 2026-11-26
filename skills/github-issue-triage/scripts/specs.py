@@ -15,7 +15,7 @@ A spec has a title line, a status line, and fixed sections, in this order:
 
   # S-007: <title>
 
-  status: draft             (draft, approved, or built)
+  status: draft             (draft, approved, built, or stopped)
   serves: G-1, G-2          (the goals of docs/product.md it serves, or "quality bar")
 
   ## Problem
@@ -25,7 +25,8 @@ A spec has a title line, a status line, and fixed sections, in this order:
   ## Decisions relied on    (- D-5 ..., or - none)
   ## Issues                 (- owner/repo#N: S-007-1, S-007-2: each build issue and the
                             criteria it delivers, filled in once the build issues exist)
-  ## Verification           (once built: each criterion id, how it was checked on main)
+  ## Verification           (once built: each criterion id, how it was checked on main;
+                            a stopped spec may leave the section out)
 
 new       write the next spec from D/TEMPLATE.md (or the built-in template), replacing
           S-NNN and <title>; prints the new path
@@ -37,7 +38,9 @@ check     every spec is well formed: its file name, title, and sections; criteri
           which needs no build issue and may be in one. When the repo has a direction,
           docs/product.md, every spec but a built one has a serves: line right after its
           status, naming goal ids the direction lists (moved sections in docs/product/
-          read too) or "quality bar"; without one, the line isn't checked. A draft may
+          read too) or "quality bar", and a draft or approved one names no goal the
+          direction records as met or dropped (spec 106); without one, the line isn't
+          checked. A draft may
           keep the template's placeholder text (D/TEMPLATE.md, or the built-in template:
           each paragraph of a section, word for word, past "- none"); an approved spec
           may not in Problem, Behaviour, Acceptance criteria, or Out of scope, and a built
@@ -121,7 +124,8 @@ SECTIONS = (
     "Verification",
 )
 STATUS = re.compile(r"^status: (\S+)$")
-STATUSES = ("draft", "approved", "built")
+# stopped (spec 106): its project was stopped; it needs no Verification and is never split
+STATUSES = ("draft", "approved", "built", "stopped")
 # The goals a spec serves, on the line right after its status (spec 024): goal ids, or the
 # quality bar. Checked only when the repo has a direction, and never on a built spec
 SERVES = re.compile(r"^serves:(.*)$")
@@ -344,9 +348,11 @@ def parse(path: Path, text: str | None = None) -> tuple[Spec | None, list[str]]:
             if criterion.number not in verified:
                 problem(1, f"built, but Verification doesn't name {spec.id}-{criterion.number}")
     for section in SECTIONS:
-        if section not in seen:
+        if section not in seen and not (section == "Verification" and spec.status == "stopped"):
             problem(1, f"missing the section '{section}'")
-    if len(seen) == len(SECTIONS) and set(seen) == set(SECTIONS) and seen != list(SECTIONS):
+    # a stopped spec may leave Verification out (spec 106); the rest keep their order
+    wanted = [s for s in SECTIONS if s in seen] if spec.status == "stopped" else list(SECTIONS)
+    if len(seen) == len(wanted) and set(seen) == set(wanted) and seen != wanted:
         problem(1, f"sections out of order; a spec has: {', '.join(SECTIONS)}")
     if "Acceptance criteria" in seen and not spec.criteria:
         problem(1, "no acceptance criteria")
@@ -527,15 +533,14 @@ def check_decisions(specs: list[Spec], log: dict[int, str | None] | None) -> lis
     return problems
 
 
-def direction_ids(root: Path) -> set[str] | None:
-    """Every item id the direction at root/docs/product.md lists, moved sections included,
-    as `shipmill product ids` lists them; None when the repo has no direction. Its other
-    rules are `shipmill product check`'s; a moved section whose file is missing is refused
-    here too, since its ids can't be read"""
+def direction_lines(root: Path) -> list[tuple[str, str]] | None:
+    """Each line of the direction at root/docs/product.md under an item section, with the
+    section, moved sections' files read in their place; None when the repo has no direction. A
+    moved section whose file is missing is refused, since its items can't be read"""
     path = root / DIRECTION
     if not path.is_file():
         return None
-    ids: set[str] = set()
+    found: list[tuple[str, str]] = []
     section: str | None = None
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.rstrip()
@@ -547,14 +552,44 @@ def direction_ids(root: Path) -> set[str] | None:
             continue
         moved = DIRECTION_MOVED.match(line)
         if moved is None:
-            ids |= direction_items(line, section)
+            found.append((section, line))
             continue
         linked = path.parent / "product" / moved.group(2)
         if not linked.is_file():
             raise SpecError(f"{DIRECTION}:{n}: '## {section}' moved to {linked.relative_to(root)}, which doesn't exist")
-        for moved_line in linked.read_text(encoding="utf-8").splitlines():
-            ids |= direction_items(moved_line.rstrip(), section)
+        found += [(section, moved_line.rstrip()) for moved_line in linked.read_text(encoding="utf-8").splitlines()]
+    return found
+
+
+def direction_ids(root: Path) -> set[str] | None:
+    """Every item id the direction at root/docs/product.md lists, moved sections included,
+    as `shipmill product ids` lists them; None when the repo has no direction. Its other
+    rules are `shipmill product check`'s"""
+    lines = direction_lines(root)
+    if lines is None:
+        return None
+    ids: set[str] = set()
+    for section, line in lines:
+        ids |= direction_items(line, section)
     return ids
+
+
+# A goal's end, the maintainer's record (spec 106): `. Met: <date>` or `. Dropped: <date>: <reason>`
+# right after a goal of kind goal's horizon, as src/shipmill/product.py reads it; `shipmill
+# product check` holds its form
+GOAL_ENDED = re.compile(
+    r"\. By: (?:[0-9]{4}-[0-9]{2}-[0-9]{2}|v?[0-9]+\.[0-9]+\.[0-9]+)\. (?:Met|Dropped): [0-9]{4}-[0-9]{2}-[0-9]{2}"
+)
+
+
+def ended_goals(root: Path) -> set[str]:
+    """The goals the direction records as met or dropped (spec 106), as G-n ids"""
+    ended: set[str] = set()
+    for section, line in direction_lines(root) or []:
+        item = DIRECTION_ITEM.match(line)
+        if section == "Goals" and item is not None and GOAL_ENDED.search(line) is not None:
+            ended.add(f"{item.group(1)}-{int(item.group(2))}")
+    return ended
 
 
 def direction_items(line: str, section: str) -> set[str]:
@@ -565,9 +600,10 @@ def direction_items(line: str, section: str) -> set[str]:
     return {f"{item.group(1)}-{int(item.group(2))}"}
 
 
-def check_serves(specs: list[Spec], ids: set[str] | None) -> list[str]:
+def check_serves(specs: list[Spec], ids: set[str] | None, ended: frozenset[str] = frozenset()) -> list[str]:
     """With a direction, every spec not yet built names the goals it serves, G-n ids the
-    direction lists or `quality bar`; a built spec, and any spec without a direction, passes"""
+    direction lists or `quality bar`, and a draft or approved one no goal in ended, the goals
+    recorded as met or dropped (S-106-3); a built spec, and any spec without a direction, passes"""
     if ids is None:
         return []
     problems = []
@@ -592,6 +628,11 @@ def check_serves(specs: list[Spec], ids: set[str] | None) -> list[str]:
                 problems.append(f"{where}: serves {name!r}; a spec serves goal ids (G-n) or '{QUALITY_BAR}' alone")
             elif name not in ids:
                 problems.append(f"{where}: serves {name}, which {DIRECTION} doesn't list")
+            elif name in ended and spec.status in ("draft", "approved"):
+                problems.append(
+                    f"{where}: serves {name}, which {DIRECTION} records as met or dropped; a spec still "
+                    f"{spec.status} serves only a goal still open (spec 106)"
+                )
     return problems
 
 
@@ -865,6 +906,8 @@ def split(
     spec = next((s for s in specs if s.number == int(match.group(1))), None)
     if spec is None:
         raise SpecError(f"no spec S-{int(match.group(1)):03d} in {directory}")
+    if spec.status == "stopped":  # S-106-20: its project was stopped; nothing is built for it
+        raise SpecError(f"{spec.id} is stopped; a stopped spec is never split into build issues")
     # A criterion in no build issue yet is what split is for; any other problem stops it
     problems = [p for p in parse(spec.path)[1] if not p.endswith(UNASSIGNED)]
     if problems:
@@ -1122,7 +1165,7 @@ def main() -> int:
         specs, problems = load(args.dir)
         if args.command == "check":
             problems += check_decisions(specs, decision_states(args.decisions))
-            problems += check_serves(specs, direction_ids(Path(".")))
+            problems += check_serves(specs, direction_ids(Path(".")), frozenset(ended_goals(Path("."))))
             for problem in problems:
                 print(problem)
             return 1 if problems else 0

@@ -67,6 +67,13 @@ The structure is fixed, so code reads it without a model:
   name the goals of the product's home direction it serves on one line right under its item
   line, or under its measure line: `  serves: G-2, G-4` (spec 071). `product check` refuses
   the line in any other repo, the home included
+- A goal of kind goal (`<outcome>. Check: <check>. By: <horizon>`, spec 105) ends with one
+  more sentence once it is over, the maintainer's record (spec 106): `. Met: <YYYY-MM-DD>`, or
+  `. Dropped: <YYYY-MM-DD>: <reason>`. `product check` refuses either on a standing measure or
+  a goal of no kind, a date that is no calendar date, an empty reason, or both at once. A met
+  or dropped goal keeps its id, so references to it still resolve; it reads no plan trigger,
+  and `specs.py check` refuses a draft or approved spec that serves it. `product show --json`
+  gives every goal `state` (`met`, `dropped`, or null) and `ended` (that date, or null)
 
 In a component, `product check` also reads the home's direction, as committed on its default
 branch, and refuses a serves line naming a goal the home's Goals don't list; `product show`
@@ -127,6 +134,8 @@ still lands through a pull request:
 | `shipmill product edit <id> "<text>"` | Rewrites one item's text; its id stays |
 | `shipmill product retire <id>` | Removes one item; its id is never handed out again |
 | `shipmill product measure <G-n> "<metric> <comparison> <target>"` | Writes the goal's measure line, or replaces the one it has (spec 027); `--clear` removes it |
+| `shipmill product met <G-n> [--on YYYY-MM-DD]` | Records a goal of kind goal as met: appends `. Met: <date>` to its text, the date today in UTC unless given (spec 106); refuses a measure, a goal of no kind, and one already met or dropped |
+| `shipmill product drop <G-n>` | Records a goal of kind goal as dropped, with `--reason "<reason>"`: appends `. Dropped: <today>: <reason>` (spec 106); refuses as `met` does |
 | `shipmill product serves <G-n> <G-n> ...` | In a component (`[product] home`), writes the goal's serves line naming the goals of the product's home direction it serves, or replaces the one it has (spec 071); `--clear` removes it |
 
 Each takes `--repo DIR` (default: the current directory). An edit command exits 2 without

@@ -12,7 +12,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     },
     {
       "id": "G-2",
@@ -26,7 +28,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     },
     {
       "id": "G-3",
@@ -40,7 +44,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     },
     {
       "id": "G-4",
@@ -54,7 +60,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     },
     {
       "id": "G-5",
@@ -68,7 +76,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     },
     {
       "id": "G-6",
@@ -82,7 +92,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     },
     {
       "id": "G-7",
@@ -96,7 +108,9 @@
       "past": null,
       "held": null,
       "threshold": null,
-      "source": null
+      "source": null,
+      "state": null,
+      "ended": null
     }
   ]
 }

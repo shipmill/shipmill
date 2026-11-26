@@ -51,6 +51,7 @@ _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _RELEASE = re.compile(r"v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 _CHECK, _BY = ". Check: ", ". By: "  # a goal's labels, case-sensitive and spaced as written
 _HELD, _THRESHOLD, _SOURCE = "Held: ", ". Threshold: ", ". Source: "  # a measure's
+_MET, _DROPPED = ". Met: ", ". Dropped: "  # a goal's end, the maintainer's record (spec 106)
 
 
 class Unit(StrEnum):
@@ -267,26 +268,99 @@ class Horizon:
         return self.text
 
 
+_END_FORM = "`. Met: <YYYY-MM-DD>` or `. Dropped: <YYYY-MM-DD>: <reason>`, after its horizon"
+
+
+@dataclass(frozen=True, slots=True)
+class GoalEnd:
+    """How a goal of kind goal ended (spec 106): met on a date, or dropped on a date for a
+    reason; the maintainer's record in the direction (D-34). Built by `parse`, or by
+    `product met` and `product drop`"""
+
+    on: dt.date
+    reason: str | None  # None for met; a dropped goal's, one non-empty line
+
+    def __post_init__(self) -> None:
+        if self.reason is not None and (not self.reason.strip() or "\n" in self.reason):
+            raise ReleaseError(f"a dropped goal's reason is one non-empty line; a goal ends {_END_FORM}")
+
+    @property
+    def state(self) -> str:
+        """`met` or `dropped`, as `product show --json` gives it"""
+        return "met" if self.reason is None else "dropped"
+
+    @classmethod
+    def parse(cls, text: str) -> GoalEnd:
+        """`. Met: <date>` or `. Dropped: <date>: <reason>`, the date a valid calendar date"""
+        label = _MET if text.startswith(_MET) else _DROPPED
+        rest = text[len(label) :]
+        written, reason = rest, ""
+        if label == _MET and _DROPPED in rest:
+            raise ReleaseError(f"a goal ends met or dropped, not both; a goal ends {_END_FORM}")
+        if label == _DROPPED:  # `<date>: <reason>`; a date with no reason, colon or not, names none
+            written, _, reason = rest.partition(": ")
+            written = written.removesuffix(":")
+        day = cls.day(written)
+        if label == _DROPPED and not reason.strip():
+            raise ReleaseError(f"a dropped goal names its reason; a goal ends {_END_FORM}")
+        return cls(day, reason if label == _DROPPED else None)
+
+    @staticmethod
+    def day(written: str) -> dt.date:
+        """An end's date, `YYYY-MM-DD` and a valid calendar date"""
+        if _DATE.fullmatch(written) is None:
+            raise ReleaseError(f"`{written}` is no date `YYYY-MM-DD`; a goal ends {_END_FORM}")
+        try:
+            return dt.date.fromisoformat(written)
+        except ValueError:
+            raise ReleaseError(f"`{written}` is not a calendar date; a goal ends {_END_FORM}") from None
+
+    def __str__(self) -> str:
+        if self.reason is None:
+            return f"{_MET}{self.on.isoformat()}"
+        return f"{_DROPPED}{self.on.isoformat()}: {self.reason}"
+
+
+# Where a goal's end starts: the first `. Met: ` or `. Dropped: ` right after `. By: <horizon>`,
+# so an outcome or a check may hold either label, and a dropped goal's reason any text
+_ENDS_AT = re.compile(r"\. By: (?:[0-9]{4}-[0-9]{2}-[0-9]{2}|v?[0-9]+\.[0-9]+\.[0-9]+)(?=\. (?:Met|Dropped): )")
+# An end sentence anywhere, with its date: on a text that isn't a goal of kind goal, refused
+_ANY_END = re.compile(r"\. (?:Met|Dropped): [0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _split_end(text: str) -> tuple[str, GoalEnd | None]:
+    """A goal's text before its end sentence, and the end, the sentence right after its horizon;
+    refused when it is malformed or names both. Text with no end reads as a whole"""
+    found = _ENDS_AT.search(text)
+    if found is None:
+        return text, None
+    return text[: found.end()], GoalEnd.parse(text[found.end() :])
+
+
 @dataclass(frozen=True, slots=True)
 class GoalForm:
     """A goal of kind goal: `<outcome>. Check: <check>. By: <horizon>`, read by splitting at the
-    first `. Check: ` and the last `. By: `, so the outcome and the check may hold a period"""
+    first `. Check: ` and the last `. By: `, so the outcome and the check may hold a period; it may
+    end with one more sentence, `. Met: <date>` or `. Dropped: <date>: <reason>` (spec 106)"""
 
     outcome: str
     check: str
     by: Horizon
+    end: GoalEnd | None = None
 
     def __post_init__(self) -> None:
-        written = str(self)
+        written = f"{self.outcome}{_CHECK}{self.check}{_BY}{self.by}"
         if _kind(written) is not GoalKind.GOAL or _goal_parts(written) != (self.outcome, self.check, self.by.text):
             raise ReleaseError(f"`{written}` doesn't read back as this goal; a goal is {GoalKind.GOAL.form}")
+        if _ENDS_AT.search(written) is not None:
+            raise ReleaseError(f"`{written}` holds an end before its own; a goal ends {_END_FORM}")
 
     @property
     def kind(self) -> GoalKind:
         return GoalKind.GOAL
 
     def __str__(self) -> str:
-        return f"{self.outcome}{_CHECK}{self.check}{_BY}{self.by}"
+        return f"{self.outcome}{_CHECK}{self.check}{_BY}{self.by}{'' if self.end is None else self.end}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,14 +393,17 @@ def read_goal(text: str) -> GoalForm | MeasureForm | None:
     """A goal's text read for its kind (spec 105): its goal form, its measure form, or None for a
     text with neither form's labels; refused (ReleaseError) naming what is wrong and the form it
     takes, the rule `product check` gives after the goal's id"""
-    match _kind(text):
+    head, end = _split_end(text)
+    if end is None and _ANY_END.search(text) is not None and _kind(text) is not GoalKind.GOAL:
+        raise ReleaseError(f"only a goal of kind goal ends met or dropped; a goal is {GoalKind.GOAL.form}")
+    match _kind(head):
         case GoalKind.GOAL:
-            outcome, check, horizon = _goal_parts(text)
+            outcome, check, horizon = _goal_parts(head)
             try:
                 by = Horizon.parse(horizon)
             except ReleaseError as exc:
                 raise ReleaseError(f"{exc}; a goal is {GoalKind.GOAL.form}") from None
-            return GoalForm(outcome, check, by)
+            return GoalForm(outcome, check, by, end)
         case GoalKind.MEASURE:
             return MeasureForm(*_measure_parts(text))
         case None:
@@ -382,8 +459,10 @@ def _measure_parts(text: str) -> tuple[str, str, str]:
 
 
 def _form_record(form: GoalForm | MeasureForm | None, today: dt.date) -> dict[str, Any]:
-    """The fields `product show --json` gives every goal (S-105-4), the other kinds' null"""
-    record: dict[str, Any] = dict.fromkeys(("kind", "outcome", "check", "by", "past", "held", "threshold", "source"))
+    """The fields `product show --json` gives every goal (S-105-4), the other kinds' null, and
+    its `state` (`met`, `dropped`, or null) and `ended` (that date, or null, S-106-2)"""
+    keys = ("kind", "outcome", "check", "by", "past", "held", "threshold", "source", "state", "ended")
+    record: dict[str, Any] = dict.fromkeys(keys)
     if form is not None:
         record["kind"] = form.kind.value
     match form:
@@ -394,6 +473,8 @@ def _form_record(form: GoalForm | MeasureForm | None, today: dt.date) -> dict[st
                 "by": form.by.record(),
                 "past": form.by.past(today),
             }
+            if form.end is not None:
+                record |= {"state": form.end.state, "ended": form.end.on.isoformat()}
         case MeasureForm():
             record |= {"held": form.held, "threshold": form.threshold, "source": form.source}
     return record
@@ -1402,6 +1483,11 @@ def goal(root: Path, id: ItemId, checked: LineText, by: Horizon) -> Edited:
                 f"{id} is a measure, {GoalKind.MEASURE.form}; turn it into a goal by rewriting its whole text with "
                 f'`{cli_command()} product edit {id} "<outcome>. Check: <check>. By: <horizon>"`; nothing was written'
             )
+        case GoalForm(end=GoalEnd() as ended):
+            raise ReleaseError(
+                f"{id} is {ended.state} on {ended.on.isoformat()}, the maintainer's record (spec 106); an ended goal "
+                f"is rewritten only with `{cli_command()} product edit`; nothing was written"
+            )
         case GoalForm(outcome=outcome):
             pass
         case None:
@@ -1546,6 +1632,24 @@ def serves(root: Path, id: ItemId, written: Serves | None) -> Edited | None:
         document.insert(index, [line])
     document.write()
     return Edited(body.path, index + 1, line)
+
+
+def end(root: Path, id: ItemId, ended: GoalEnd) -> Edited:
+    """S-106-2: end a goal of kind goal, met or dropped, by appending its sentence to its text;
+    refused for a measure, a goal of kind none, and a goal that already ended. The id stays"""
+    if id.prefix is not Prefix.GOAL:
+        raise ReleaseError(f"only a goal ends met or dropped; {id} is not a G-n id")
+    direction, bodies = _editable(root)
+    goal = next((item for item in direction.goals if item.id == id), None)
+    if goal is None:
+        raise ReleaseError(f"no {id} in {DIRECTION}; `{cli_command()} product ids` lists its ids")
+    form = goal.form
+    if not isinstance(form, GoalForm):
+        kind = "a standing measure" if isinstance(form, MeasureForm) else "a goal of kind none"
+        raise ReleaseError(f"{id} is {kind}; only a goal of kind goal, {GoalKind.GOAL.form}, ends met or dropped")
+    if form.end is not None:
+        raise ReleaseError(f"{id} is already {form.end.state} on {form.end.on.isoformat()}; nothing was written")
+    return _rewrite(root, bodies, id, str(replace(form, end=ended)))
 
 
 def _editable(root: Path) -> tuple[Direction, dict[Section, _Body]]:

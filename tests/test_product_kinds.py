@@ -223,7 +223,17 @@ def test_s105_3_a_form_built_from_parts_that_dont_read_back_is_refused() -> None
         Horizon("Q4", None)
 
 
-NULLS = {"outcome": None, "check": None, "by": None, "past": None, "held": None, "threshold": None, "source": None}
+NULLS = {
+    "outcome": None,
+    "check": None,
+    "by": None,
+    "past": None,
+    "held": None,
+    "threshold": None,
+    "source": None,
+    "state": None,
+    "ended": None,
+}
 
 
 def test_s105_4_show_json_gives_every_goal_its_kinds_fields(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

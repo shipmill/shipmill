@@ -238,7 +238,7 @@ idle questions reach it as any needs-decision item does.
 
 ## Acceptance criteria
 
-- S-106-1: `shipmill product check` accepts a goal of kind goal ending `. Met: 2026-12-20` or `. Dropped: 2026-12-01: <reason>`, and exits 2 naming the goal for either on a measure or a goal of kind none, a malformed date, an empty reason, or both sentences
+- S-106-1: `shipmill product check` accepts a goal of kind goal ending `. Met: 2026-12-20` or `. Dropped: 2026-12-01: <reason>`, and exits 1 naming the goal for either on a measure or a goal of kind none, a malformed date, an empty reason, or both sentences
 - S-106-2: `shipmill product show --json` gives every goal `state` (`"met"`, `"dropped"`, or null) and `ended`, and `product met G-n [--on DATE]` and `product drop G-n --reason TEXT` write the sentence in the working tree, refusing a measure and a goal already met or dropped
 - S-106-3: `specs.py check` refuses a `draft` or `approved` spec whose `serves:` names a met or dropped goal, and `intake_state.py --plans` reads no trigger for such a goal
 - S-106-4: `intake_state.py --goals` reads a `goal-proposal` issue by a trusted author or the `--bot-login` as GOAL_PROPOSED, a goal with no accepted open plan and no open head as GOAL_WRITTEN, one with an accepted open plan or an open head of its plans as GOAL_PLANNED, and the met and dropped goals as GOAL_MET and GOAL_DROPPED, each with `state`, `holder`, and `by` in `--json`; a measure and a goal of kind none have no row

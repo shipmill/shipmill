@@ -79,7 +79,7 @@ With the key, a request is held by intake's held comment (step 3): its first lin
 
 | State | Means | Do |
 |---|---|---|
-| PLAN_DUE | A goal with no open plan, and a trigger holds; the note is `no-work`, `stalled`, or `requested in #N`, ending `; follows #P` after a finished plan's outcome; a measure's only `requested in #N` (spec 105) | Propose a plan (step 6) |
+| PLAN_DUE | A goal with no open plan, and a trigger holds; the note is `no-work`, `stalled`, or `requested in #N`, ending `; follows #P` after a finished plan's outcome; a measure's only `requested in #N` (spec 105); a goal the direction records as met or dropped reads none (spec 106) | Propose a plan (step 6) |
 | PLAN_WAITS | A `no-work` or `stalled` goal while `[agents] wip` has no room | Nothing; list it as waiting for room |
 | PLAN_OPEN | Waiting for the maintainer's answer, an accept older than the body's last edit (`edited after accept`), an unclear accept the session asked about (`unclear accept asked`), a held plan re-checked after its hold was met (`hold met: ...`), or a hold that holds nothing (`hold not read: ...`, spec 098) | Nothing; list it in the report |
 | PLAN_HELD | The maintainer's answer is `hold until <a date, #N, owner/repo#N, or release>` and the condition isn't met; the note is `until <condition>` (spec 098) | Nothing: no session acts on a held plan |
