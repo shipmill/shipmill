@@ -345,6 +345,8 @@ class Policy:
             agents = agents.with_autonomy(autonomy)
             autonomy = agents.autonomy
         product = ProductConfig.read(top, None if agents is None else agents.app_id)
+        if product is not None and agents is not None:
+            product.refuse_outcomes(agents.outcomes)  # S-101-2: the limit is set in the home
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
         notices = NoticesConfig.parse(top.table("notices")) if "notices" in raw else None
         hooks = HooksConfig.parse(top.table("hooks", optional=True))

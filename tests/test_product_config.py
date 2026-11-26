@@ -165,6 +165,33 @@ def test_s038_2_a_component_needs_no_app(repo: Repo) -> None:
     assert ProductConfig.load(repo.root) == ProductConfig(home=HOME)
 
 
+# -- S-101-2 ---------------------------------------------------------------------------------
+
+
+def test_s101_2_a_component_that_sets_the_outcomes_limit_is_refused_naming_the_home(repo: Repo) -> None:
+    text = POLICY + AGENTS + "outcomes = 3\n" + COMPONENT
+    repo.write(repo.policy_file, text)
+    for read in (
+        lambda: Policy.parse(tomllib.loads(text), "shipmill.toml"),
+        lambda: main(["--repo", str(repo.root), "plan"], github=repo.github),
+        lambda: AgentsConfig.load(repo.root),
+    ):
+        with pytest.raises(ReleaseError, match=rf"\[agents\] outcomes is set in a component of {HOME}") as caught:
+            read()
+        assert f"set it in {HOME}'s .github/shipmill.toml" in str(caught.value)
+
+
+def test_s101_2_the_home_and_a_lone_repo_keep_their_outcomes_limit(repo: Repo) -> None:
+    for text in (
+        POLICY + AGENTS + "outcomes = 3\n",
+        POLICY + AGENTS + 'outcomes = 3\n\n[product]\nrepos = ["acme/api"]\n',
+    ):
+        repo.write(repo.policy_file, text)
+        policy = Policy.parse(tomllib.loads(text), "shipmill.toml")
+        assert policy.agents is not None and policy.agents.outcomes == 3
+        assert AgentsConfig.load(repo.root).outcomes == 3
+
+
 # -- S-065-7 (S-038-10 dropped) --------------------------------------------------------------
 
 OTHER = "romamo/api"
