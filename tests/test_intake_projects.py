@@ -328,6 +328,13 @@ PROJECT_GH = FAKE_GH.replace(
     'elif "labels: [$label]" in query:',
 )
 PROJECT_UVX = FAKE_UVX.replace(
+    "found = {}\n",
+    "found = {}\n"
+    "if 'states: OPEN, first' in query and '$label' in query:  # spec 106: a repo's open plans\n"
+    "    print(json.dumps({'data': {'repository': {'issues': "
+    "{'pageInfo': {'hasNextPage': False, 'endCursor': None}, 'nodes': []}}}}))\n"
+    "    sys.exit(0)\n",
+).replace(
     '    found[alias] = {"issues": {"totalCount": data["counts"][repo]}}',
     '    heads = data["heads"].get(repo, [])\n'
     '    found[alias] = {"issues": {"totalCount": len(heads), "nodes": heads}}',
@@ -355,11 +362,11 @@ def test_s106_12_the_run_prints_a_row_per_head_after_the_other_rows(tmp_path: Pa
     projects = [json.loads(r) for r in rows if json.loads(r).get("kind") == "project"]
     assert [(p["number"], p["state"], p["holder"]) for p in projects] == [
         (7, "PROJECT_FOCUS", "maintainer"),
-        (8, "PROJECT_HELD", "start"),
+        (8, "PROJECT_START_DUE", "agent"),  # no limit: a held head's turn has come (spec 106, S-106-14)
     ]
     assert rows[-2:] == [json.dumps(p, sort_keys=True) for p in projects]
     text = checkout.run("--projects").stdout.splitlines()
-    assert text[1].startswith("#11") and text[-1] == "PROJECT_HELD     #8      no check issue  Head 8"
+    assert text[1].startswith("#11") and text[-1] == "PROJECT_START_DUE #8      its turn to start  Head 8"
     assert not any("PROJECT_" in line for line in checkout.run().stdout.splitlines())  # without the flag
 
 
@@ -374,7 +381,8 @@ def test_s106_28_the_run_counts_the_homes_product(tmp_path: Path) -> None:
     }, lines.stderr
     text = checkout.run("--projects")
     assert text.stdout.splitlines()[1] == "projects active: 2 of 2 (product o/r)"
-    assert [via(call) for call in checkout.product_calls()] == ["o/api", "o/api"]  # one call a run
+    # a run: one call for the heads, one for the open plans (spec 106)
+    assert [via(call) for call in checkout.product_calls()] == ["o/api"] * 4
     failed = Projects(tmp_path / "f", config, heads, {"heads": {}, "fail": ["o/api"]}).run("--projects")
     assert failed.returncode == 2 and "o/api" in failed.stderr
 

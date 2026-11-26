@@ -2439,10 +2439,13 @@ PROJECT_HOLDERS = {
     "PROJECT_CLOSED": None,
     "PROJECT_STOPPED": None,
     "PROJECT_IDLE": "agent",  # S-106-17: a session asks the maintainer continue, hold, or stop
+    "PROJECT_START_DUE": "agent",  # S-106-14: a session files its check issue, or removes `held`
     "PROJECT_STOP_DUE": "agent",  # S-106-18: a session stops it
 }
 PROJECT_COUNTED = ("PROJECT_ACTIVE", "PROJECT_FOCUS")  # S-106-28: held and closing heads count nothing
-PROJECT_ACTION = frozenset({"PROJECT_IDLE", "PROJECT_STOP_DUE"})  # each starts a session (exit 1)
+# each starts a session (exit 1); PROJECT_START_DUE (spec 106): a held head whose turn has come
+PROJECT_ACTION = frozenset({"PROJECT_IDLE", "PROJECT_STOP_DUE", "PROJECT_START_DUE"})
+WORK_ITEM = re.compile(r"^<!-- shipmill:plan-item #([1-9][0-9]*) W-([1-9][0-9]*) -->$")
 IDLE_DAYS = 14  # S-106-17: a tree with no update this long reads PROJECT_IDLE
 # S-106-18: a stop, `stop: <reason>` as a reply's first line, or `stop` answering the idle
 # question with the reason on its next line
@@ -2466,7 +2469,7 @@ number title body state stateReason createdAt closedAt author {{ __typename logi
 parent {{ number }}
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
 timelineItems(itemTypes: [LABELED_EVENT], first: 20) {{
-  nodes {{ ... on LabeledEvent {{ label {{ name }} actor {{ __typename login }} }} }}
+  nodes {{ ... on LabeledEvent {{ createdAt label {{ name }} actor {{ __typename login }} }} }}
 }}
 comments(last: 30) {{ nodes {{ author {{ __typename login }} authorAssociation body createdAt }} }}
 subIssues(first: {PROJECT_SUBS}) {{
@@ -2514,6 +2517,8 @@ class ProjectRow:
     parts_closed: int
     base: str | None = None  # an action's state underneath it, PROJECT_IDLE's and PROJECT_STOP_DUE's
     parent: int | None = None  # the head's sub-issue parent, its plan for a filed item (spec 106's goal rows)
+    work: int | None = None  # a filed plan item's W-n, from its plan-item marker: its place in the plan's Work
+    labelled: str | None = None  # when it was labelled project, ISO 8601 (the order of heads with no plan)
 
     @property
     def holder(self) -> str | None:
@@ -2639,10 +2644,23 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
     check_number = None if check is None else int(check["number"])
 
     parent = (head.get("parent") or {}).get("number")
+    item = WORK_ITEM.match(PLANS.first_line(head.get("body") or ""))
+    work = int(item.group(2)) if item is not None and parent is not None and int(item.group(1)) == parent else None
+    events = (head.get("timelineItems") or {}).get("nodes") or []
+    labelled = next(
+        (
+            str(e["createdAt"])
+            for e in events
+            if (e.get("label") or {}).get("name") == PROJECT_LABEL and e.get("createdAt")
+        ),
+        None,
+    )
 
     def row(state: str, note: str) -> ProjectRow:
         closed = all_parts - open_parts
-        return ProjectRow(number, state, title, note, check_number, open_parts, closed, parent=parent)
+        return ProjectRow(
+            number, state, title, note, check_number, open_parts, closed, parent=parent, work=work, labelled=labelled
+        )
 
     if head["state"] != "OPEN":
         if head.get("stateReason") == "COMPLETED":
@@ -2784,12 +2802,19 @@ def heads_query(repos: list[str]) -> str:
     return "query { " + " ".join(parts) + " }"
 
 
-def projects_active(product: Product, local: list[ProjectRow], gh: ProductGh, bot_login: str | None) -> Projects | None:
+def projects_active(
+    product: Product,
+    local: list[ProjectRow],
+    gh: ProductGh,
+    bot_login: str | None,
+    seen: dict[str, list[ProjectRow]] | None = None,
+) -> Projects | None:
     """S-106-28: the product's heads reading active or in focus: the checkout's own, local, and
     every other repo's, read with one `shipmill gh --product` per owner (its repo the home when
     the owner's repos include it, else the owner's first) and read as fetch_projects reads them.
     A read that fails exits 2 naming the repos, never counted as empty. None without a limit,
-    and then nothing is read"""
+    and then nothing is read. seen, when given, gets each other repo's heads (spec 106's start
+    order reads them)"""
     if product.limit is None:
         return None
     owners: dict[str, list[str]] = {}
@@ -2811,13 +2836,155 @@ def projects_active(product: Product, local: list[ProjectRow], gh: ProductGh, bo
                 fail(f"{step}: {repo} has {issues['totalCount']} open heads, more than intake_state.py reads")
             for head in issues.get("nodes") or []:
                 read = project_row(head, bot_login)
+                if read is not None and seen is not None:
+                    seen.setdefault(repo, []).append(read)
                 if read is not None and read.counted:
                     total += 1
     return Projects(product.home, product.limit, total)
 
 
+# -- spec 106: an overdue plan stops the product's new starts, and held heads start in turn
+
+OPEN_PLAN_ISSUES = PLAN_ISSUES.replace(
+    "issues(labels: [$label], first:", "issues(labels: [$label], states: OPEN, first:"
+)
+if OPEN_PLAN_ISSUES == PLAN_ISSUES:
+    raise RuntimeError("OPEN_PLAN_ISSUES no longer narrows PLAN_ISSUES to open plans")
+
+
+def unmet(hold: Hold) -> HoldMet:
+    """Another repo's held plan reads held: its hold isn't read here, and a held plan is never
+    overdue (spec 106's product read stays one query a repo)"""
+    return HoldMet(None, hold.until)
+
+
+@dataclass(frozen=True)
+class ProductPlans:
+    """What the product's open plans say (spec 106): the overdue ones, as owner/repo#P, and when
+    each accepted plan was accepted, by (owner/repo lowercased, P)"""
+
+    overdue: tuple[str, ...]
+    accepted: dict[tuple[str, int], dt.datetime]
+
+
+def read_product_plans(
+    issues: dict[str, list[dict[str, Any]]],
+    now: dt.datetime,
+    bot_login: str | None,
+    marker: str,
+    maintainers: frozenset[str],
+    own: tuple[str, HoldReader, frozenset[str]] | None = None,
+) -> ProductPlans:
+    """S-106-9, S-106-14: each repo's open plan issues read as --plans reads them: overdue past
+    its answer date, or accepted at its answer's time. own is the checkout's repo, its hold
+    reader, and its direction's goals, so its plans read exactly as --plans prints them; another
+    repo's held plan reads held, and its goals are each plan's own"""
+    overdue: list[str] = []
+    accepted: dict[tuple[str, int], dt.datetime] = {}
+    for repo, plans in issues.items():
+        for issue in plans:
+            if issue.get("state") != "OPEN" or not is_plan(issue, bot_login):
+                continue
+            goal = plan_goal(issue)
+            mine = own is not None and repo.lower() == own[0].lower()
+            goals = own[2] if own is not None and mine and own[2] else frozenset({goal} if goal else set())
+            row = plan_state(
+                issue,
+                goals=goals,
+                marker=marker,
+                bot_login=bot_login,
+                filing=lambda issue, plan: ("PLAN_FILED", ""),
+                maintainers=maintainers,
+                holds=own[1] if own is not None and mine else unmet,
+            )
+            if row is None:
+                continue
+            row = dated(row, issue, now, bot_login, marker, maintainers)
+            if row.state == "PLAN_OVERDUE":
+                overdue.append(f"{repo}#{issue['number']}")
+            answer = plan_answer(issue, bot_login, marker, maintainers)
+            if row.state in ("PLAN_ACCEPTED", "PLAN_FILED") and answer is not None and answer.kind == "accept":
+                accepted[(repo.lower(), int(issue["number"]))] = answer.at
+    return ProductPlans(tuple(sorted(overdue)), accepted)
+
+
+def product_plan_issues(product: Product, here: list[dict[str, Any]], gh: ProductGh) -> dict[str, list[dict[str, Any]]]:
+    """The open plan issues of every repo of the product: the checkout's own, here, and every
+    other repo's through `shipmill gh --product`, a query a page; a read that fails exits 2
+    naming the repo"""
+    found = {product.repos[0]: here}
+    for repo in product.repos[1:]:
+        owner, name = split_repo(repo)
+        nodes: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            variables = {"owner": owner, "name": name, "label": PLAN_LABEL, **({"cursor": cursor} if cursor else {})}
+            step = f"reading the open plans of {repo}"
+            try:
+                data = gh.graphql(repo, OPEN_PLAN_ISSUES, variables, step)
+            except Unreadable as failed:
+                fail(str(failed))
+            issues = (data.get("repository") or {}).get("issues")
+            if not isinstance(issues, dict):
+                fail(f"{step}: GitHub returned no issues for {repo}")
+            nodes += issues["nodes"]
+            if not issues["pageInfo"]["hasNextPage"]:
+                break
+            cursor = issues["pageInfo"]["endCursor"]
+        found[repo] = nodes
+    return found
+
+
+def overdue_waits(rows: list[PlanRow], overdue: tuple[str, ...]) -> list[PlanRow]:
+    """S-106-9: while a plan of the product reads PLAN_OVERDUE, a goal's no-work PLAN_DUE reads
+    PLAN_WAITS `plan <owner/repo>#P overdue`; a request's PLAN_DUE stays"""
+    if not overdue:
+        return rows
+    note = f"plan {overdue[0]} overdue"
+    found = []
+    for row in rows:
+        automatic = row.kind == "goal" and row.state in ("PLAN_DUE", "PLAN_WAITS") and row.note.startswith("no-work")
+        found.append(replace(row, state="PLAN_WAITS", note=note, dropped=None) if automatic else row)
+    return found
+
+
+def start_due(
+    heads: dict[str, list[ProjectRow]],
+    here: str,
+    projects: Projects | None,
+    plans: ProductPlans,
+) -> list[ProjectRow]:
+    """S-106-14: the checkout's heads, its held ones read PROJECT_START_DUE in their turn. With
+    room under [agents] projects (no limit: every held head), and no plan of the product
+    overdue, the product's held heads start as many as the room, a filed plan item's first, by
+    its plan's accept time across the product and then its Work order, then heads with no
+    accepted plan by when they were labelled; each repo's pass starts its own alone"""
+    held = [(repo, h) for repo, rows in heads.items() for h in rows if h.state == "PROJECT_HELD"]
+    if plans.overdue:
+        room = 0
+    elif projects is None:
+        room = len(held)
+    else:
+        room = projects.room
+
+    def turn(entry: tuple[str, ProjectRow]) -> tuple[Any, ...]:
+        repo, head = entry
+        accepted = plans.accepted.get((repo.lower(), head.parent)) if head.parent is not None else None
+        if accepted is not None:  # an item with no marker comes after its plan's numbered ones
+            return (0, accepted.isoformat(), head.work if head.work is not None else 10**9, repo.lower(), head.number)
+        return (1, head.labelled or "9999", 0, repo.lower(), head.number)  # never labelled: last
+
+    chosen = {(repo.lower(), head.number) for repo, head in sorted(held, key=turn)[:room]}
+    found = []
+    for head in heads.get(here, []):
+        if (here.lower(), head.number) in chosen:
+            head = replace(head, state="PROJECT_START_DUE", note="its turn to start", base=head.state)
+        found.append(head)
+    return found
+
+
 def show_project(row: ProjectRow) -> str:
-    return f"{row.state:<16} #{row.number:<6} {row.note}  {row.title}"
+    return f"{row.state:<17} #{row.number:<6} {row.note}  {row.title}"
 
 
 def project_json(row: ProjectRow) -> dict[str, Any]:
@@ -3124,9 +3291,19 @@ def main() -> int:
     if args.projects or args.goals:  # spec 106: the heads; --goals reads them for a planned goal
         now = dt.datetime.now(UTC)
         heads = fetch_projects(args.repo, args.bot_login, now, gh_graphql, args.marker, maintainers)
-    if args.projects:  # with [agents] projects, the product's active count
+    others: dict[str, list[ProjectRow]] = {}
+    if args.plans or args.projects:  # spec 106: the product, as [agents] projects reads it
         limits = product_of(args.repo, config, product_gh.home_config, "projects")
-        projects = projects_active(limits, heads, product_gh, args.bot_login)
+        if args.projects:  # with [agents] projects, the product's active count
+            projects = projects_active(limits, heads, product_gh, args.bot_login, others)
+        owner, name = split_repo(args.repo)
+        here, _ = paged(gh_graphql, OPEN_PLAN_ISSUES, {"owner": owner, "name": name, "label": PLAN_LABEL}, "issues")
+        when = dt.datetime.now(UTC)
+        own = (args.repo, gh_holds(args.repo, gh_graphql_unreadable, when, stable), frozenset(g.id for g in direction))
+        issues = product_plan_issues(limits, here, product_gh)
+        product_plans = read_product_plans(issues, when, args.bot_login, args.marker, maintainers, own)
+        planned = overdue_waits(planned, product_plans.overdue)  # S-106-9
+        heads = start_due({args.repo: heads, **others}, args.repo, projects, product_plans)  # S-106-14
     goal_states: list[GoalRow] = []
     if args.goals:  # spec 106: a row per goal of kind goal, and per goal proposal
         releases = sorted({g.by for g in direction if g.kind == "goal" and g.by is not None and g.past is None})

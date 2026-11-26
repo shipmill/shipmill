@@ -1,0 +1,3 @@
+### Added
+
+- Projects start in turn (spec 106): `intake_state.py --projects` reads PROJECT_START_DUE, an action, for the product's held heads while the room under `[agents] projects` is above 0 (without the key, every held head), a filed plan item's first by its plan's accept time and Work order, then heads with no plan by when they were labelled; product-intake's skill gives its step, the check issue filed first. While a plan of any repo of the product reads PLAN_OVERDUE, no head starts and every `no-work` plan of the product reads PLAN_WAITS `plan <owner/repo>#P overdue`; a requested plan is still proposed (#1740)
