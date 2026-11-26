@@ -105,9 +105,10 @@ carrying `state`, `holder`, and `by`.
   in its place: no action for an agent (exit 0 when it is the only row), the maintainer's
   overdue decision. A held plan (spec 098) has no answer date until it reads PLAN_OPEN again,
   when the seven days start from its re-check
-- **An overdue plan stops new starts** in its repository: while any plan reads PLAN_OVERDUE,
-  no goal reads a `no-work` PLAN_DUE (it reads PLAN_WAITS with the note `plan #P overdue`),
-  and no held project starts (below). Work already started goes on: build issues of active
+- **An overdue plan stops new starts** in its whole product: while any plan of any repository
+  of the product (the repos the limit below counts) reads PLAN_OVERDUE, no goal of
+  any of them reads a `no-work` PLAN_DUE (it reads PLAN_WAITS with the note
+  `plan <owner/repo>#P overdue`), and no held project of any of them starts (below). Work already started goes on: build issues of active
   projects are dispatched as today, and a plan the maintainer requested (`requested in #N`)
   is still proposed
 - **One open plan per goal.** A goal with an open plan now reads PLAN_DUE for a
@@ -148,14 +149,27 @@ and the actions below, with `--json` carrying `state`, `holder`, `check` (the ch
 null), and `parts` (open and closed counts). A closing row's note lists the unchecked
 `- [ ]` lines of the check issue's `## Cleanup` section, or `no cleanup listed`.
 
-- **The limit.** `.github/shipmill.toml` gains `[agents] projects = N`, an integer from 1 up
-  to `[agents] wip`'s ceiling, read by `AgentsConfig` as `projects: int | None` and refused
-  as `[agents] outcomes` is (spec 101) when malformed. The active count is the repository's
-  heads reading active or in focus; held and closing ones count nothing. The room is N minus
-  that, never below 0. Without the key there is no limit
+- **The limit is the product's.** `.github/shipmill.toml` gains `[agents] projects = N`, an
+  integer from 1 up to `[agents] wip`'s ceiling, read by `AgentsConfig` as
+  `projects: int | None` and refused as `[agents] outcomes` is (spec 101) when malformed. A
+  product's limit is set once, in its home: a config with `[product] home` (a component)
+  that sets `[agents] projects` is refused, naming the home whose config holds the product's
+  limit (`src/shipmill/policy.py`). The product is read as spec 101 reads it: the repo alone
+  without a `[product]` table, the home and every repo its `[product] repos` lists in a home,
+  and the same set in a component, whose limit comes from the home's config on its default
+  branch. The active count is the product's heads reading active or in focus, across all
+  those repos; held and closing ones count nothing. Other repos are read through
+  `shipmill gh --product <repo> api graphql`, one call per owner, with the coordinator's token
+  in the home (D-83) and the read token in a component (D-84); a read that fails exits 2
+  naming the repo and never counts it as empty. The room is N minus the count, never below
+  0. Without the key there is no limit. `intake_state.py --projects` prints
+  `projects active: K of N (product <owner/home>)` as its second line and, with `--json`,
+  a `projects` key `{"limit": N, "active": K, "room": R}` on its first line
 - **Starting a held project.** While the room is above 0 and no plan reads PLAN_OVERDUE, the
-  held heads read PROJECT_START_DUE, an action, as many as the room, oldest accepted plan
-  first and in its Work order, then heads with no plan by number. Its session files the check
+  held heads of the product read PROJECT_START_DUE, an action, as many as the room, oldest
+  accepted plan first (by the time of its accept, across the product's repos) and in its
+  Work order, then heads with no plan by the time they were labelled. Each repo's pass starts
+  only its own heads among those. Its session files the check
   issue first, as the head's sub-issue (`chains.py link --child`), titled `Check: <what will
   be true>` with a `## Check` a person other than the builder can run, and for a head
   labelled `held` removes the label instead when the check issue exists already. Only then
@@ -232,12 +246,12 @@ idle questions reach it as any needs-decision item does.
 - S-106-6: product-intake's SKILL.md gives GOAL_OVERDUE's step (the `goal-review` issue, the question with extend, rewrite, and drop, and the direction edit as a pull request only the maintainer merges) and, on PLAN_DONE, the outcome comment's `Goal check:` line and the pull request adding `. Met: <date>` and any standing measure when the check holds
 - S-106-7: a PLAN_OPEN plan's note ends `answer by <date>`, seven days after its newest revision, and with `--json` its row carries `answer_by`; a trusted `answer by YYYY-MM-DD` reply sets the date, the newest one counts, and it is read as no answer to the plan; an untrusted one changes nothing
 - S-106-8: a plan whose answer date has ended in UTC reads PLAN_OVERDUE, which adds nothing to the exit code, and a held plan reads no answer date until it reads PLAN_OPEN again, its seven days counted from its re-check
-- S-106-9: while a plan reads PLAN_OVERDUE, every `no-work` PLAN_DUE of the repository reads PLAN_WAITS with the note `plan #P overdue`, no head reads PROJECT_START_DUE, and a `requested in #N` PLAN_DUE still reads PLAN_DUE
+- S-106-9: while a plan of any repo of the product reads PLAN_OVERDUE, every `no-work` PLAN_DUE of every repo of the product reads PLAN_WAITS with the note `plan <owner/repo>#P overdue`, no head of the product reads PROJECT_START_DUE, and a `requested in #N` PLAN_DUE still reads PLAN_DUE
 - S-106-10: a goal with an open plan reads PLAN_DUE for a `requested in #N` trigger and for an accepted opportunity; once a newer plan of the same goal is open the older reads PLAN_REPLACED `by #<new>`, an action, until it is closed, and a replaced plan does not stop the goal's `no-work` trigger as a declined one does
 - S-106-11: an accepted plan's filed `feature` and `fix` items carry the `project` label, and plan items filed before this spec and issues without the label read no project row
 - S-106-12: `intake_state.py --projects` reads an open head with no check issue, or labelled `held`, as PROJECT_HELD; with an open `Check: ` sub-issue holding `## Check` and an open or no part as PROJECT_ACTIVE (PROJECT_FOCUS when labelled `focus`); with every part closed at both levels and the check issue open as PROJECT_CLOSING, its note the unchecked `## Cleanup` lines or `no cleanup listed`; a head closed as completed as PROJECT_CLOSED; and one closed as not planned with the `--bot-login`'s stop record as PROJECT_STOPPED
 - S-106-13: a config with `[agents] projects` set to 0, a negative number, a number above `[agents] wip`'s ceiling, or a non-integer is refused naming the key; with 2 it loads as `projects == 2`, and without it is None
-- S-106-14: with `[agents] projects = 2`, one active and one in-focus head, and held and closing heads, no head reads PROJECT_START_DUE; with one slot free, the held head of the oldest accepted plan, first in its Work order, reads PROJECT_START_DUE, an action, and no other does; without the key every held head reads PROJECT_START_DUE
+- S-106-14: with `[agents] projects = 2`, one active and one in-focus head (in any repos of the product), and held and closing heads, no head reads PROJECT_START_DUE; with one slot free, the held head of the oldest accepted plan, first in its Work order, reads PROJECT_START_DUE, an action, and no other does; without the key every held head reads PROJECT_START_DUE
 - S-106-15: product-intake's SKILL.md gives PROJECT_START_DUE's step: file the check issue as the head's sub-issue before any part, titled `Check: ` with a `## Check` someone other than the builder runs, or remove the `held` label when the check issue exists already
 - S-106-16: `triage_state.py` reads a held head and each of its open sub-issues as BLOCKED with the note `project #<head> held`, and a head in any other state as it reads any parent
 - S-106-17: a head in active, in focus, or closing whose tree has had no update for 14 days reads PROJECT_IDLE, an action, until a needs-decision question by the `--bot-login` is on the head newer than the tree's last update; a tree updated 13 days ago reads its state
@@ -251,6 +265,7 @@ idle questions reach it as any needs-decision item does.
 - S-106-25: `shipmill status --item G-3` and `--item N` on a plan issue or a project head print the state, the holder, and what moves it as a spec 094 condition, an overdue plan's as `answer due <date>, overdue` and a held project's naming the free slot, the overdue plan, or the maintainer's hold it waits for
 - S-106-26: `watch_state.py` lists GOAL_OVERDUE, PLAN_REPLACED, PROJECT_START_DUE, PROJECT_IDLE, PROJECT_STOP_DUE, GOAL_PROPOSAL_DUE, and NEEDS_GOAL as actions of the PLANS row and `shipmill gate` starts a session for each; `fleet.py queue` shows a PLAN_OVERDUE plan as an overdue `PLAN` row and a NEEDS_GOAL opportunity as an `OPPORTUNITY` row
 - S-106-27: `docs/flow.md` and the skills' references give the states, the labels (`project`, `held`, `focus`, `goal-proposal`, `goal-review`), and the markers this spec adds
+- S-106-28: a config with `[product] home` that sets `[agents] projects` is refused with a message naming the home; in a home `intake_state.py --projects` counts the active and in-focus heads of the home and of every repo its `[product] repos` lists, reading other repos through `shipmill gh --product`, one call per owner, and in a component it reads the limit from the home's config on its default branch and counts the same set; a read that fails exits 2 naming the repo; the second line reads `projects active: K of N (product <owner/home>)` and `--json`'s first line carries `projects` with `limit`, `active`, and `room`
 
 ## Out of scope
 
@@ -258,9 +273,9 @@ idle questions reach it as any needs-decision item does.
 - A finished plan's outcome: spec 097, which this spec extends only with the `Goal check:` line
 - The limit of outcomes waiting on the maintainer: spec 101; `[agents] projects` bounds what
   runs, not what waits for an answer
-- A limit or a focus across several repositories, or the portfolio: the limit is per
-  repository, and one project in focus across all of them is the maintainer's to keep with
-  the `focus` label; moving the focus by itself is a later request
+- A limit across several products, or the portfolio: the limit and an overdue plan's stop
+  are each product's, and one project in focus across all products is the maintainer's to
+  keep with the `focus` label; moving the focus by itself is a later request
 - Ordering held projects by how close they are to done: they start in the order of their
   plans, which the maintainer accepted; a held head has no progress to measure
 - The weekly and quarterly reviews: they read these states, and run outside shipmill
@@ -276,6 +291,8 @@ idle questions reach it as any needs-decision item does.
 - D-34: only the maintainer changes the direction
 - D-62: a trusted author's text carrying the agent marker is an agent's
 - D-68: the App's relay of a maintainer's answer is that answer
+- D-83: the home reads the product's repos with the coordinator's product token
+- D-84: a component reads its product's other repos with a read-only token
 
 ## Issues
 
