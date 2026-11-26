@@ -255,6 +255,16 @@ PLAN_ACCEPTED_WAITS = Condition(
 )
 PLANS = "PLANS"  # watch_state.py's row `PLAN_DUE G-1; PLAN_ACCEPTED #N ...`, from intake_state.py --plans
 PLAN_ACCEPTED = "PLAN_ACCEPTED "
+# S-098-13: a held plan whose condition was met is product intake's to re-check, and the
+# watch's PLAN_HELD row, `#N until <condition>; ...`, names each plan still held
+PLAN_HOLD_MET = "PLAN_HOLD_MET "
+PLAN_HOLD_MET_WAITS = Condition(
+    "triaged as plan and held, and its hold was met: waits on product intake to re-check it",
+    Who.AGENT,
+    "a product intake pass posts the plan's re-check, then the plan waits on your answer again",
+)
+PLAN_HELD = "PLAN_HELD"
+HELD_PART = re.compile(r"#([1-9]\d*) until (\S+)")
 SPEC_DUE = "SPEC_DUE"  # watch_state.py's row `ACCEPTED #N ...`: intake_state.py's ACCEPTED opportunities (spec 074)
 # #1643: a request triaged as an opportunity that no open opportunity issue names yet is product
 # intake's to group, not the maintainer's to accept
@@ -300,6 +310,44 @@ def plans_accepted(facts: Facts) -> frozenset[int]:
         for part in r.detail.split("; ")
         if part.startswith(PLAN_ACCEPTED)
         for n in OWN_NUMBER.findall(part)
+    )
+
+
+def plans_hold_met(facts: Facts) -> frozenset[int]:
+    """S-098-13: the plans intake_state.py reads PLAN_HOLD_MET (held, the hold met, the
+    re-check due), as the watch's PLANS row names them in its PLAN_HOLD_MET part"""
+    return frozenset(
+        int(n)
+        for r in facts.rows
+        if r.state == PLANS
+        for part in r.detail.split("; ")
+        if part.startswith(PLAN_HOLD_MET)
+        for n in OWN_NUMBER.findall(part)
+    )
+
+
+def plans_held(facts: Facts) -> dict[int, str]:
+    """S-098-13: the plans intake_state.py reads PLAN_HELD, each with its condition as the
+    hold names it, from the watch's PLAN_HELD row; no read of its own"""
+    found: dict[int, str] = {}
+    for r in facts.rows:
+        if r.state != PLAN_HELD:
+            continue
+        for part in r.detail.split("; "):
+            held = HELD_PART.fullmatch(part)
+            if held is None:
+                raise ReleaseError(f"watch_state.py's {PLAN_HELD} row is unreadable: {r.detail!r}")
+            found[int(held[1])] = held[2]
+    return found
+
+
+def held_waits(until: str) -> Condition:
+    """S-098-13: a held plan is postponed until its condition, an event, is met"""
+    return Condition(
+        f"held until {until}",
+        Who.EVENT,
+        f"the hold's condition met ({until}), then product intake re-checks the plan",
+        where=Holder.POSTPONED,
     )
 
 
@@ -561,6 +609,11 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
             return [ACCEPTED_WAITS]
         if issue.verdict == "plan" and issue.number in plans_accepted(facts):
             return [PLAN_ACCEPTED_WAITS]
+        if issue.verdict == "plan" and issue.number in plans_hold_met(facts):
+            return [PLAN_HOLD_MET_WAITS]
+        held = plans_held(facts).get(issue.number) if issue.verdict == "plan" else None
+        if held is not None:
+            return [held_waits(held)]
         if issue.verdict == "opportunity" and not issue.proposal:  # #1643: a request handed to intake
             return grouped_waits(facts, issue) or [INTAKE_WAITS]
         reason, who, clears = VERDICT_WAITS[issue.verdict]
