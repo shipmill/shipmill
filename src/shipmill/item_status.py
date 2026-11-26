@@ -247,6 +247,14 @@ ACCEPTED_WAITS = Condition(
     Who.AGENT,
     "triage's spec gate gives it a feature verdict and opens its spec",
 )
+# #1707: a goal plan the maintainer accepted, with items still to file, is product intake's
+PLAN_ACCEPTED_WAITS = Condition(
+    "triaged as plan and accepted: waits on product intake to file its items",
+    Who.AGENT,
+    "a product intake pass files its items",
+)
+PLANS = "PLANS"  # watch_state.py's row `PLAN_DUE G-1; PLAN_ACCEPTED #N ...`, from intake_state.py --plans
+PLAN_ACCEPTED = "PLAN_ACCEPTED "
 SPEC_DUE = "SPEC_DUE"  # watch_state.py's row `ACCEPTED #N ...`: intake_state.py's ACCEPTED opportunities (spec 074)
 # #1643: a request triaged as an opportunity that no open opportunity issue names yet is product
 # intake's to group, not the maintainer's to accept
@@ -280,6 +288,19 @@ def accepted(facts: Facts) -> frozenset[int]:
     """#1611: the opportunities intake_state.py reads ACCEPTED (open, labelled its --accepted-label,
     planned, and not yet handed off), as the watch's SPEC_DUE row names them; no read of its own"""
     return frozenset(int(n) for r in facts.rows if r.state == SPEC_DUE for n in OWN_NUMBER.findall(r.detail))
+
+
+def plans_accepted(facts: Facts) -> frozenset[int]:
+    """#1707: the plans intake_state.py reads PLAN_ACCEPTED (accepted, items still to file), as
+    the watch's PLANS row names them in its PLAN_ACCEPTED part; no read of its own"""
+    return frozenset(
+        int(n)
+        for r in facts.rows
+        if r.state == PLANS
+        for part in r.detail.split("; ")
+        if part.startswith(PLAN_ACCEPTED)
+        for n in OWN_NUMBER.findall(part)
+    )
 
 
 def not_open(ref: Ref, repo: str) -> ReleaseError:
@@ -538,6 +559,8 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
             ]
         if issue.verdict == "opportunity" and issue.number in accepted(facts):
             return [ACCEPTED_WAITS]
+        if issue.verdict == "plan" and issue.number in plans_accepted(facts):
+            return [PLAN_ACCEPTED_WAITS]
         if issue.verdict == "opportunity" and not issue.proposal:  # #1643: a request handed to intake
             return grouped_waits(facts, issue) or [INTAKE_WAITS]
         reason, who, clears = VERDICT_WAITS[issue.verdict]
