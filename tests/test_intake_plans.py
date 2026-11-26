@@ -4,6 +4,7 @@ import importlib.util
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -85,6 +86,14 @@ def plan(number: int, goal: str, **kwargs: Any) -> dict[str, Any]:
     return issue(number, body=body, labels=("goal-plan",), **opener)
 
 
+def reported(plan_issue: dict[str, Any], missing: str = "- nothing") -> dict[str, Any]:
+    """The plan closed as completed, with the App's outcome comment after its close (spec 097)"""
+    body = f"<!-- shipmill:plan-outcome -->\nThe work closed.\n\nHolds:\n- nothing\n\nStill missing:\n{missing}\n"
+    outcome = {**comment(body, author="shipmill-app", bot=True), "createdAt": "2026-10-02T10:05:00Z"}
+    plan_issue["comments"]["nodes"].append(outcome)
+    return plan_issue
+
+
 def spec(status: str, served: str) -> str:
     return f"# S-030: A thing\n\nstatus: {status}\nserves: {served}\n\n## Problem\n\nserves: G-9\n"
 
@@ -101,6 +110,7 @@ class Fake:
         specs: dict[str, str] | None = None,
         carriers: list[dict[str, Any]] | None = None,
         milestones: dict[int, str | None] | None = None,
+        states: Mapping[int, tuple[str, str | None]] | None = None,
     ) -> None:
         self.opened = opened or []
         self.opportunities = opportunities or []
@@ -109,6 +119,7 @@ class Fake:
         self.specs = specs or {}
         self.carriers = carriers or []  # the issues the plan-item marker search finds
         self.milestones = milestones or {}  # each existing item's milestone
+        self.states = states or {}  # each item's issue (state, stateReason), open when not given (spec 097)
         self.asked: list[str] = []
 
     @staticmethod
@@ -128,6 +139,11 @@ class Fake:
             titles = {n: self.milestones[n] for n in numbers}
             aliased = {f"e{n}": {"milestone": {"title": t} if t else None} for n, t in titles.items()}
             return {"data": {"repository": aliased}}
+        states = [int(n) for n in re.findall(r"\bs(\d+): issue\(", query)]
+        if states:
+            found_states = {n: self.states.get(n, ("OPEN", None)) for n in states}
+            nodes = {f"s{n}": {"state": s, "stateReason": r} for n, (s, r) in found_states.items()}
+            return {"data": {"repository": nodes}}
         if "labels: [$label]" in query:
             chosen = self.plans if variables["label"] == "goal-plan" else self.opportunities
             repo: dict[str, Any] = {"issues": self.page(chosen)}
@@ -220,7 +236,7 @@ def test_s028_1_closed_built_or_unrelated_work_serves_nothing(ist: ModuleType) -
 
 
 def test_s028_1_an_open_plan_item_serves_its_plans_goal(ist: ModuleType) -> None:
-    accepted = plan(20, "G-1", state="CLOSED", reason="COMPLETED")
+    accepted = reported(plan(20, "G-1", state="CLOSED", reason="COMPLETED"))  # S-097-6: with its outcome
     item = issue(21, body="<!-- shipmill:plan-item #20 W-1 -->\nA feature.", author="shipmill-app", bot=True)
     assert set(due(ist, Fake([item], plans=[accepted]))) == {"G-2", "G-3"}
     member = issue(22, body="<!-- shipmill:plan-item #20 W-2 -->\nA fix.", association="MEMBER")
@@ -232,7 +248,7 @@ def test_s028_1_an_open_plan_item_serves_its_plans_goal(ist: ModuleType) -> None
 def test_s028_2_no_work_is_not_raised_after_a_declined_newest_plan(ist: ModuleType) -> None:
     declined = plan(20, "G-1", state="CLOSED", reason="NOT_PLANNED")
     assert set(due(ist, Fake(plans=[declined]))) == {"G-2", "G-3"}
-    redone = plan(30, "G-1", state="CLOSED", reason="COMPLETED")  # a newer plan, done: proposed again
+    redone = reported(plan(30, "G-1", state="CLOSED", reason="COMPLETED"))  # newer, done, outcome posted: again
     assert set(due(ist, Fake(plans=[declined, redone]))) == {"G-1", "G-2", "G-3"}
     newer_declined = plan(40, "G-1", state="CLOSED", reason="NOT_PLANNED")
     assert set(due(ist, Fake(plans=[redone, newer_declined]))) == {"G-2", "G-3"}
@@ -822,12 +838,12 @@ def test_s028_12_a_plan_closed_as_not_planned_reads_declined_with_the_reason(ist
     assert state_of(ist, silent) == ("PLAN_DECLINED", "closed as not planned with no reason")
     malformed = open_plan(20, body="broken", state="CLOSED", reason="NOT_PLANNED")
     assert state_of(ist, malformed) == ("PLAN_DECLINED", "closed as not planned with no reason")
-    done = open_plan(20, state="CLOSED", reason="COMPLETED")
+    done = reported(open_plan(20, state="CLOSED", reason="COMPLETED"))  # S-097-3: its outcome posted
     assert plan_states(ist, Fake(plans=[done])) == {}
 
 
 def test_plan_rows_needing_action_exit_1(ist: ModuleType) -> None:
-    assert {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED"} == ist.PLAN_ACTION
+    assert {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE"} == ist.PLAN_ACTION
 
 
 def test_a_plans_older_comments_are_paged_back(ist: ModuleType) -> None:
@@ -843,6 +859,119 @@ def test_a_plans_older_comments_are_paged_back(ist: ModuleType) -> None:
             return super().__call__(query, variables)
 
     assert plan_states(ist, Older(plans=[paged]))[20] == ("PLAN_ACCEPTED", "unfiled")
+
+
+# -- a finished plan says whether the goal moved (spec 097, #1710)
+
+
+def work_done(
+    ist: ModuleType, states: Mapping[int, tuple[str, str | None]], milestone: str = "none", existing: str | None = None
+) -> Any:
+    """Plan #20 accepted with W-2 and W-3 filed as #301 and #302; W-1 is #212 and W-4 other/x#5"""
+    accepted = open_plan(20, owner("accept", 10), body=full_plan(milestone=milestone))
+    carriers = [carrier(301, "W-2", milestone=existing), carrier(302, "W-3", milestone=existing)]
+    fake = Fake(plans=[accepted], carriers=carriers, milestones={212: existing}, states=states)
+    return plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake))[20], fake
+
+
+def test_s097_1_an_accepted_plan_whose_work_closed_reads_done(ist: ModuleType) -> None:
+    closed = {212: ("CLOSED", "COMPLETED"), 301: ("CLOSED", "NOT_PLANNED"), 302: ("CLOSED", "COMPLETED")}
+    note = "work closed: W-1 #212 completed, W-2 #301 not planned, W-3 #302 completed"
+    assert work_done(ist, closed)[0] == ("PLAN_DONE", note)
+    assert work_done(ist, closed, milestone="v1", existing="v1")[0] == ("PLAN_DONE", note)
+    assert "PLAN_DONE" in ist.PLAN_ACTION  # exit 1
+    duplicate = {**closed, 302: ("CLOSED", "DUPLICATE"), 212: ("CLOSED", None)}
+    assert work_done(ist, duplicate)[0] == (
+        "PLAN_DONE",
+        "work closed: W-1 #212 closed, W-2 #301 not planned, W-3 #302 duplicate",
+    )
+
+
+@pytest.mark.parametrize("still_open", [212, 301, 302])
+def test_s097_1_with_an_item_still_open_it_reads_filed(ist: ModuleType, still_open: int) -> None:
+    closed = {n: ("CLOSED", "COMPLETED") for n in (212, 301, 302) if n != still_open}
+    assert work_done(ist, closed)[0] == ("PLAN_FILED", "filed: #301, #302")
+
+
+def test_s097_1_states_are_read_only_once_the_plan_reads_filed(ist: ModuleType) -> None:
+    accepted = open_plan(20, owner("accept", 10), body=full_plan())
+    fake = Fake(plans=[accepted], carriers=[carrier(301, "W-2")])
+    assert plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake))[20] == ("PLAN_ACCEPTED", "not filed: W-3")
+    assert not any(re.search(r"\bs\d+: issue\(", q) for q in fake.asked)
+
+
+def test_s097_2_an_existing_item_of_another_repo_is_never_read(ist: ModuleType) -> None:
+    closed = {212: ("CLOSED", "COMPLETED"), 301: ("CLOSED", "COMPLETED"), 302: ("CLOSED", "COMPLETED")}
+    (state, note), fake = work_done(ist, closed)
+    assert state == "PLAN_DONE" and "W-4" not in note  # other/x#5, open or not, holds nothing
+    asked = [q for q in fake.asked if re.search(r"\bs\d+: issue\(", q)]
+    assert len(asked) == 1 and "s212: issue(" in asked[0] and "s5:" not in asked[0]
+
+
+def test_s097_3_the_newest_completed_plan_without_an_outcome_reads_done(ist: ModuleType) -> None:
+    older = open_plan(20, state="CLOSED", reason="COMPLETED")
+    newest = open_plan(30, state="CLOSED", reason="COMPLETED")
+    assert plan_states(ist, Fake(plans=[older, newest])) == {30: ("PLAN_DONE", "closed without an outcome")}
+    assert plan_states(ist, Fake(plans=[older, reported(open_plan(30, state="CLOSED", reason="COMPLETED"))])) == {}
+    declined = open_plan(30, state="CLOSED", reason="NOT_PLANNED")
+    assert plan_states(ist, Fake(plans=[older, declined])) == {
+        30: ("PLAN_DECLINED", "closed as not planned with no reason")
+    }
+    other_goal = open_plan(40, body=full_plan(goal="G-2"), state="CLOSED", reason="COMPLETED")
+    assert plan_states(ist, Fake(plans=[older, other_goal])) == {
+        20: ("PLAN_DONE", "closed without an outcome"),
+        40: ("PLAN_DONE", "closed without an outcome"),
+    }
+
+
+def outcome_by(minutes: int, **who: Any) -> dict[str, Any]:
+    """An outcome comment the given minutes after the plan's close (negative: before it)"""
+    body = "<!-- shipmill:plan-outcome -->\nThe work closed.\n\nStill missing:\n- nothing"
+    agent = who.pop("agent", False)
+    made = comment(body + (AGENT if agent else ""), **who)
+    minute = 60 + minutes
+    stamp = f"2026-10-02T{9 + minute // 60:02d}:{minute % 60:02d}:00Z"
+    return {**made, "createdAt": stamp}
+
+
+@pytest.mark.parametrize(
+    ("outcome", "counts"),
+    [
+        (outcome_by(5, author="shipmill-app", bot=True), True),
+        (outcome_by(5, author="shipmill-app", bot=True, agent=True), True),
+        (outcome_by(0, author="maintainer", association="OWNER"), True),
+        (outcome_by(5, author="maintainer", association="MEMBER"), True),
+        (outcome_by(5, author="maintainer", association="COLLABORATOR"), True),
+        (outcome_by(5, author="maintainer", association="MEMBER", agent=True), False),  # D-62: an agent's text
+        (outcome_by(5, author="drive-by", association="CONTRIBUTOR"), False),
+        (outcome_by(5, author="drive-by", association="NONE"), False),
+        (outcome_by(-5, author="shipmill-app", bot=True), False),  # before the last close
+    ],
+)
+def test_s097_4_only_a_trusted_outcome_after_the_close_counts(
+    ist: ModuleType, outcome: dict[str, Any], counts: bool
+) -> None:
+    done = open_plan(30, outcome, state="CLOSED", reason="COMPLETED")
+    assert plan_states(ist, Fake(plans=[done])) == ({} if counts else {30: ("PLAN_DONE", "closed without an outcome")})
+
+
+def test_s097_4_the_first_line_is_the_marker(ist: ModuleType) -> None:
+    quoted = {**outcome_by(5, author="shipmill-app", bot=True)}
+    quoted["body"] = "As said:\n<!-- shipmill:plan-outcome -->\nStill missing:\n- nothing"
+    done = open_plan(30, quoted, state="CLOSED", reason="COMPLETED")
+    assert plan_states(ist, Fake(plans=[done])) == {30: ("PLAN_DONE", "closed without an outcome")}
+    no_login = open_plan(30, outcome_by(5, author="shipmill-app", bot=True), state="CLOSED", reason="COMPLETED")
+    assert plan_states(ist, Fake(plans=[no_login]), bot_login=None) == {30: ("PLAN_DONE", "closed without an outcome")}
+
+
+def test_s097_6_no_no_work_row_while_the_newest_plan_reads_done(ist: ModuleType) -> None:
+    done = plan(30, "G-1", state="CLOSED", reason="COMPLETED")
+    assert set(due(ist, Fake(plans=[done]))) == {"G-2", "G-3"}
+    assert set(due(ist, Fake(plans=[done]), wip=1, room=0)) == {"G-2", "G-3"}  # no PLAN_WAITS either
+    request = issue(25, title="Plan G-1", labels=("goal-plan",), association="OWNER")
+    assert due(ist, Fake([request], plans=[done]))["G-1"] == ("PLAN_DUE", "requested in #25")  # a request still is
+    filed_open = plan(40, "G-1")  # a newer open plan: its goal reads nothing
+    assert set(due(ist, Fake(plans=[done, filed_open]))) == {"G-2", "G-3"}
 
 
 # -- accepting part of a plan in one reply (spec 096, #1708)
@@ -1039,13 +1168,13 @@ def closed_plan(number: int, first: str | None, reason: str, goal: str = "G-1") 
 
 
 def test_s096_9_a_due_plan_lists_what_earlier_plans_dropped(ist: ModuleType) -> None:
-    plans = [
-        closed_plan(24, "accept W-1, W-3", "COMPLETED"),
+    plans = [  # each goal's newest plan has its outcome: without one its goal reads no PLAN_DUE (S-097-6)
+        reported(closed_plan(24, "accept W-1, W-3", "COMPLETED")),
         closed_plan(20, "accept except W-2", "COMPLETED"),
         closed_plan(21, "accept", "COMPLETED"),  # fully accepted: none
         closed_plan(22, "accept W-1", "NOT_PLANNED"),  # its decline holds: none
         closed_plan(23, "accept W-9", "COMPLETED"),  # unclear: none
-        closed_plan(25, "accept W-2", "COMPLETED", goal="G-2"),
+        reported(closed_plan(25, "accept W-2", "COMPLETED", goal="G-2")),
     ]
     rows = plan_rows_of(ist, Fake(plans=plans))
     assert rows["G-1"]["state"] == "PLAN_DUE"
@@ -1063,7 +1192,7 @@ def test_s096_9_an_open_plans_drop_counts_and_a_closed_plans_comments_are_paged(
     open_one = open_plan(20, owner("accept except W-2", 10))
     found = ist.dropped_items([open_one], frozenset({"G-1"}), "Triage:", BOT, frozenset())
     assert found == {"G-1": ({"plan": 20, "id": "W-2", "text": "A release cut"},)}
-    done = closed_plan(20, None, "COMPLETED")
+    done = reported(closed_plan(20, None, "COMPLETED"))  # its outcome posted (S-097-6)
     done["comments"]["pageInfo"] = {"hasPreviousPage": True, "startCursor": "c1"}
     older = {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [owner("accept W-2", 10)]}
 
@@ -1075,3 +1204,74 @@ def test_s096_9_an_open_plans_drop_counts_and_a_closed_plans_comments_are_paged(
 
     rows = plan_rows_of(ist, Older(plans=[done]))
     assert [d["id"] for d in rows["G-1"]["dropped"]] == ["W-1", "W-3", "W-4"]
+
+
+def goal_rows(ist: ModuleType, fake: Fake, *, wip: int | None = None, room: int = 1) -> dict[str, dict[str, Any]]:
+    intake = ist.fetch(
+        "o/r",
+        label="opportunity",
+        accepted="planned",
+        marker="Triage:",
+        skip=set(ist.SKIP_LABELS),
+        categories=None,
+        autonomy="propose",
+        run=fake,
+    )
+    found = ist.fetch_plans(
+        "o/r",
+        intake,
+        goals=lambda: [ist.Goal(i, t) for i, t in GOALS],
+        marker="Triage:",
+        bot_login=BOT,
+        wip=wip,
+        room=lambda limit: room,
+        run=fake,
+    )
+    return {r.goal: ist.plan_json(r) for r in found if r.kind == "goal"}
+
+
+def test_s097_7_the_next_plan_follows_the_finished_one(ist: ModuleType) -> None:
+    missing = "- the release cut runs on its own\n- the lane reports a stall"
+    done = reported(plan(30, "G-1", state="CLOSED", reason="COMPLETED"), missing)
+    row = goal_rows(ist, Fake(plans=[plan(20, "G-1", state="CLOSED", reason="COMPLETED"), done]))["G-1"]
+    assert (row["state"], row["note"], row["follows"]) == ("PLAN_DUE", "no-work; follows #30", 30)
+    assert row["missing"] == ["the release cut runs on its own", "the lane reports a stall"]
+    waits = goal_rows(ist, Fake(plans=[done]), wip=1, room=0)["G-1"]
+    assert (waits["state"], waits["note"], waits["follows"]) == (
+        "PLAN_WAITS",
+        "no-work; waits for room; follows #30",
+        30,
+    )
+    request = issue(25, title="Plan G-1", labels=("goal-plan",), association="OWNER")
+    requested = goal_rows(ist, Fake([request], plans=[done]))["G-1"]
+    assert (requested["note"], requested["missing"]) == ("requested in #25; follows #30", missing_items(missing))
+    assert "follows" not in goal_rows(ist, Fake(plans=[done]))["G-2"]
+
+
+def missing_items(text: str) -> list[str]:
+    return [line[2:] for line in text.splitlines()]
+
+
+def test_s097_7_nothing_missing_is_an_empty_list(ist: ModuleType) -> None:
+    done = reported(plan(30, "G-1", state="CLOSED", reason="COMPLETED"))
+    row = goal_rows(ist, Fake(plans=[done]))["G-1"]
+    assert (row["follows"], row["missing"]) == (30, [])
+    assert ist.still_missing("Still missing:\n\n- Nothing\n") == ()
+    assert ist.still_missing("Holds:\n- a\n\nStill missing:\n- b\n- c\n\n<!-- shipmill:agent -->") == ("b", "c")
+    assert ist.still_missing("No list here") == ()
+
+
+def test_s097_3_a_finished_plans_comments_are_paged_back(ist: ModuleType) -> None:
+    done = open_plan(30, comment("+1", 12), state="CLOSED", reason="COMPLETED")
+    done["comments"]["pageInfo"] = {"hasPreviousPage": True, "startCursor": "c1"}
+    outcome = outcome_by(5, author="shipmill-app", bot=True)
+    older = {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [outcome]}
+
+    class Older(Fake):
+        def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if "before: $cursor" in query:
+                assert variables["number"] == 30
+                return {"data": {"repository": {"issue": {"comments": older}}}}
+            return super().__call__(query, variables)
+
+    assert plan_states(ist, Older(plans=[done])) == {}

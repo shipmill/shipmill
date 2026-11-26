@@ -82,14 +82,18 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
                                      body's first line is <!-- shipmill:plan-item #P W-n -->,
                                      opened by an OWNER, MEMBER, or COLLABORATOR or the
                                      --bot-login, under plan #P of the goal); never for a
-                                     goal whose newest plan was closed as not planned
+                                     goal whose newest plan was closed as not planned or
+                                     reads PLAN_DONE (spec 097: the outcome comes first)
                     stalled          spec 027's report says the goal is stalled; spec 027
                                      isn't built yet, so this trigger never fires
   PLAN_WAITS        with --wip N, a no-work or stalled trigger holds while
                     `triage_state.py --wip N` reports no room left; the note is the
                     trigger and "waits for room". A request never waits
 A goal with an open plan issue reads nothing, whatever its trigger; nor does a goal no
-trigger holds for.
+trigger holds for. When the goal's newest plan was closed as completed with a trusted outcome
+after its last close (spec 097), its PLAN_DUE and PLAN_WAITS notes end `; follows #P`, and
+with --json the row has follows (P) and missing: the outcome's `Still missing:` list items
+in order, empty for `- nothing`.
 
 Then one row per plan issue: an issue labelled goal-plan whose first line opens the plan
 marker, well-formed or not, or that the --bot-login opened. Its answer is the newest
@@ -119,13 +123,24 @@ answer, read from its first non-blank line after the relay line (D-68):
                     reads it), or the Milestone names a title and a kept filed item or a
                     kept existing item of this repo isn't in it; the note names them, then
                     `dropped: <ids>` after a partial accept
-  PLAN_FILED        accepted, and neither holds; the note names the dropped ids too
+  PLAN_FILED        accepted, and neither holds, and a kept item's issue of this repo (a
+                    filed item's, or an existing item here) is still open; the note names
+                    the dropped ids too
+  PLAN_DONE         (spec 097) accepted, neither holds, and every such issue is closed,
+                    noted "work closed: W-1 #a completed, W-2 #b not planned, ..." (an
+                    existing item of another repo is not read, and a dropped item never
+                    counts; the note names the dropped ids too); or the goal's newest plan
+                    is closed as completed with no outcome comment at or after its last
+                    close, noted "closed without an outcome". An outcome comment's first
+                    line is <!-- shipmill:plan-outcome -->, by the --bot-login or an OWNER,
+                    MEMBER, or COLLABORATOR, and never a trusted author's other than the
+                    --bot-login carrying the agent marker
   PLAN_MALFORMED    open, and `plans.py check` refuses the body; the note names the first
                     line and rule
   PLAN_DECLINED     closed as not planned; the note is the reason: the rest of the newest
                     answer starting with `decline`, else the first comment from an hour
                     before the close on, as for an opportunity
-A plan closed as completed or as a duplicate reads nothing. With --json, each plan row has
+Any other plan closed as completed, or as a duplicate, reads nothing. With --json, each plan row has
 goal, kind (goal for a goal's row, plan for a plan issue's), number, state, title, note, and
 author: the plan issue's opener, a Bot's login ending [bot] as --bot-login spells it, or
 null on a goal's row (watch_state.py's trust filter reads it, D-16); and association: the
@@ -136,7 +151,7 @@ dropped by its newest answer, as {"plan": P, "id": "W-n", "text": ...} (spec 096
 comments of a plan closed as completed are paged back to its first for it.
 
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
-OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, or PLAN_MALFORMED, 2 on bad input (an
+OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, or PLAN_MALFORMED, 2 on bad input (an
 issue with more than 100 labels, a malformed config or goals, an existing item naming no
 issue) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
 Python 3.10+, standard library only.
@@ -310,12 +325,13 @@ SPEC_SERVES = re.compile(r"^serves:(.*)$")
 NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
 SERVING_STATUSES = ("draft", "approved")
 AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
-PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED"}
+PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE"}
 PLAN_ORDER = (
     "PLAN_DUE",
     "PLAN_MALFORMED",
     "PLAN_ANSWERED",
     "PLAN_ACCEPTED",
+    "PLAN_DONE",
     "PLAN_WAITS",
     "PLAN_OPEN",
     "PLAN_FILED",
@@ -332,6 +348,11 @@ EXCEPT_WORD = "except"
 ID_SHAPE = re.compile(r"^w-[0-9]+$", re.IGNORECASE)
 ID_SEPARATORS = re.compile(r"[\s,]+")
 DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # triage_state.py's: the first line of a session's question
+OUTCOME_MARKER = "<!-- shipmill:plan-outcome -->"  # spec 097: the first line of a finished plan's outcome
+STILL_MISSING = "Still missing:"  # the outcome's list of what the plan's end state still lacks
+NOTHING = "nothing"  # `- nothing`: a list with no part
+# How a closed item closed, as a plan's PLAN_DONE note names it (spec 097)
+CLOSED_AS = {"COMPLETED": "completed", "NOT_PLANNED": "not planned", "DUPLICATE": "duplicate"}
 DECLINE = re.compile(r"^decline", re.IGNORECASE)
 # An answer given in a session and relayed by the --bot-login (D-68): the first line is the
 # needs-decision relay, the login bare or in a code span (D-61). Copied from triage_state.py's
@@ -779,6 +800,10 @@ class PlanRow:
     # on a PLAN_DUE row, dropped holds each item an earlier plan of the goal dropped instead
     kept: tuple[str, ...] | None = None
     dropped: tuple[Any, ...] | None = None
+    # spec 097: on a goal's row after a finished plan with a trusted outcome, that plan's
+    # number and the outcome's `Still missing:` items; None otherwise
+    follows: int | None = None
+    missing: tuple[str, ...] | None = None
 
 
 # Reads the direction's goals, in the direction's order
@@ -939,11 +964,14 @@ def plan_rows(
     maintainers: frozenset[str] = frozenset(),
 ) -> list[PlanRow]:
     """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has; a
-    PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096)"""
+    PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096). After
+    the goal's newest plan closed as completed with a trusted outcome, the row follows it (its
+    note ends `; follows #P`, with the outcome's `Still missing:` items); without an outcome,
+    that plan reads PLAN_DONE and no `no-work` row is read for its goal (spec 097)"""
     listed = {g.id for g in goals}
     cut = dropped_items(plan_issues, frozenset(listed), marker, bot_login, maintainers)
     plans_of: dict[int, str] = {}  # each plan issue's goal
-    newest: dict[str, dict[str, Any]] = {}  # each goal's newest plan issue
+    newest = newest_plans(plan_issues)  # each goal's newest plan issue
     planned: set[str] = set()  # goals with an open plan issue
     for issue in plan_issues:
         goal = plan_goal(issue)
@@ -952,9 +980,25 @@ def plan_rows(
         plans_of[issue["number"]] = goal
         if issue["state"] == "OPEN":
             planned.add(goal)
-        if goal not in newest or issue["number"] > newest[goal]["number"]:
-            newest[goal] = issue
     declined = {g for g, i in newest.items() if i["state"] == "CLOSED" and i["stateReason"] == "NOT_PLANNED"}
+    finished: set[str] = set()  # goals whose newest plan reads PLAN_DONE `closed without an outcome`
+    follows: dict[str, tuple[int, tuple[str, ...]]] = {}  # the plan a goal's next one follows, and what it left missing
+    for goal, issue in newest.items():
+        if issue["state"] != "CLOSED" or issue["stateReason"] != "COMPLETED":
+            continue
+        found = plan_outcome(issue, bot_login)
+        if found is None:
+            finished.add(goal)
+        else:
+            follows[goal] = (issue["number"], still_missing(found.get("body") or ""))
+
+    def row(goal: Goal, state: str, note: str, number: int | None = None) -> PlanRow:
+        dropped = cut.get(goal.id, ()) if state == "PLAN_DUE" else None  # spec 096: a PLAN_DUE row's alone
+        if goal.id not in follows:
+            return PlanRow(goal.id, state, goal.text, note, number, dropped=dropped)
+        plan, missing = follows[goal.id]
+        note = f"{note}; follows #{plan}"
+        return PlanRow(goal.id, state, goal.text, note, number, dropped=dropped, follows=plan, missing=missing)
 
     served: set[str] = set()
     for text in specs:
@@ -988,19 +1032,18 @@ def plan_rows(
             continue
         if goal.id in requests:
             number = requests[goal.id]
-            note = f"requested in #{number}"
-            found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, note, number, dropped=cut.get(goal.id, ())))
+            found.append(row(goal, "PLAN_DUE", f"requested in #{number}", number))
             continue
         # `stalled` reads spec 027's report, which isn't built: until it is, it never fires
-        if goal.id in served or goal.id in declined:
+        if goal.id in served or goal.id in declined or goal.id in finished:  # the outcome comes first
             continue
         trigger = "no-work"
         if wip is not None:
             left = room(wip) if left is None else left
             if left <= 0:
-                found.append(PlanRow(goal.id, "PLAN_WAITS", goal.text, f"{trigger}; waits for room"))
+                found.append(row(goal, "PLAN_WAITS", f"{trigger}; waits for room"))
                 continue
-        found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, trigger, dropped=cut.get(goal.id, ())))
+        found.append(row(goal, "PLAN_DUE", trigger))
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
     return found
 
@@ -1033,6 +1076,55 @@ def dropped_items(
             if item.id in reading.dropped:
                 found.setdefault(plan.goal, []).append({"plan": issue["number"], "id": item.id, "text": item.text})
     return {goal: tuple(items) for goal, items in found.items()}
+
+
+def newest_plans(plan_issues: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Each goal's newest plan issue: the highest number whose first-line marker names it"""
+    newest: dict[str, dict[str, Any]] = {}
+    for issue in plan_issues:
+        goal = plan_goal(issue)
+        if goal is not None and (goal not in newest or issue["number"] > newest[goal]["number"]):
+            newest[goal] = issue
+    return newest
+
+
+def plan_outcome(issue: dict[str, Any], bot_login: str | None) -> dict[str, Any] | None:
+    """A closed plan's newest outcome comment (spec 097): its first line is the plan-outcome
+    marker, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR (D-29), never a trusted
+    author's other than the --bot-login carrying the agent marker (D-62), and posted at or
+    after the plan's last close; None without one"""
+    if not issue.get("closedAt"):
+        return None
+    closed = timestamp(issue["closedAt"])
+    found: dict[str, Any] | None = None
+    for comment in issue["comments"]["nodes"]:
+        body = comment.get("body") or ""
+        if PLANS.first_line(body) != OUTCOME_MARKER or not PLANS.trusted(comment, bot_login):
+            continue
+        by_bot = bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower()
+        if not by_bot and AGENT_MARKER.search(body):
+            continue
+        at = timestamp(comment["createdAt"])
+        if at >= closed and (found is None or at >= timestamp(found["createdAt"])):
+            found = comment
+    return found
+
+
+def still_missing(body: str) -> tuple[str, ...]:
+    """The list items under an outcome's `Still missing:` line, in order; none for `- nothing`"""
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != STILL_MISSING:
+            continue
+        items: list[str] = []
+        for rest in lines[index + 1 :]:
+            text = rest.strip()
+            if text.startswith("- "):
+                items.append(text[2:].strip())
+            elif text or items:
+                break
+        return () if [i.casefold() for i in items] == [NOTHING] else tuple(items)
+    return ()
 
 
 # -- goal plans (spec 028): where each plan issue stands
@@ -1239,7 +1331,7 @@ def complete_plan_comments(run: Runner, owner: str, name: str, issue: dict[str, 
         comments["pageInfo"] = page["pageInfo"]
 
 
-# Where an accepted plan's filing stands: (PLAN_ACCEPTED or PLAN_FILED, the note)
+# Where an accepted plan's filing stands: (PLAN_ACCEPTED, PLAN_FILED, or PLAN_DONE, the note)
 FilingReader = Callable[[dict[str, Any], Any], tuple[str, str]]
 
 
@@ -1251,12 +1343,17 @@ def plan_state(
     bot_login: str | None,
     filing: FilingReader,
     maintainers: frozenset[str] = frozenset(),
+    newest: bool = False,
 ) -> PlanRow | None:
-    """A plan issue's row; None for a plan closed but not as not planned"""
+    """A plan issue's row; None for a plan closed but not as not planned, save its goal's
+    newest plan closed as completed with no trusted outcome after its last close, which reads
+    PLAN_DONE (spec 097)"""
     goal = plan_goal(issue)
     title = issue.get("title") or ""
     number = issue["number"]
     if issue["state"] == "CLOSED":
+        if issue["stateReason"] == "COMPLETED" and newest and plan_outcome(issue, bot_login) is None:
+            return PlanRow(goal, "PLAN_DONE", title, "closed without an outcome", number, "plan")
         if issue["stateReason"] != "NOT_PLANNED":
             return None
         answer = plan_answer(issue, bot_login, marker, maintainers)
@@ -1299,10 +1396,17 @@ def plan_issue_rows(
     maintainers: frozenset[str] = frozenset(),
 ) -> list[PlanRow]:
     found: list[PlanRow] = []
+    newest = {issue["number"] for issue in newest_plans(plan_issues).values()}
     for issue in plan_issues:
         if is_plan(issue, bot_login):
             row = plan_state(
-                issue, goals=goals, marker=marker, bot_login=bot_login, filing=filing, maintainers=maintainers
+                issue,
+                goals=goals,
+                marker=marker,
+                bot_login=bot_login,
+                filing=filing,
+                maintainers=maintainers,
+                newest=issue["number"] in newest,
             )
             if row is not None:
                 opener = PLANS.login(issue.get("author"))
@@ -1327,8 +1431,27 @@ def existing_milestones(run: Runner, owner: str, name: str, numbers: list[int]) 
     return found
 
 
+def closed_states(run: Runner, owner: str, name: str, numbers: list[int]) -> dict[int, str | None]:
+    """How each issue of this repo closed, 50 to a query (spec 097): `completed`, `not
+    planned`, `duplicate`, or `closed` with no reason given; None while it is open"""
+    found: dict[int, str | None] = {}
+    for start in range(0, len(numbers), 50):
+        chunk = numbers[start : start + 50]
+        parts = " ".join(f"s{n}: issue(number: {n}) {{ state stateReason }}" for n in chunk)
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = repository(run, query, {"owner": owner, "name": name})
+        for n in chunk:
+            node = data.get(f"s{n}")
+            if node is None:
+                fail(f"no issue #{n} in {owner}/{name}, which a plan's item names")
+            reason = str(node.get("stateReason") or "")
+            found[n] = None if node.get("state") != "CLOSED" else CLOSED_AS.get(reason, "closed")
+    return found
+
+
 def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
-    """The default filing reader: plans.py's items query, and the existing items' milestones"""
+    """The default filing reader: plans.py's items query, and the existing items' milestones;
+    once the plan reads filed, how its items' issues closed (spec 097)"""
     owner, name = split_repo(repo)
 
     def read(issue: dict[str, Any], plan: Any) -> tuple[str, str]:
@@ -1340,17 +1463,22 @@ def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
         filed = [(item, carrier) for item, carrier in filed if item.id in kept]
         unfiled = [item.id for item, carrier in filed if item.kind in FILED_KINDS and carrier is None]
         carried = [carrier for item, carrier in filed if item.kind in FILED_KINDS and carrier is not None]
+        # each item's issue of this repo, in Work order: a filed item's carrier, an existing item here
+        work: list[tuple[str, int]] = []
+        here: list[int] = []
+        for item, carrier in filed:
+            if item.kind in FILED_KINDS and carrier is not None:
+                work.append((item.id, carrier.number))
+            ref = EXISTING_REF.match(item.text) if item.kind == "existing" else None
+            if ref is None:
+                continue
+            named = (ref.group(1) or owner, ref.group(2) or name)
+            if (named[0].lower(), named[1].lower()) == (owner.lower(), name.lower()):  # another repo's: unread
+                here.append(int(ref.group(3)))
+                work.append((item.id, int(ref.group(3))))
         outside: list[int] = []
         if plan.milestone is not None:
             outside += [c.number for c in carried if c.milestone != plan.milestone]
-            here: list[int] = []
-            for item, _ in filed:
-                ref = EXISTING_REF.match(item.text) if item.kind == "existing" else None
-                if ref is None:
-                    continue
-                named = (ref.group(1) or owner, ref.group(2) or name)
-                if (named[0].lower(), named[1].lower()) == (owner.lower(), name.lower()):
-                    here.append(int(ref.group(3)))
             titles = existing_milestones(run, owner, name, sorted(set(here)))
             outside += [n for n in sorted(set(here)) if titles[n] != plan.milestone]
         notes = []
@@ -1360,6 +1488,10 @@ def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
             notes.append(f"not in milestone {plan.milestone}: {', '.join(f'#{n}' for n in sorted(set(outside)))}")
         if notes:
             return "PLAN_ACCEPTED", "; ".join(notes)
+        closed = closed_states(run, owner, name, sorted({n for _, n in work}))
+        if all(closed[n] is not None for _, n in work):
+            listed = ", ".join(f"{ident} #{n} {closed[n]}" for ident, n in work)
+            return "PLAN_DONE", f"work closed: {listed}" if listed else "work closed: no item of this repository"
         return "PLAN_FILED", f"filed: {', '.join(f'#{c.number}' for c in carried)}" if carried else "nothing to file"
 
     return read
@@ -1401,7 +1533,8 @@ def fetch_plans(
     pulls, first = paged(run, PULLS, base, "pullRequests")
     plan_issues, _ = paged(run, PLAN_ISSUES, {**base, "label": PLAN_LABEL}, "issues")
     for issue in plan_issues:
-        # a plan closed as completed too: the items its newest answer dropped stay dropped (spec 096)
+        # a plan closed as completed too: the items its newest answer dropped stay dropped (spec
+        # 096), and a goal's newest one's outcome comment is read (spec 097)
         if is_plan(issue, bot_login) and (issue["state"] == "OPEN" or issue["stateReason"] in READ_CLOSED):
             complete_plan_comments(run, owner, name, issue)
     by_issue = plan_issue_rows(
@@ -1551,6 +1684,8 @@ def plan_json(row: PlanRow) -> dict[str, Any]:
         found["kept"] = list(row.kept)
     if row.dropped is not None:
         found["dropped"] = list(row.dropped)
+    if row.follows is not None:  # spec 097: the finished plan a goal's row follows, and what it left missing
+        found.update(follows=row.follows, missing=list(row.missing or ()))
     return found
 
 
