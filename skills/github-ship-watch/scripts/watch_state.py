@@ -278,7 +278,8 @@ Intake (github-issue-triage's triage_state.py):
                   alone. Report-only, never an action or an agent's, and in no --tier or
                   --sweep read: only the maintainer answers a plan. A plan noted "unclear
                   accept asked" (spec 096) is in no plan row: its question is
-                  NEEDS_DECISION's while it waits
+                  NEEDS_DECISION's while it waits. A plan intake_state.py reads
+                  PLAN_OVERDUE, past its answer date (spec 106), is in this row too
   PLAN_HELD       in an --item read only (spec 098, S-098-13), from the same run: the
                   plan issues intake_state.py reads PLAN_HELD, each `#N until <condition>`
                   as its hold names it, trusted as PLAN_OPEN; `shipmill status --item`
@@ -687,7 +688,11 @@ DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose
 # intake_state.py's plan states (spec 028): the ones that make it exit 1, in its order, and the rest
 # PLAN_DONE: spec 097; PLAN_HOLD_MET (a held plan's re-check) and PLAN_HELD, no action: spec 098
 PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED", "PLAN_DONE", "PLAN_HOLD_MET")
-PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_HELD", "PLAN_FILED", "PLAN_DECLINED"})
+# PLAN_OVERDUE (spec 106): an open plan past its answer date, no action, still the maintainer's
+PLAN_STATES = frozenset(
+    {*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_OVERDUE", "PLAN_HELD", "PLAN_FILED", "PLAN_DECLINED"}
+)
+PLAN_OVERDUE = "PLAN_OVERDUE"
 # #1680: the report-only row of the plans waiting on the maintainer's answer, intake_state.py's
 # PLAN_OPEN, and the fix fleet.py queue asks of one (its ASKED[PLAN]; tests/test_status_plan_waits.py
 # keeps the two equal)
@@ -4312,7 +4317,9 @@ def plans_waiting(text: str, repo: str, bot_login: str | None = None, trusted_on
         association = row.get("association")
         if association is not None and not isinstance(association, str):
             raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
-        if row["state"] != PLAN_OPEN or row.get("note") == UNCLEAR_ACCEPT_ASKED:
+        # spec 106: a plan past its answer date still waits on the maintainer's answer, and every
+        # open plan's note ends with that date, so the unclear-accept note is read by its start
+        if row["state"] not in (PLAN_OPEN, PLAN_OVERDUE) or str(row.get("note") or "").startswith(UNCLEAR_ACCEPT_ASKED):
             continue
         ours = bot_login is not None and row["author"].lower() == bot_login.lower()
         if ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS):

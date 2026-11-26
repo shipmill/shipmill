@@ -22,6 +22,7 @@ from .test_intake_plans import (
     open_plan,
     owner,
     relay,
+    undated_json,
 )
 
 
@@ -98,7 +99,7 @@ def rows(ist: ModuleType, fake: Fake, now: dt.datetime = NOW, **kwargs: Any) -> 
         now=now,
         **kwargs,
     )
-    return {r.number: ist.plan_json(r) for r in found if r.kind == "plan"}
+    return {r.number: undated_json(ist.plan_json(r)) for r in found if r.kind == "plan"}  # spec 106's date aside
 
 
 def held(ist: ModuleType, *comments: str | dict[str, Any], now: dt.datetime = NOW, **kwargs: Any) -> dict[str, Any]:
