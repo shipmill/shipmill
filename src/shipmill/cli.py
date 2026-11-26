@@ -466,7 +466,7 @@ from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
 from shipmill.pr_plan import hold_plan
-from shipmill.product import DIRECTION, GitRef, Inherited, ItemId, Measure, Section, Serves
+from shipmill.product import DIRECTION, GitRef, Horizon, Inherited, ItemId, Measure, Section, Serves
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.product_home import HomeReach, inherited
@@ -1157,6 +1157,21 @@ def _parser() -> argparse.ArgumentParser:
     measured = measuring.add_mutually_exclusive_group(required=True)
     measured.add_argument("measure", nargs="?", help='"<metric> <comparison> <target>", such as "human_touch <= 20%%"')
     measured.add_argument("--clear", action="store_true", help="remove the goal's measure line")
+    goaling = acting.add_parser(
+        "goal",
+        help="rewrite a goal as `<outcome>. Check: <check>. By: <horizon>`, keeping its outcome (spec 105); print it",
+    )
+    goaling.add_argument("id", help="the goal's id, such as G-3")
+    goaling.add_argument("--check", required=True, help="what shows the goal is met, one line")
+    goaling.add_argument("--by", required=True, help="the horizon: a date, YYYY-MM-DD, or a release, X.Y.Z")
+    holding = acting.add_parser(
+        "held",
+        help="rewrite a goal as a standing measure, `Held: <statement>. Threshold: <threshold>. Source: <source>`, "
+        "keeping its statement and measure line (spec 105); print it",
+    )
+    holding.add_argument("id", help="the goal's id, such as G-3")
+    holding.add_argument("--threshold", required=True, help="the level it is held at, one line")
+    holding.add_argument("--source", required=True, help="where its value is read, one line")
     serving = acting.add_parser(
         "serves",
         help="in a component, write or replace the line naming the product goals a goal serves, or remove it with "
@@ -1182,6 +1197,8 @@ def _parser() -> argparse.ArgumentParser:
         editing,
         retiring,
         measuring,
+        goaling,
+        holding,
         serving,
     ):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
@@ -4818,6 +4835,14 @@ def _product(root: Path, args: argparse.Namespace, reach: HomeReach) -> int:
         written = None if args.clear else Measure.parse(str(LineText(args.measure)))
         measured = product.measure(root, goal, written)
         print(f"{goal} has no measure line; nothing written" if measured is None else measured.text)
+        return 0
+    if args.product == "goal":  # S-105-6
+        horizon = Horizon.parse(str(LineText(args.by)))
+        print(product.goal(root, ItemId.parse(args.id), LineText(args.check), horizon).text)
+        return 0
+    if args.product == "held":  # S-105-7
+        threshold, source = LineText(args.threshold), LineText(args.source)
+        print(product.held(root, ItemId.parse(args.id), threshold, source).text)
         return 0
     if args.product == "serves":
         goal = ItemId.parse(args.id)
