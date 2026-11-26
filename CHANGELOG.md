@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.187.0] - 2026-11-26
+
+### Added
+
+- A goal plan's answer date (spec 106): a PLAN_OPEN plan's note ends `answer by <date>`, seven days after its newest revision or its re-check after a hold, or the date the newest trusted `answer by YYYY-MM-DD` reply sets (a reply that answers nothing), and `--json` gives it as `answer_by`; past that date in UTC the plan reads PLAN_OVERDUE, no action. The ship watch accepts PLAN_OVERDUE and still lists the plan as waiting on the maintainer (#1738)
+- Projects start in turn (spec 106): `intake_state.py --projects` reads PROJECT_START_DUE, an action, for the product's held heads while the room under `[agents] projects` is above 0 (without the key, every held head), a filed plan item's first by its plan's accept time and Work order, then heads with no plan by when they were labelled; product-intake's skill gives its step, the check issue filed first. While a plan of any repo of the product reads PLAN_OVERDUE, no head starts and every `no-work` plan of the product reads PLAN_WAITS `plan <owner/repo>#P overdue`; a requested plan is still proposed (#1740)
+
 ## [0.186.0] - 2026-11-26
 
 ### Changed
@@ -3278,7 +3285,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.186.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.187.0...HEAD
+[0.187.0]: https://github.com/shipmill/shipmill/compare/v0.186.0...v0.187.0
 [0.186.0]: https://github.com/shipmill/shipmill/compare/v0.185.0...v0.186.0
 [0.185.0]: https://github.com/shipmill/shipmill/compare/v0.184.0...v0.185.0
 [0.184.0]: https://github.com/shipmill/shipmill/compare/v0.183.0...v0.184.0
