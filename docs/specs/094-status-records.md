@@ -66,7 +66,8 @@ open issue and pull request, ascending by number:
   the maintainer accepts or declines, an opportunity issue or a goal's plan (labelled
   `opportunity` or `goal-plan`); else `null`. A user's request triaged as an opportunity is
   product intake's until intake groups it, so it is the agent's, and once an open opportunity
-  issue's body names it (`#N`, `owner/name#N` of the repo, or its URL) it waits on that
+  issue's body names it in its Evidence section, the one intake_state.py reads members from
+  (`#N`, `owner/name#N` of the repo, or its URL), it waits on that
   opportunity, an event, named in its `waits_on`: it counts once, through its opportunity, and
   never as the maintainer's itself (shipmill/shipmill#1643). triage_state.py's first query
   already reads the labels and bodies this takes, and its `--json` line carries them as
@@ -178,7 +179,7 @@ repo was read, 2 when one was not. `--fleet` with a repo named exits 2 naming th
 - S-094-3: `waits_on` names the not-closed targets of a BLOCKED note, of this repo or another, and the open pull requests of an IN_PROGRESS note, as `owner/name#N`
 - S-094-4: a condition from an assignee or the reporter is `people`, save a person's item whose assignees or teams include one of spec 036's resolved `maintainer` role, which is `maintainer` with the reason `assigned to you: ...`; a wait on another repo's item, an upstream report, or labelled blocked is `elsewhere`; POSTPONED, triaged postponed, or any wait of a parent moving through its children is `postponed`; any other event is `nobody`
 - S-094-5: an item's line is the first in the order attention, maintainer, agent, people, elsewhere, postponed, nobody; a parent moving through its children counts by its own conditions alone
-- S-094-6: an issue triaged as an opportunity or a plan that is labelled `opportunity` or `goal-plan` has `accept` naming it and holder `maintainer`; one triaged as an opportunity without either label has `accept` null and is the agent's, waiting for product intake to group it, or, once an open opportunity issue's body names it, holder `nobody` with `waits_on` naming that opportunity; any other item has `accept` null
+- S-094-6: an issue triaged as an opportunity or a plan that is labelled `opportunity` or `goal-plan` has `accept` naming it and holder `maintainer`; one triaged as an opportunity without either label has `accept` null and is the agent's, waiting for product intake to group it, or, once an open opportunity issue's body names it in its Evidence section, holder `nobody` with `waits_on` naming that opportunity; any other item has `accept` null
 - S-094-7: the text of `queue` prints the repo with its totals, then each holder's label in the table's order with one line per item, `#N <kind>: <why> (clears: <clears>)`
 - S-094-8: `status --item N --json` carries the same `holder`, `via`, `accept`, `why`, `clears`, `waits_on`, and conditions as `queue`'s record of N, including an issue that counts with its pull request whose rows name only that pull request
 - S-094-9: the JSON of `queue --json`, `queue --fleet --json`, and `status --item --json` carries `"schema": 1` as its first key

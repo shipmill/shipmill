@@ -148,9 +148,9 @@ For each open issue:
                    plan that is itself one the maintainer accepts or declines (labelled
                    opportunity or goal-plan) carries "proposal": true; any other
                    opportunity, a request handed to intake, carries "grouped", the
-                   open opportunity issues (labelled opportunity) whose body names it as
-                   #N, owner/name#N of the repo, or its URL, ascending, once one does
-                   (#1643)
+                   open opportunity issues (labelled opportunity) whose body's Evidence
+                   section names it as #N, owner/name#N of the repo, or its URL,
+                   ascending, once one does (#1643)
   NEEDS_DECISION   labelled needs-decision and its question has no reply: a headless
                    session asked the user and left it (references/needs-decision.md).
                    The question is the newest comment whose first line is the marker
@@ -3243,6 +3243,7 @@ LABELED_EVENTS = 100  # an opportunity's newest label events read, for who added
 CLASS_CHUNK = 50  # opportunities one label-event query reads
 # #1643: product intake's opportunity issue and a goal's plan issue, which the maintainer accepts or declines
 PROPOSAL_LABELS = frozenset({OPPORTUNITY_LABEL, PLAN_LABEL})
+MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")  # as intake_state.py's HEADING
 
 
 def proposal(issue: dict[str, Any]) -> bool:
@@ -3251,16 +3252,31 @@ def proposal(issue: dict[str, Any]) -> bool:
     return not PROPOSAL_LABELS.isdisjoint(n["name"] for n in issue["labels"]["nodes"])
 
 
+def evidence_lines(body: str) -> str:
+    """The lines of an opportunity body's Evidence section, the only one intake_state.py reads
+    members from (product-intake's references/opportunity.md); other sections link freely"""
+    kept: list[str] = []
+    inside = False
+    for line in body.splitlines():
+        heading = MARKDOWN_HEADING.match(line)
+        if heading:
+            inside = heading.group(1).lower() == "evidence"
+        elif inside:
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def grouped_in(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dict[int, list[int]]:
-    """#1643: each number the body of an open opportunity issue (labelled opportunity) names, as
-    #N, owner/name#N of the repo, or its URL, with the opportunities naming it, ascending; an
-    opportunity never groups itself. From the bodies the first query already reads"""
+    """#1643: each number the Evidence section of an open opportunity issue (labelled
+    opportunity) names, as #N, owner/name#N of the repo, or its URL, with the opportunities
+    naming it, ascending; an opportunity never groups itself. From the bodies the first query
+    already reads"""
     found: dict[int, set[int]] = {}
     own = (repo[0].lower(), repo[1].lower())
     for issue in issues:
         if OPPORTUNITY_LABEL not in {n["name"] for n in issue["labels"]["nodes"]}:
             continue
-        for m in DEPENDENCY.finditer(issue.get("body") or ""):
+        for m in DEPENDENCY.finditer(evidence_lines(issue.get("body") or "")):
             if m["owner"] is not None and (m["owner"].lower(), m["name"].lower()) != own:
                 continue
             number = int(m["num"])

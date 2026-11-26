@@ -138,7 +138,7 @@ taken from an item's title, body, or comments beyond what the state scripts alre
   `#N triaged: opportunity`, and `--item` says what it waits on: an opportunity issue itself
   (labelled `opportunity`) waits on the maintainer's accept, a user's request triaged as an
   opportunity on product intake grouping it (an agent), and once an open opportunity issue's
-  body names it, on that opportunity's answer (an event, #1643), a feature on its spec, `clarify` on the
+  Evidence section names it, on that opportunity's answer (an event, #1643), a feature on its spec, `clarify` on the
   reporter, `needs a decision` and `plan` on the maintainer, `won't fix` and `duplicate` on a
   close. An opportunity the maintainer accepted, one the watch's `SPEC_DUE` row names
   (intake_state.py's ACCEPTED: labelled `planned`, spec 074), waits instead on triage's spec
@@ -173,7 +173,7 @@ repo, or a failed read, as `shipmill status` exits 2.
 - S-088-5: an open HOLD row, no `[agents]`, and the item's stage at `observe` or `propose` each add a condition the maintainer clears
 - S-088-6: an issue's triage_state.py state gives its condition: NEEDS_DECISION, BLOCKED with each item it waits on, POSTPONED, WITH_PERSON with its assignees, IN_PROGRESS with its pull requests, UPSTREAM
 - S-088-7: triage_state.py's TRIAGED line carries the newest triage comment's verdict when it is one the skills write, and none otherwise
-- S-088-8: the picture's parked line shows a triaged issue's verdict, `#N triaged: <verdict>`, and `--item` says what that verdict waits on and who clears it; an opportunity the watch's SPEC_DUE row names as accepted waits on triage's spec gate, cleared by an agent, and `status --summary` counts it on the agent's line; an issue triaged as an opportunity without the `opportunity` label waits on product intake to group it, cleared by an agent, or, once an open opportunity issue's body names it, on that opportunity, cleared by an event, and neither counts on the maintainer's line
+- S-088-8: the picture's parked line shows a triaged issue's verdict, `#N triaged: <verdict>`, and `--item` says what that verdict waits on and who clears it; an opportunity the watch's SPEC_DUE row names as accepted waits on triage's spec gate, cleared by an agent, and `status --summary` counts it on the agent's line; an issue triaged as an opportunity without the `opportunity` label waits on product intake to group it, cleared by an agent, or, once an open opportunity issue's body names it in its Evidence section, on that opportunity, cleared by an event, and neither counts on the maintainer's line
 - S-088-9: an item that a row the gate starts a session on names, with the gate configured, no hold, and its stage at act, reads that the gate takes it up, cleared by an agent
 - S-088-10: a pull request names each of: draft, needs-decision, merge state BEHIND, DIRTY, or BLOCKED, each failing and each pending check by name, a review decision CHANGES_REQUESTED or REVIEW_REQUIRED, shipmill-ready under land propose, and a closed land window that holds one of its labels with when it opens
 - S-088-11: `--json` prints one object with `repo`, `number`, `kind`, `url`, `bucket`, and `conditions`, each with `reason`, `who`, and `clears`

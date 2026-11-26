@@ -700,7 +700,11 @@ def test_s094_6_triage_state_marks_proposals_and_the_requests_an_opportunity_nam
     gh.chmod(0o700)
     said = [{"body": "Triage: **opportunity**. A new capability.", "createdAt": "2026-11-01T10:00:00Z"}]
     opportunity = open_issue(10, said, labels=("opportunity",))
-    opportunity["body"] = "## Evidence\n\n- #11\n- O/R#12\n- https://github.com/o/r/issues/13\n- other/x#14\n- #10"
+    # only the Evidence section groups, as intake_state.py reads members: #15 in Problem and Notes doesn't
+    opportunity["body"] = (
+        "## Problem\n\nUnlike #15.\n\n## Evidence\n\n- #11\n- O/R#12\n- https://github.com/o/r/issues/13\n"
+        "- other/x#14\n- #10\n\n## Notes\n\nRelated: #15"
+    )
     plan = open_issue(16, [{"body": "Triage: **plan**.", "createdAt": "2026-11-01T10:00:00Z"}], labels=("goal-plan",))
     requests = [open_issue(n, said) for n in (11, 12, 13, 14, 15)]
     data = tmp_path / "gh.json"
