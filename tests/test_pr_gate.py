@@ -589,6 +589,24 @@ def test_a_pending_checks_line_says_queued_or_running_since_its_start(tmp_path: 
     ]
 
 
+# #1776: a PR whose head ran no checks says so, so PENDING doesn't read as CI still running
+
+
+def test_1776_a_pr_with_no_checks_says_none_ran_on_its_head(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: with_rollup()})
+    assert proc.returncode == gate.PENDING == 3, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        f"#7 PENDING state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=0 green=0 pending=0 failed=0",
+        f"  no checks: none ran on {HEAD_SHA[:7]}; a repository that runs no CI on pull requests stays PENDING",
+    ]
+
+
+def test_1776_a_pending_check_prints_no_no_checks_line(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: with_rollup(downstream("IN_PROGRESS", None, "test"))})
+    assert proc.returncode == gate.PENDING, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == ["  pending: test (running)"]
+
+
 def test_s032_14_neutral_and_success_downstream_checks_are_green(tmp_path: Path) -> None:
     checks = (downstream("COMPLETED", "NEUTRAL"), downstream("COMPLETED", "SUCCESS", "downstream: acme/cli"))
     proc = run_gate(tmp_path, None, {7: with_checks(*checks)})
