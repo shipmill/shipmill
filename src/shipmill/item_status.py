@@ -221,10 +221,11 @@ class Explanation:
         }
 
 
-# S-088-8: what a triaged issue's verdict waits on, and who clears it
+# S-088-8: what a triaged issue's verdict waits on, and who clears it; an opportunity here is an
+# opportunity issue itself (Issue.proposal), and a request handed to intake waits as below (#1643)
 VERDICT_WAITS: dict[str, tuple[str, Who, str]] = {
     "opportunity": (
-        "waits for product intake to group it and the maintainer to accept it",
+        "waits on the maintainer to accept or decline it",
         Who.MAINTAINER,
         "accept or decline the opportunity",
     ),
@@ -247,6 +248,32 @@ ACCEPTED_WAITS = Condition(
     "triage's spec gate gives it a feature verdict and opens its spec",
 )
 SPEC_DUE = "SPEC_DUE"  # watch_state.py's row `ACCEPTED #N ...`: intake_state.py's ACCEPTED opportunities (spec 074)
+# #1643: a request triaged as an opportunity that no open opportunity issue names yet is product
+# intake's to group, not the maintainer's to accept
+INTAKE_WAITS = Condition(
+    "triaged as opportunity: waits for product intake to group it", Who.AGENT, "a product intake pass groups it"
+)
+
+
+def accepts(issue: Issue) -> str | None:
+    """S-094-6: the verdict the maintainer accepts or declines on the issue: a plan, or an
+    opportunity issue itself (labelled opportunity or goal-plan, #1643); None for any other"""
+    if issue.state != "TRIAGED" or issue.verdict not in ("opportunity", "plan"):
+        return None
+    return issue.verdict if issue.verdict == "plan" or issue.proposal else None
+
+
+def grouped_waits(facts: Facts, issue: Issue) -> list[Condition]:
+    """#1643: a request an open opportunity issue names waits on that opportunity's answer, an
+    event, so it counts once, through the opportunity, and never as the maintainer's itself"""
+    return [
+        Condition(
+            f"triaged as opportunity: grouped into #{n}, which waits on the maintainer's answer",
+            Who.EVENT,
+            f"#{n} accepted or declined; {facts.command} status --item {n} says what holds it",
+        )
+        for n in issue.grouped
+    ]
 
 
 def accepted(facts: Facts) -> frozenset[int]:
@@ -511,6 +538,8 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
             ]
         if issue.verdict == "opportunity" and issue.number in accepted(facts):
             return [ACCEPTED_WAITS]
+        if issue.verdict == "opportunity" and not issue.proposal:  # #1643: a request handed to intake
+            return grouped_waits(facts, issue) or [INTAKE_WAITS]
         reason, who, clears = VERDICT_WAITS[issue.verdict]
         return [
             Condition(f"triaged as {issue.verdict}: {reason}", who, clears, where=VERDICT_HOLDER.get(issue.verdict))

@@ -35,7 +35,6 @@ LINES = (
     (Holder.POSTPONED, "postponed"),
     (Holder.NOBODY, "waits on nobody"),
 )
-ACCEPTS = frozenset({"opportunity", "plan"})  # S-094-6: verdicts the maintainer accepts or declines
 LINKED_STATES = frozenset({"IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD"})  # its open pull requests, as --item reads
 OPEN_PULL = re.compile(r"(?<![\w/])#(\d+):(?:open|draft)\b")
 DONE = frozenset({"closed", "merged", "not_planned"})
@@ -65,11 +64,14 @@ def linked(repo: str, issue: Issue, opened: frozenset[int]) -> tuple[int, ...]:
 
 def waits_on(repo: str, issue: Issue) -> tuple[str, ...]:
     """S-094-3: the not-closed targets of a BLOCKED note, of this repo or another, and the open
-    pull requests of an IN_PROGRESS or AGENT_DRAFT note, as owner/name#N"""
+    pull requests of an IN_PROGRESS or AGENT_DRAFT note, as owner/name#N; and the open
+    opportunity issues a request triaged as an opportunity is grouped into (S-094-6, #1643)"""
     if issue.state in LINKED_STATES:
         found = [f"{repo}#{n}" for n in OPEN_PULL.findall(issue.note)]
     elif issue.state == "BLOCKED":
         found = [w["ref"] for w in WAIT.finditer(issue.note) if w["state"].lower() not in DONE]
+    elif issue.state == "TRIAGED" and issue.verdict == "opportunity" and not issue.proposal:
+        found = [f"{repo}#{n}" for n in issue.grouped]
     else:
         found = []
     return tuple(dict.fromkeys(found))
@@ -218,14 +220,13 @@ def items(
     for n in sorted(conditions):
         holder, via = lines[n]
         issue = issues.get(n)
-        verdict = None if issue is None or issue.state != "TRIAGED" else issue.verdict
         decided = deciding(n)
         found[n] = Item(
             n,
             kinds[n],
             holder,
             via,
-            verdict if verdict in ACCEPTS else None,
+            None if issue is None else item_status.accepts(issue),
             decided.reason,
             decided.clears,
             pull_waits.get(n, ()) if issue is None else waits_on(facts.repo, issue),

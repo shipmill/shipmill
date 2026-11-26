@@ -83,7 +83,14 @@ class Fake:
             rows = [{"state": "PRS_OPEN", "subject": REPO, "detail": "#9", "agent": False}, VERSION_JSON]
             return subprocess.CompletedProcess(cmd, 0, "".join(json.dumps(r) + "\n" for r in rows), "")
         if cmd[1].endswith("triage_state.py"):
-            line = {"number": 4, "state": "TRIAGED", "title": "t", "note": "", "verdict": "opportunity"}
+            line = {
+                "number": 4,
+                "state": "TRIAGED",
+                "title": "t",
+                "note": "",
+                "verdict": "opportunity",
+                "proposal": True,
+            }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(line) + "\n", "")
         if cmd[:3] == ["gh", "pr", "list"]:
             pull = {"number": 9, "isDraft": False, "mergeStateStatus": "UNSTABLE", "baseRefName": "main", "labels": []}
@@ -280,11 +287,11 @@ def test_s088_7_triage_state_prints_the_verdict_on_a_triaged_line_only() -> None
 
 
 def test_s088_8_the_parked_line_and_item_say_a_triaged_issues_verdict() -> None:
-    found = facts(issues=[Issue(4, "TRIAGED", verdict="opportunity"), Issue(3, "TRIAGED")])
+    found = facts(issues=[Issue(4, "TRIAGED", verdict="opportunity", proposal=True), Issue(3, "TRIAGED")])
     parked = [line for line in report(found).lines if line.startswith("  parked")]
     assert parked == [f"  parked         #4 https://github.com/{REPO}/issues/4 triaged: opportunity"]
     assert any(line.strip() == f"#3 https://github.com/{REPO}/issues/3 triaged" for line in report(found).lines)
-    reason = "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
+    reason = "triaged as opportunity: waits on the maintainer to accept or decline it"
     assert (reason, Who.MAINTAINER) in whos(found, 4)
     assert ("triaged with nothing pending", Who.EVENT) in whos(found, 3)
 
@@ -292,11 +299,11 @@ def test_s088_8_the_parked_line_and_item_say_a_triaged_issues_verdict() -> None:
 # #1611: the watch's SPEC_DUE row names the opportunities intake_state.py reads ACCEPTED (planned)
 SPEC_DUE = Row("SPEC_DUE", REPO, "ACCEPTED #2 #4", True, f"/shipmill:github-issue-triage {REPO}")
 ACCEPTED = "triaged as opportunity and accepted: waits on triage's spec gate to give it a feature verdict"
-UNACCEPTED = "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
+UNACCEPTED = "triaged as opportunity: waits on the maintainer to accept or decline it"
 
 
 def accepted_facts() -> Facts:
-    triaged = [Issue(4, "TRIAGED", verdict="opportunity"), Issue(14, "TRIAGED", verdict="opportunity")]
+    triaged = [Issue(n, "TRIAGED", verdict="opportunity", proposal=True) for n in (4, 14)]
     return facts(SPEC_DUE, issues=[*triaged, Issue(2, "TRIAGED", verdict="clarify")])
 
 
@@ -305,12 +312,32 @@ def test_s088_8_an_accepted_opportunity_waits_on_the_agent_not_the_maintainer() 
     assert whos(found, 4) == [(ACCEPTED, Who.AGENT)]
     assert whos(found, 14) == [(UNACCEPTED, Who.MAINTAINER)]  # not labelled planned: as before
     assert whos(found, 2) == [("triaged as clarify: waits on the reporter's answer", Who.PERSON)]  # #2 isn't one
-    assert whos(facts(issues=[Issue(4, "TRIAGED", verdict="opportunity")]), 4) == [(UNACCEPTED, Who.MAINTAINER)]
+    assert whos(facts(issues=[Issue(4, "TRIAGED", verdict="opportunity", proposal=True)]), 4) == [
+        (UNACCEPTED, Who.MAINTAINER)
+    ]
 
 
 def test_s088_8_the_summary_counts_an_accepted_opportunity_on_the_agents_line() -> None:
     found = split(accepted_facts(), lambda _: NONE, None)
     assert found.issues[Holder.AGENT] == (4,) and found.issues[Holder.MAINTAINER] == (14,)
+
+
+def test_s088_8_a_request_handed_to_intake_waits_on_intake_or_on_its_opportunity() -> None:
+    """#1643: a request triaged as an opportunity is no opportunity issue itself: intake groups
+    it, and once an open opportunity names it, it waits on that opportunity's answer"""
+    found = facts(
+        issues=[
+            Issue(4, "TRIAGED", verdict="opportunity", proposal=True),
+            Issue(5, "TRIAGED", verdict="opportunity"),
+            Issue(6, "TRIAGED", verdict="opportunity", grouped=(4,)),
+        ]
+    )
+    assert whos(found, 5) == [("triaged as opportunity: waits for product intake to group it", Who.AGENT)]
+    assert whos(found, 6) == [
+        ("triaged as opportunity: grouped into #4, which waits on the maintainer's answer", Who.EVENT)
+    ]
+    assert whos(found, 4) == [(UNACCEPTED, Who.MAINTAINER)]
+    assert split(found, lambda _: NONE, None).issues[Holder.MAINTAINER] == (4,)
 
 
 def test_s088_8_a_verdict_triage_state_doesnt_write_is_refused() -> None:
@@ -394,7 +421,7 @@ def test_s088_11_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixtur
     code, out, _ = run_item(root, capsys, "4", "--json")
     assert code == 0 and out.count("\n") == 1
     found = json.loads(out)
-    reason = "triaged as opportunity: waits for product intake to group it and the maintainer to accept it"
+    reason = "triaged as opportunity: waits on the maintainer to accept or decline it"
     assert found == {
         "schema": 1,  # S-094-9
         "repo": REPO,

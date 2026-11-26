@@ -144,7 +144,13 @@ For each open issue:
                    With --json its line carries "verdict", the bold word of its newest
                    triage comment when it is one the skills write (opportunity, feature,
                    clarify, needs a decision, plan, postponed, won't fix, duplicate,
-                   upstream; spec 088), and no "verdict" otherwise
+                   upstream; spec 088), and no "verdict" otherwise. An opportunity or a
+                   plan that is itself one the maintainer accepts or declines (labelled
+                   opportunity or goal-plan) carries "proposal": true; any other
+                   opportunity, a request handed to intake, carries "grouped", the
+                   open opportunity issues (labelled opportunity) whose body's Evidence
+                   section names it as #N, owner/name#N of the repo, or its URL,
+                   ascending, once one does (#1643)
   NEEDS_DECISION   labelled needs-decision and its question has no reply: a headless
                    session asked the user and left it (references/needs-decision.md).
                    The question is the newest comment whose first line is the marker
@@ -3235,6 +3241,48 @@ FIXED_DATE_LABEL = "fixed-date"
 CLASS_LABELS = (EXPEDITE_LABEL, FIXED_DATE_LABEL)
 LABELED_EVENTS = 100  # an opportunity's newest label events read, for who added its class label
 CLASS_CHUNK = 50  # opportunities one label-event query reads
+# #1643: product intake's opportunity issue and a goal's plan issue, which the maintainer accepts or declines
+PROPOSAL_LABELS = frozenset({OPPORTUNITY_LABEL, PLAN_LABEL})
+MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")  # as intake_state.py's HEADING
+
+
+def proposal(issue: dict[str, Any]) -> bool:
+    """#1643: whether the issue is itself one the maintainer accepts or declines: labelled
+    opportunity or goal-plan"""
+    return not PROPOSAL_LABELS.isdisjoint(n["name"] for n in issue["labels"]["nodes"])
+
+
+def evidence_lines(body: str) -> str:
+    """The lines of an opportunity body's Evidence section, the only one intake_state.py reads
+    members from (product-intake's references/opportunity.md); other sections link freely"""
+    kept: list[str] = []
+    inside = False
+    for line in body.splitlines():
+        heading = MARKDOWN_HEADING.match(line)
+        if heading:
+            inside = heading.group(1).lower() == "evidence"
+        elif inside:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def grouped_in(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dict[int, list[int]]:
+    """#1643: each number the Evidence section of an open opportunity issue (labelled
+    opportunity) names, as #N, owner/name#N of the repo, or its URL, with the opportunities
+    naming it, ascending; an opportunity never groups itself. From the bodies the first query
+    already reads"""
+    found: dict[int, set[int]] = {}
+    own = (repo[0].lower(), repo[1].lower())
+    for issue in issues:
+        if OPPORTUNITY_LABEL not in {n["name"] for n in issue["labels"]["nodes"]}:
+            continue
+        for m in DEPENDENCY.finditer(evidence_lines(issue.get("body") or "")):
+            if m["owner"] is not None and (m["owner"].lower(), m["name"].lower()) != own:
+                continue
+            number = int(m["num"])
+            if number != issue["number"]:
+                found.setdefault(number, set()).add(issue["number"])
+    return {n: sorted(by) for n, by in found.items()}
 
 
 def added_by_person(events: list[Any], label: str, bot_login: str | None) -> bool:
@@ -3447,6 +3495,7 @@ def main() -> int:
     loops = cycles(issues, (owner, name), args.marker, untrusted)
     # Spec 067: the build issues of a spec approved at notify wait out its veto window
     windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql, maintainers=maintainers)
+    grouped = grouped_in(issues, (owner, name))  # #1643: the requests open opportunities name
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(
@@ -3500,6 +3549,10 @@ def main() -> int:
             verdict = triage_verdict(issue, args.marker)
             if verdict is not None:
                 row["verdict"] = verdict
+            if verdict in ("opportunity", "plan") and proposal(issue):  # #1643: the maintainer's to accept
+                row["proposal"] = True
+            elif verdict == "opportunity" and issue["number"] in grouped:  # #1643: intake grouped it
+                row["grouped"] = grouped[issue["number"]]
         if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
             row["direction"] = True
         parent = open_parent(issue)

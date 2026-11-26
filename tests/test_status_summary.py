@@ -152,7 +152,7 @@ def test_s091_4_every_open_item_counts_on_exactly_one_line() -> None:
         Issue(1, "NEEDS_DECISION"),
         Issue(2, "NEEDS_PR"),
         Issue(3, "POSTPONED"),
-        Issue(4, "TRIAGED", verdict="opportunity"),
+        Issue(4, "TRIAGED", verdict="opportunity", proposal=True),
         Issue(5, "CLOSED_STATE_IGNORED", closed=True),
     ]
     found = facts(Row("ISSUES", REPO, "NEEDS_PR #2", True), issues=issues, pulls=[Pull(9, False, "CLEAN", "main")])
@@ -259,7 +259,7 @@ def test_s091_8_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixture
 
 
 def test_s091_8_split_numbers_ascend() -> None:
-    issues = [Issue(n, "TRIAGED", verdict="opportunity") for n in (30, 4, 17)]
+    issues = [Issue(n, "TRIAGED", verdict="opportunity", proposal=True) for n in (30, 4, 17)]
     assert holders(facts(issues=issues)).issues[Holder.MAINTAINER] == (4, 17, 30)
 
 
