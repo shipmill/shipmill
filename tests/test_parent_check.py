@@ -415,38 +415,46 @@ def test_s042_12_a_parent_closes_on_its_check_over_a_scripted_forge(tmp_path: Pa
 
 
 # #1671: an issue with a ## Check and no sub-issue reads by its check, as a parent does,
-# once its work merged: its holds all closed, or a "Part of #N" pull request merged
+# once its own work merged: a linked pull request (a closer or "Part of #N") merged
 
 HELD_BODY = f"Depends on o/r#21, o/r#25\n\n{CHECK}"
 HOLD_STATES = {("o", "r", 21): "MERGED", ("o", "r", 25): "MERGED"}
 HOLD_CLOSES = {("o", "r", 21): CLOSED_2, ("o", "r", 25): CLOSED_3}
 HOLDS = "o/r#21:merged o/r#25:merged"
+BUILT = f"{HOLDS} #31:merged(part)"
 
 
 def held(ts: ModuleType, item: dict[str, Any]) -> tuple[str, str]:
-    """#1620's shape: no sub-issue, its Depends on line's pull requests #21 and #25 merged"""
+    """#1620's shape: no sub-issue, held on pull requests #21 and #25, both merged"""
     verdict: tuple[str, str] = ts.classify_open(item, "Triage:", "postponed", HOLD_STATES, None, REPO, BOT, HOLD_CLOSES)
     return verdict
 
 
-def test_1671_an_issue_with_a_check_whose_holds_merged_reads_by_its_check(ts: ModuleType) -> None:
-    assert held(ts, parent([], body=HELD_BODY)) == ("VERIFY_DUE", f"{HOLDS}: run its ## Check")
+def built(comments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """#1620 as it is: its build #31 (#1631) says "Part of #1" and merged with the newest hold"""
+    return parted([part(31, merged=CLOSED_3)], comments, body=HELD_BODY)
+
+
+def test_1671_an_issue_with_a_check_whose_own_pr_merged_reads_by_its_check(ts: ModuleType) -> None:
+    assert held(ts, built()) == ("VERIFY_DUE", f"{BUILT}: run its ## Check")
     for comment in (waiting(), waiting(**by("ana", "MEMBER"))):
-        assert held(ts, parent([], [comment], body=HELD_BODY)) == (
+        assert held(ts, built([comment])) == (
             "WITH_PERSON",
-            f"check waiting on @maria since {WAITED} {HOLDS}",
+            f"check waiting on @maria since {WAITED} {BUILT}",
         )
     failed = said(f"{FAILED}\nNo `colour`.", "2026-09-05T10:00:00Z", **by("maria", "OWNER"))
-    assert held(ts, parent([], [failed], body=HELD_BODY)) == (
+    assert held(ts, built([failed])) == (
         "CHECK_FAILED",
-        f"check failed 2026-09-05T10:00:00Z {HOLDS}",
+        f"check failed 2026-09-05T10:00:00Z {BUILT}",
     )
+    # Its holds merged with no PR of its own: nothing is built yet, so it reads UNBLOCKED
+    assert held(ts, parent([], [waiting()], body=HELD_BODY)) == ("UNBLOCKED", HOLDS)
 
 
 def test_1671_an_untrusted_or_early_check_waiting_comment_changes_nothing(ts: ModuleType) -> None:
     # An outsider's never counts (D-16), nor one from before the newest hold's close
     for comment in (waiting(**by("someone", "CONTRIBUTOR")), waiting(at="2026-09-03T12:00:00Z")):
-        assert held(ts, parent([], [comment], body=HELD_BODY)) == ("VERIFY_DUE", f"{HOLDS}: run its ## Check")
+        assert held(ts, built([comment])) == ("VERIFY_DUE", f"{BUILT}: run its ## Check")
 
 
 def test_1671_without_a_check_or_as_a_person_s_item_it_reads_as_before(ts: ModuleType) -> None:

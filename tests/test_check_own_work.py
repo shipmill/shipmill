@@ -1,6 +1,6 @@
 """#1671: an issue with a ## Check and no sub-issue reads by its check only once its own work
-merged (a linked PR, or a hold that is a merged PR); held only by closed issues, it is work
-to build and reads UNBLOCKED (#1027). Parents read as spec 042 says, unchanged"""
+merged (a linked PR of its own); with none, its holds all closed (merged PRs among them), it is
+work to build and reads UNBLOCKED (#1027). Parents read as spec 042 says, unchanged"""
 
 import importlib.util
 import sys
@@ -85,8 +85,9 @@ def test_1671_a_pull_request_linked_by_hand_dates_its_comments_from_its_merge(ts
 def test_1671_a_postponed_issue_without_sub_issues_reads_postponed_first(ts: ModuleType) -> None:
     held = parted([part(21)], body=BUILD, labels=("postponed",))
     assert read(ts, held)[0] == "POSTPONED"
+    # A merged hold and no PR of its own: no check is due, so it reads as on main
     merged_hold = parent([], body=BUILD, labels=("postponed",))
-    assert read(ts, merged_hold, {("o", "r", 30): "MERGED"})[0] == "POSTPONED"
+    assert read(ts, merged_hold, {("o", "r", 30): "MERGED"})[0] == "UNBLOCKED"
 
 
 def test_1671_a_postponed_parent_keeps_main_s_reading(ts: ModuleType) -> None:

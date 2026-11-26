@@ -278,10 +278,11 @@ A parent (an open issue with a sub-issue, not a person's item; an upstream one r
 UPSTREAM) whose body has a "## Check" section (spec 042) reads, where it would read
 UNBLOCKED, one of these. So does an issue with the section and no sub-issue, not a
 person's item, once its own work merged (#1671): a merged PR links it (a closer or "Part
-of #N") or one of its holds is a merged PR, where it would read UNBLOCKED, DONE_NOT_CLOSED,
-NEEDS_PR, TRIAGED, or NEW, its closed holds' closes and those PRs' merges dating its
-comments; labelled postponed, it reads POSTPONED. Held only by closed issues, it reads
-UNBLOCKED, work to build (#1027). Without the section it reads as before:
+of #N", not reverted), where it would read UNBLOCKED, DONE_NOT_CLOSED, NEEDS_PR, TRIAGED,
+or NEW, its closed holds' closes and those PRs' merges dating its comments; labelled
+postponed, it reads POSTPONED. With no such PR, its holds all closed (merged PRs among
+them, as a feature issue's spec PR), it reads UNBLOCKED, work to build or split (#1027).
+Without the section it reads as before:
   VERIFY_DUE       no check-failed comment came after the newest close among its holds:
                    run its ## Check. Its note is the children's progress and its holds
                    (or its PRs), then "run its ## Check"
@@ -2562,10 +2563,12 @@ def classify_open(
         shown = f"children {closed}/{len(children)} closed {shown}"
     checked = CHECK.search(issue.get("body") or "") is not None
     # #1671: an issue with a ## Check and no sub-issue reads by it only once its own work merged:
-    # a linked PR merged, or a hold is a PR that merged. Held only by issues, it is work to build
-    # (#1027). Its comments are dated against its closed holds' closes and those PRs' merges
+    # a linked PR of its own (a closer or "Part of #N", not reverted). A merged hold is no such
+    # PR: a feature issue's spec PR merging starts its split. Held only by closed holds, it is
+    # work to build (#1027). Its comments are dated against its closed holds' closes and those
+    # PRs' merges
     built = [n for n, s, _ in prs if s == "MERGED" and n not in standing]
-    own_work = checked and not human and not children and (bool(built) or any(states.get(r) == "MERGED" for r in waits))
+    own_work = checked and not human and not children and bool(built)
     own_ends = [
         *(closes[r] for r in waits if r in closes and states.get(r) in CLOSED_STATES),
         *merge_times(issue, built),
