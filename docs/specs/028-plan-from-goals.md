@@ -63,10 +63,13 @@ the goal has no open plan issue and one of these holds:
   open opportunity whose body names `G-n`; or an open plan item for `G-n` (below). Never raised
   again for a goal whose newest plan was declined, so a declined plan isn't argued twice
   (as D-10 keeps a declined opportunity); only a `stalled` report or a request proposes
-  another. Not raised either for a goal spec 027 (#389) reports met once that spec is built
+  another. Not raised either for a goal whose measure spec 027 (#389) reports met
 - **`stalled`:** spec 027 (#389) reports the goal stalled. The script reads that report
-  through whatever command or row spec 027 defines; until spec 027 is built this trigger
-  never fires, and nothing else in this spec depends on it
+  from `retro.py gather <owner/repo> --goals --checkout <the checkout> --json` (with the
+  `--bot-login` as `--bot`), each goal's `status` and `stalled`, once a pass and only when a
+  goal reaches this trigger or `no-work`. A gather that fails, a report without the
+  direction, a goal it leaves out, or one it lists malformed stops the pass with exit 2: a
+  report that can't be read is never read as "not stalled" (#1764)
 - **`requested`:** the maintainer asked. In a session, the user names the goal ("plan G-3").
   On GitHub, an open issue labelled `goal-plan`, opened by an OWNER, MEMBER, or COLLABORATOR,
   without the plan marker, whose title names exactly one goal id the direction lists; one
@@ -250,6 +253,8 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - S-028-16: The spec gate's Where features come from lists a feature item of an accepted plan as chosen work, and still requires its own spec to merge with `status: approved` before its build
 - S-028-17: product-intake's skill never accepts, declines, or edits a plan without a trusted answer, never adds a goal or edits `docs/product.md` for a plan, and under `[autonomy] intake = "observe"` reports a due plan's text without opening an issue
 - S-028-18: A comment by the `--bot-login` whose first line is the relay `Decision by @<login>` (the login bare or in a code span) naming a maintainer passed with `--role`, newer than the newest revision, is read as that answer from its next non-blank line (accept, decline, or edit); a relay naming anyone else, or with no maintainer role given, changes nothing
+- S-028-19: `intake_state.py --plans` reports PLAN_DUE with the note `stalled` for a goal with no open plan, no request, and a kind other than measure that spec 027's report (`retro.py gather --goals --json`) reads stalled, whether or not open work serves it or its newest plan was declined; a gather that fails, or a report that leaves out a listed goal or doesn't read as spec 027 gives it, exits 2
+- S-028-20: No `no-work` PLAN_DUE or PLAN_WAITS is reported for a goal whose measure spec 027's report reads met, and a request for it still reads `requested in #N`
 
 ## Out of scope
 
@@ -285,6 +290,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - shipmill/shipmill#515: S-028-13, S-028-14
 - shipmill/shipmill#517: S-028-15, S-028-16, S-028-17
 - shipmill/shipmill#917: S-028-18
+- shipmill/shipmill#1764: S-028-19, S-028-20
 
 ## Verification
 
@@ -306,3 +312,5 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - S-028-16: tests/test_plan_skill.py (test_s028_16_*), and spec-gate.md's Where features come from read: a feature item of an accepted plan is chosen work that still needs its own spec merged with `status: approved`; passes
 - S-028-17: tests/test_plan_skill.py (test_s028_17_*), and product-intake's SKILL.md rule 9 and step 6 read: no plan decided without a trusted answer, no goal added or `docs/product.md` edited, and under `observe` the due plan's text reported with nothing opened; passes
 - S-028-18: tests/test_intake_plans.py and tests/test_watch_plans.py (test_s028_18_*): the `--bot-login`'s relay naming a maintainer reads accept, decline with its reason, or edit from its next non-blank line, the login bare or in a code span, the agent marker left out, stale before the newest revision and after a body edit for an accept; a relay naming anyone else, without a maintainer role, or by anyone but the `--bot-login`, and any other App comment, is no relayed answer; the pattern and the `--role` check agree with `triage_state.py`'s, and the watch passes its `--role` flags through; passes
+- S-028-19: tests/test_intake_goal_report.py (test_s028_19_*, test_s028_4_a_stalled_plan_waits_for_room_as_no_work_does, test_a_report_that_cant_be_read_exits_2, test_a_goal_the_report_leaves_out_exits_2, test_the_report_is_retro_gathers): a stalled goal reads `stalled`, served or declined too, and waits for room as `no-work` does; an open plan, a request, or a measure decide first; the default reader runs `retro.py gather --goals --json` with `--bot`, and each unreadable report exits 2; passes
+- S-028-20: tests/test_intake_goal_report.py (test_s028_20_*): a met goal reads no `no-work` PLAN_DUE or PLAN_WAITS, a not-met one still does, and a request for a met goal still reads; passes
