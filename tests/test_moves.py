@@ -285,9 +285,27 @@ def intake(state_: str = "PROJECT_ACTIVE", check_issue: int | None = 50) -> Any:
     return run_
 
 
-def cli(root: Path, host: Host, gh: FakeGh, *args: str) -> int:
+STATUS = "o/r#7 (https://github.com/o/r/issues/7): active\n  why:  2 of 3 parts open\n        clears: agents\n"
+
+
+@dataclass
+class ItemState:
+    """`status --item` as the CLI runs it after a move: the items it was asked about"""
+
+    out: str = STATUS
+    code: int = 0
+    asked: list[int] = field(default_factory=list)
+
+    def __call__(self, root: Path, number: int) -> subprocess.CompletedProcess[str]:
+        self.asked.append(number)
+        return subprocess.CompletedProcess([], self.code, self.out, "gh: HTTP 502\n" if self.code else "")
+
+
+def cli(root: Path, host: Host, gh: FakeGh, *args: str, after: ItemState | None = None, entity: str = "project") -> int:
     return main(
-        ["--repo", str(root), "project", *args, "7", "--by", "amy"],
+        ["--repo", str(root), entity, *args, "--by", "amy"]
+        if entity != "project"
+        else ["--repo", str(root), entity, *args, "7", "--by", "amy"],
         api=MintApi(expires_from=dt.datetime.now(dt.UTC)),
         signer=FakeSigner(),
         environ=host.env(),
@@ -295,6 +313,7 @@ def cli(root: Path, host: Host, gh: FakeGh, *args: str) -> int:
         gh_capture=gh,
         login=lambda: "amy",
         state=intake(),
+        item_state=after or ItemState(),
     )
 
 
@@ -319,11 +338,13 @@ def test_through_the_cli_focus_posts_the_relay_then_the_label(
 ) -> None:
     root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
     gh = FakeGh()
-    assert cli(root, host, gh, "focus") == 0
+    after = ItemState()
+    assert cli(root, host, gh, "focus", after=after) == 0
     writes = [call[:2] for call in gh.calls if call[0] == "issue"]
     assert writes == [["issue", "comment"], ["issue", "edit"]]
     assert gh.calls[-1][-2:] == ["--add-label", "focus"]
-    assert capsys.readouterr().out.strip() == URL
+    assert capsys.readouterr().out.splitlines() == [URL, "state: active; 2 of 3 parts open"]  # proves: S-108-13
+    assert after.asked == [7]
 
 
 # proves: S-108-12
@@ -495,6 +516,7 @@ def test_through_the_cli_check_files_the_issue_then_runs_chains_link(tmp_path: P
         login=lambda: "amy",
         state=intake("PROJECT_HELD", None),
         chains=chains,
+        item_state=ItemState(),
     )
     assert code == 0
     created = next(call for call in gh.calls if call[:2] == ["issue", "create"])
@@ -648,3 +670,78 @@ def test_s108_9_a_comment_in_the_hour_before_a_decline_refuses_it_naming_why() -
     with pytest.raises(ReleaseError, match="oldest comment of the hour before the close"):
         run_opportunity(hub, "decline", reason="no")
     assert hub.written == []
+
+
+# proves: S-108-13
+@pytest.mark.parametrize(
+    ("labels", "args", "line"),
+    [
+        (("opportunity",), ("accept", "7", "G-6"), "state: active; 2 of 3 parts open"),
+        (("opportunity",), ("decline", "7", "--reason", "no"), "state: closed as not planned"),
+    ],
+)
+def test_s108_13_an_opportunity_move_prints_the_items_state_after_its_url(
+    tmp_path: Path,
+    host: Host,
+    capsys: pytest.CaptureFixture[str],
+    labels: tuple[str, ...],
+    args: tuple[str, ...],
+    line: str,
+) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    (root / "docs").mkdir(exist_ok=True)
+    goals = (
+        "# Demo\n\n## Mission\n\nShip widgets.\n\n## Users\n\n- U-1: Buyers\n\n## Goals\n\n"
+        "- G-6: Buyers can track a widget. Check: `track` names its van. By: 2026-12-31\n\n"
+        "## Non-goals\n\n- N-1: Vans\n\n## Quality bar\n\n- Q-1: Tests pass\n"
+    )
+    (root / "docs" / "product.md").write_text(goals, encoding="utf-8")
+    after = ItemState()
+    assert cli(root, host, FakeGh(labels=labels), *args, after=after, entity="opportunity") == 0
+    assert capsys.readouterr().out.splitlines() == [URL, line]
+    assert after.asked == ([] if "decline" in args else [7])  # a closed item is no item status --item explains
+
+
+def test_s108_13_spec_107s_answer_prints_the_state_too(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    assert cli(root, host, FakeGh(), "continue", after=ItemState()) == 0
+    assert capsys.readouterr().out.splitlines() == [URL, "state: active; 2 of 3 parts open"]
+
+
+def test_s108_13_dry_run_reads_no_state_and_a_failed_read_exits_with_its_code(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    quiet = ItemState()
+    assert cli(root, host, FakeGh(), "focus", "--dry-run", after=quiet) == 0
+    assert quiet.asked == []
+    capsys.readouterr()
+    assert cli(root, host, FakeGh(), "focus", after=ItemState(code=1)) == 1
+    said = capsys.readouterr()
+    assert said.out.splitlines() == [URL]
+    assert "the move is written, but status --item 7 exited 1: gh: HTTP 502" in said.err
+
+
+def test_s108_13_the_state_line_reads_status_items_first_line_and_reason() -> None:
+    assert moves.state_line(STATUS) == "state: active; 2 of 3 parts open"
+    assert moves.state_line("o/r#7 (https://github.com/o/r/issues/7): done\n") == "state: done"
+    with pytest.raises(ReleaseError, match="no item line"):
+        moves.state_line("")
+
+
+# proves: S-108-14
+@pytest.mark.parametrize(
+    "doc",
+    [
+        "skills/product-intake/SKILL.md",
+        "skills/product-intake/references/plan.md",
+        "skills/github-issue-triage/references/needs-decision.md",
+        "docs/flow.md",
+    ],
+)
+def test_s108_14_the_skills_and_the_flow_name_the_moves(doc: str) -> None:
+    text = (Path(__file__).resolve().parents[1] / doc).read_text(encoding="utf-8")
+    assert "spec 108" in text
+    assert any(name in text for name in ("project add", "project check", "opportunity decline", "project focus"))

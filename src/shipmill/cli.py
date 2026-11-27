@@ -1471,6 +1471,7 @@ def main(
     gh_feed: GhFeed | None = None,
     record_reads: area_record.Reads | None = None,
     chains: link.ChainsRunner | None = None,
+    item_state: _ItemState | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1542,16 +1543,21 @@ def main(
             return _review_record(root, args, through, classify)
         if args.command == "revert":
             return _revert_open(root, args, through)
-        if args.command == "project" and args.move == "check":
-            check_reads = (_intake_runner(state), chains or link.run_chains)
-            return _project_check(root, args, through, login or (lambda: host_login(root)), env, check_reads)
-        if args.command == "opportunity":
-            return _opportunity(root, args, through, login or (lambda: host_login(root)), env)
-        if args.command == "project" and args.move in tuple(moves.Verb):
-            intake = _intake_runner(state)
-            return _move(root, args, through, login or (lambda: host_login(root)), env, intake)
-        if args.command in _RELAYS:
-            return _answer(root, args, through, login or (lambda: host_login(root)), env)
+        if args.command in _RELAYS:  # specs 107, 108: each move, then the item's state after it (S-108-13)
+            reader = login or (lambda: host_login(root))
+            if args.command == "project" and args.move == "check":
+                check_reads = (_intake_runner(state), chains or link.run_chains)
+                code = _project_check(root, args, through, reader, env, check_reads)
+            elif args.command == "opportunity":
+                code = _opportunity(root, args, through, reader, env)
+            elif args.command == "project" and args.move in tuple(moves.Verb):
+                code = _move(root, args, through, reader, env, _intake_runner(state))
+            else:
+                code = _answer(root, args, through, reader, env)
+            if code != 0 or args.dry_run:
+                return code
+            closed = args.command == "opportunity" and args.move == "decline"
+            return _say_state(root, args.number, closed, item_state or _status_item_json)
         return _spec_open(root, args, through, spec_checkout)
     if args.command == "leaks":  # reads no config: the private file and what is checked alone (spec 081)
         if args.leaks == "check":
@@ -3787,6 +3793,35 @@ class _CheckHub(_MoveHub):
             raise moves.StepFailed(
                 f"chains.py link exited {proc.returncode}: {proc.stdout.strip()[:200]}", proc.returncode
             )
+
+
+# S-108-13: `status --item <n>` run for the item a move wrote on, in its checkout
+type _ItemState = Callable[[Path, int], subprocess.CompletedProcess[str]]
+
+
+def _status_item_json(root: Path, number: int) -> subprocess.CompletedProcess[str]:
+    cmd = [sys.executable, "-m", "shipmill", "--repo", str(root), "status", "--item", str(number)]
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=root)
+
+
+def _say_state(root: Path, number: int, closed: bool, item_state: _ItemState) -> int:
+    """S-108-13: after a move's URL, the item's state line as `status --item` reads it; a closed
+    item (a decline) is no item `status --item` explains, so its line says it closed. A read that
+    fails exits with its code: the move is written, its URL printed above"""
+    if closed:
+        print("state: closed as not planned")
+        return 0
+    proc = item_state(root, number)
+    if proc.returncode != 0:
+        said = proc.stderr.strip().splitlines()
+        reason = said[-1] if said else "no message"
+        print(
+            f"shipmill: the move is written, but status --item {number} exited {proc.returncode}: {reason}",
+            file=sys.stderr,
+        )
+        return proc.returncode
+    print(moves.state_line(proc.stdout))
+    return 0
 
 
 def _read_text(flag: str, path: Path) -> str:

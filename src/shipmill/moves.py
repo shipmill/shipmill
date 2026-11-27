@@ -487,3 +487,18 @@ def run_opportunity(
     item = hub.item(request.number)
     step = compose_opportunity(item, request, bot_login, maintainers, open_goals)
     return write(step, item, hub, request.dry_run, say)
+
+
+# -- after a move (S-108-13): the item's state as `shipmill status --item <n>` reads it
+
+
+def state_line(out: str) -> str:
+    """`status --item`'s explanation as one line: `state: <bucket>`, from its first line
+    (`owner/repo#N (<url>): <bucket>`), then its first `why:` reason when it gives one"""
+    lines = [line for line in out.splitlines() if line.strip()]
+    head = lines[0] if lines else ""
+    if "): " not in head:
+        raise ReleaseError(f"status --item printed no item line: {out.strip()[:200]!r}")
+    bucket = head.rsplit("): ", 1)[1].strip()
+    why = next((line.strip().removeprefix("why:").strip() for line in lines[1:] if line.strip().startswith("why:")), "")
+    return f"state: {bucket}" + (f"; {why}" if why else "")
