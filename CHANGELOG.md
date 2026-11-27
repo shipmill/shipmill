@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.190.0] - 2026-11-27
+
+### Added
+
+- `shipmill status --item G-3` names a goal's state, who holds it, and what moves it, and `--item N` does so for a goal plan (`answer due <date>, overdue` past its date) and a project's head (a held one names what it waits for: `plan #P overdue`, `a free slot: K of N active`, or `held by the maintainer`); the watch runs product intake with `--goals` and `--projects` and lists GOAL_OVERDUE, PLAN_REPLACED, PROJECT_START_DUE, PROJECT_IDLE, PROJECT_STOP_DUE, GOAL_PROPOSAL_DUE, and NEEDS_GOAL on the PLANS row, so the gate starts a session for each, trusting an accepted opportunity by its opener (intake's lines for those states now carry `author` and `association`) and a replaced plan only for a trusted newer one; intake's `--json` first line names the product's overdue plans (`overdue`) while any is; `fleet.py queue` shows an overdue plan as an overdue `PLAN` row and an opportunity that names no goal as an `OPPORTUNITY` row; docs/flow.md gives the states, labels, and markers, and spec 106 is built (#1743)
+
 ## [0.189.0] - 2026-11-26
 
 ### Added
@@ -3297,7 +3303,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.189.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.190.0...HEAD
+[0.190.0]: https://github.com/shipmill/shipmill/compare/v0.189.0...v0.190.0
 [0.189.0]: https://github.com/shipmill/shipmill/compare/v0.188.0...v0.189.0
 [0.188.0]: https://github.com/shipmill/shipmill/compare/v0.187.0...v0.188.0
 [0.187.0]: https://github.com/shipmill/shipmill/compare/v0.186.0...v0.187.0
