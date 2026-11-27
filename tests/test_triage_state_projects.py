@@ -94,3 +94,85 @@ def test_s106_16_a_persons_item_whose_parent_closed_reads_stale_handoff_first(ts
     item["parent"] = {"number": 7, "state": "CLOSED", "closedAt": None, "repository": {"nameWithOwner": "o/r"}}
     found = ts.classify_open(item, "Triage:", "postponed", {}, None, REPO, project="project #7 held")
     assert found == ("STALE_HANDOFF", "parent o/r#7 closed")
+
+
+IMPLEMENT = "Triage: **implement**. Build it."
+
+
+def part_of(pr: int, state: str, merged_at: str | None = None) -> dict[str, Any]:
+    """A same-repo PR linked to head #7 by `Part of #7`"""
+    return {
+        "willCloseTarget": False,
+        "isCrossRepository": False,
+        "source": {"number": pr, "state": state, "title": "Build it", "body": "Part of #7", "mergedAt": merged_at},
+    }
+
+
+def started_pair(*prs: dict[str, Any], comments: tuple[str, ...] = (IMPLEMENT,)) -> list[dict[str, Any]]:
+    """#1802: the eight live projects' shape, a head with no parts and its open check issue"""
+    head = with_subs(
+        open_issue(
+            7, [{"body": c, "createdAt": "2026-11-27T07:00:00Z"} for c in comments], ("project",), forward(list(prs))
+        ),
+        check_node(),
+    )
+    check = with_subs(open_issue(50))
+    check["title"], check["body"] = "Check: the page shows the plan", CHECK
+    return [head, check]
+
+
+def read(ts: ModuleType, issues: list[dict[str, Any]]) -> dict[int, tuple[str, str]]:
+    started = ts.started_projects(issues, REPO)
+    return {
+        int(i["number"]): ts.classify_open(i, "Triage:", "postponed", {}, None, REPO, started=started.get(i["number"]))
+        for i in issues
+    }
+
+
+def test_s106_29_a_head_with_no_parts_is_built_like_any_issue_not_held_on_its_check(ts: ModuleType) -> None:
+    found = read(ts, started_pair())
+    assert found[7] == ("NEEDS_PR", "")  # not `children 0/1 closed`
+    assert found[50] == ("BLOCKED", "project #7: check waits on its work (no part filed, 0 PR merged)")
+    untriaged = read(ts, started_pair(comments=()))
+    assert untriaged[7][0] == "NEW"
+    assert untriaged[50][0] == "BLOCKED"  # never NEW: the check issue is no work to triage
+
+
+def test_s106_29_the_check_is_due_once_the_heads_part_of_prs_merged(ts: ModuleType) -> None:
+    building = read(ts, started_pair(part_of(80, "OPEN")))
+    assert building[7] == ("IN_PROGRESS", "#80:open(part)")
+    assert building[50][0] == "BLOCKED"
+    merged = read(ts, started_pair(part_of(80, "MERGED", "2026-11-28T10:00:00Z")))
+    assert merged[7] == ("BLOCKED", "project #7: check #50 due (no part filed, 1 PR merged)")
+    assert merged[50] == ("VERIFY_DUE", "project #7: run its ## Check")
+    # another PR of the head still open: the work isn't done
+    more = read(ts, started_pair(part_of(80, "MERGED", "2026-11-28T10:00:00Z"), part_of(81, "OPEN")))
+    assert more[50] == ("BLOCKED", "project #7: check waits on its work (no part filed, a PR open)")
+
+
+def test_s106_29_a_head_with_parts_waits_on_them_and_then_on_its_check(ts: ModuleType) -> None:
+    head, check = started_pair()
+    head["subIssues"]["nodes"].append(sub_node(8))
+    part = with_subs(open_issue(8))
+    found = read(ts, [head, check, part])
+    assert found[7][0] == "BLOCKED" and found[7][1].startswith("children 0/1 closed"), found[7]
+    assert found[50] == ("BLOCKED", "project #7: check waits on its work (1 of 1 parts open)")
+    head["subIssues"]["nodes"][-1] = {**sub_node(8, "CLOSED"), "closedAt": "2026-11-28T10:00:00Z"}
+    done = read(ts, [head, check])
+    assert done[7] == ("BLOCKED", "project #7: check #50 due (0 of 1 parts open)")
+    assert done[50] == ("VERIFY_DUE", "project #7: run its ## Check")
+
+
+def test_s106_29_a_due_check_still_waits_on_its_own_holds(ts: ModuleType) -> None:
+    head, check = started_pair(part_of(80, "MERGED", "2026-11-28T10:00:00Z"))
+    check["body"] = CHECK + "\nDepends on #1802\n"
+    started = ts.started_projects([head, check], REPO)
+    found = ts.classify_open(check, "Triage:", "postponed", {(*REPO, 1802): "OPEN"}, None, REPO, started=started[50])
+    assert found == ("BLOCKED", "o/r#1802:open project #7")
+
+
+def test_s106_29_the_run_reads_a_started_project(tmp_path: Path) -> None:
+    run = run_script(tmp_path, started_pair())
+    rows = {r["number"]: r for r in map(json.loads, run.stdout.splitlines()) if "number" in r}
+    assert rows[7]["state"] == "NEEDS_PR", run.stderr
+    assert rows[50]["state"] == "BLOCKED"
