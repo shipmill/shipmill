@@ -190,7 +190,10 @@ counted; spec 107's commands print the same line after their comment's URL.
 
 ## Issues
 
-Filled in once the build issues are filed.
+- shipmill/shipmill#1810: S-108-1, S-108-2, S-108-3, S-108-4, S-108-11, S-108-12
+- shipmill/shipmill#1811: S-108-5, S-108-6
+- shipmill/shipmill#1812: S-108-7, S-108-8, S-108-9, S-108-10
+- shipmill/shipmill#1813: S-108-13, S-108-14
 
 ## Verification
 
