@@ -2831,9 +2831,13 @@ def is_short(connection: dict[str, Any]) -> bool:
     return int(connection.get("totalCount") or 0) > len(connection.get("nodes") or [])
 
 
-def issue_subs(run: Runner, owner: str, name: str, number: int, fields: str, first: int) -> dict[str, Any]:
+def issue_subs(
+    run: Runner, owner: str, name: str, number: int, fields: str, first: int, counted: int
+) -> dict[str, Any]:
     """#1827: every sub-issue of issue #number, with fields, in pages of first, as one
-    connection (its totalCount, its nodes); complete() refuses it still short"""
+    connection (its totalCount, its nodes); complete() refuses it still short. A first page
+    counting other than the head query's read (counted) is refused: the sub-issue's number may
+    name another issue in owner/name, a check issue of another repo's (chains.py's own_check)"""
     query = ISSUE_SUBS.replace("FIELDS", fields)
     nodes: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -2844,6 +2848,11 @@ def issue_subs(run: Runner, owner: str, name: str, number: int, fields: str, fir
         if issue is None:
             fail(f"no issue #{number} in {owner}/{name} in the GraphQL response")
         connection = issue["subIssues"]
+        if not nodes and int(connection["totalCount"]) != counted:
+            fail(
+                f"#{number} has {connection['totalCount']} sub-issues in {owner}/{name}, where the first read"
+                f" counted {counted}: another repo's issue, or one changed between the reads"
+            )
         nodes += connection["nodes"]
         info = connection["pageInfo"]
         if not info["hasNextPage"]:
@@ -2858,13 +2867,16 @@ def read_in_full(run: Runner, owner: str, name: str, head: dict[str, Any], linke
     """#1827: a head's sub-issues and its check issues' parts read in full, in place, each with
     more than the head query read paged by a follow-up query on its issue; the sub-issues with
     the fields the head query read them with (sub_fields' linked and summary)"""
-    if is_short(head.get("subIssues") or {}):
+    subs = head.get("subIssues") or {}
+    if is_short(subs):
         fields = sub_fields(linked, summary)
-        head["subIssues"] = issue_subs(run, owner, name, int(head["number"]), fields, PROJECT_SUBS)
+        counted = int(subs["totalCount"])
+        head["subIssues"] = issue_subs(run, owner, name, int(head["number"]), fields, PROJECT_SUBS, counted)
     for sub in (head.get("subIssues") or {}).get("nodes") or []:
         parts = sub.get("subIssues")
         if parts is not None and is_check(sub) and is_short(parts):
-            sub["subIssues"] = issue_subs(run, owner, name, int(sub["number"]), PART_FIELDS, PARTS_PAGE)
+            counted = int(parts["totalCount"])
+            sub["subIssues"] = issue_subs(run, owner, name, int(sub["number"]), PART_FIELDS, PARTS_PAGE, counted)
 
 
 def is_check(sub: dict[str, Any]) -> bool:

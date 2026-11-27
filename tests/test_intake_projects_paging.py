@@ -128,3 +128,16 @@ def test_s106_12_a_connection_still_short_after_paging_is_refused(
         ist.fetch_projects("o/r", BOT, NOW, Short({"OPEN": [head(7, (checked,))], "CLOSED": []}, {50: all_parts}))
     assert exited.value.code == 2
     assert "check issue #50 has 13 sub-issues, more than intake_state.py reads (12)" in capsys.readouterr().err
+
+
+def test_s106_12_a_follow_up_on_another_issue_than_the_head_read_is_refused(
+    ist: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """a check issue of another repo (chains.py's own_check) follows up on the checkout's issue
+    of its number: a count other than the head query read is a read error, never its parts"""
+    checked = short(check(parts=("OPEN",) * 13), ist.PROJECT_PARTS)
+    run = Run({"OPEN": [head(7, (checked,))], "CLOSED": []}, {50: parts("CCC")})
+    with pytest.raises(SystemExit) as exited:
+        ist.fetch_projects("o/r", BOT, NOW, run)
+    assert exited.value.code == 2
+    assert "#50 has 3 sub-issues in o/r, where the first read counted 13" in capsys.readouterr().err
