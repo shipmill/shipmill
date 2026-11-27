@@ -467,9 +467,10 @@ def compose_opportunity(
     when = answer._after(item)
     posted = answer.Comment(bot_login, "NONE", marked(body), when)
     closed = {**item.node([posted]), "closedAt": when}
-    if intake.decline_reason(closed, answer.MARKER, bot_login, maintainers) != reason:
+    if intake.decline_reason(closed, answer.MARKER, bot_login) != reason:
         raise ReleaseError(
-            f"opportunity #{item.number}'s reader doesn't read `{reason}` as its reason; nothing written"
+            f"opportunity #{item.number}'s reader doesn't read `{reason}` as its reason: it takes the oldest comment "
+            "of the hour before the close, so a newer one there would be read instead; nothing was written"
         )
     return Step(body, False, None, None, close=True)
 

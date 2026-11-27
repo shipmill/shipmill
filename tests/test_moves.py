@@ -544,7 +544,7 @@ def test_s108_7_accept_posts_the_relay_then_labels_it_planned(goal: str, line: s
     assert run_opportunity(hub, "accept", goal=goal) == [URL]
     assert hub.written == [("comment", relay(line)), ("add", "planned")]
     node = posted_node(found, relay(line))
-    assert ist().opportunity_state(node, "planned", answer.MARKER, BOT, MAINTAINERS)[0] == "ACCEPTED"
+    assert ist().opportunity_state(node, "planned", answer.MARKER, BOT)[0] == "ACCEPTED"
     assert ist().accept_goal(node, answer.MARKER, BOT, MAINTAINERS) == (ist().NEW_GOAL if named == "new" else named)
 
 
@@ -590,7 +590,7 @@ def test_s108_9_decline_posts_the_relay_then_closes_it_and_intake_reads_its_reas
     assert run_opportunity(hub, "decline", reason="another tool covers it") == [URL]
     assert hub.written == [("comment", relay("decline: another tool covers it")), ("close", "not planned")]
     node = posted_node(found, relay("decline: another tool covers it"), closed=True)
-    read = ist().opportunity_state(node, "planned", answer.MARKER, BOT, MAINTAINERS)
+    read = ist().opportunity_state(node, "planned", answer.MARKER, BOT)
     assert read == ("DECLINED", "another tool covers it")
 
 
@@ -598,7 +598,7 @@ def test_s108_9_a_decline_written_by_hand_reads_as_before() -> None:
     found = opportunity_issue()
     node = found.node([Comment("amy", "OWNER", "Not for now: the tool covers it.", at(30))])
     node |= {"state": "CLOSED", "stateReason": "NOT_PLANNED", "closedAt": at(31)}
-    read = ist().opportunity_state(node, "planned", answer.MARKER, BOT, MAINTAINERS)
+    read = ist().opportunity_state(node, "planned", answer.MARKER, BOT)
     assert read == ("DECLINED", "Not for now: the tool covers it.")
 
 
@@ -638,4 +638,13 @@ def test_s108_12_decline_dry_run_prints_the_relay_and_the_close() -> None:
     hub = FakeHub(opportunity_issue())
     said = run_opportunity(hub, "decline", reason="no", dry_run=True)
     assert said == [relay("decline: no"), "close: as not planned"]
+    assert hub.written == []
+
+
+def test_s108_9_a_comment_in_the_hour_before_a_decline_refuses_it_naming_why() -> None:
+    recent = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)  # within the hour the reader reads
+    plus = Comment("bob", "NONE", "+1", recent.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    hub = FakeHub(opportunity_issue(comments=(plus,)))
+    with pytest.raises(ReleaseError, match="oldest comment of the hour before the close"):
+        run_opportunity(hub, "decline", reason="no")
     assert hub.written == []

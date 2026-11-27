@@ -469,7 +469,7 @@ def accepters(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
 
 
 def relayed_accepter(comments: Sequence[Comment], app: str) -> Person | None:
-    """S-108-10: the maintainer the App's newest relay of an accept names, its header
+    """S-108-10: the person the App's newest relay of an accept names, its header
     ``Decision by `@<login>` `` and its move's line starting `accept` (D-115); None without one"""
     for comment in reversed(comments):
         if comment.user is None or comment.user.login.lower() != app.lower():
@@ -493,8 +493,9 @@ def issue_accepters(reads: CreditReads, issues: Sequence[Filed], app: str) -> li
         person = added[-1] if added else None
         if person is not None and person.bot and person.login.lower() == app.lower():
             relayed = relayed_accepter(reads.credit_comments(issue.number), app)
-            if relayed is not None:
-                found.append(Named(relayed, True, f"accepted #{issue.number} ({PLANNED}, relayed)"))
+            if relayed is not None:  # trusted as a hand label is, by the named person's permission
+                trusted = reads.credit_permission(relayed.login) in WRITERS
+                found.append(Named(relayed, trusted, f"accepted #{issue.number} ({PLANNED}, relayed)"))
             continue
         if person is not None:
             trusted = not person.bot and reads.credit_permission(person.login) in WRITERS

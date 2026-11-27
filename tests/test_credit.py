@@ -1187,6 +1187,7 @@ def test_s108_10_a_relayed_accept_the_app_labelled_credits_the_maintainer_it_nam
         closes=[issue(9, APP, "NONE", parent=opportunity)],
         labelers={3: [APP]},
         comments={3: [said("octocat", "Looks good"), Comment(APP, "NONE", relay, True)]},
+        permissions={"octocat": "write"},
     )
     assert named(accepters(reads, reads.record, APP_LOGIN)) == [("octocat", True, "accepted #3 (planned, relayed)")]
     assert [n.person.login for n in deciders(reads, reads.record, APP_LOGIN)] == ["octocat"]
@@ -1214,3 +1215,15 @@ def test_s108_10_a_hand_labelled_accept_is_credited_as_before() -> None:
         permissions={"octocat": "write"},
     )
     assert named(accepters(reads, reads.record, APP_LOGIN)) == [("octocat", True, "accepted #3 (planned)")]
+
+
+def test_s108_10_a_relayed_accept_naming_someone_without_write_credits_nobody() -> None:
+    opportunity = issue(3, APP, "NONE", ("opportunity", "planned"))
+    relay = "Decision by `@stranger`, relayed by Claude Code\n\naccept G-2"
+    reads = FakeCredit(
+        closes=[issue(9, APP, "NONE", parent=opportunity)],
+        labelers={3: [APP]},
+        comments={3: [Comment(APP, "NONE", relay, True)]},
+        permissions={"stranger": "read"},
+    )
+    assert named(accepters(reads, reads.record, APP_LOGIN)) == [("stranger", False, "accepted #3 (planned, relayed)")]
