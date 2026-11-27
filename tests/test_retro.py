@@ -73,6 +73,86 @@ def test_two_proposals_with_one_title_are_refused(rt: ModuleType, capsys: pytest
     assert "two proposals share a title" in capsys.readouterr().err
 
 
+MET = "Direction: G-7 met for 4 weeks"
+STALLED = "Direction: G-7 stalled for 3 weeks"
+
+
+def issue_reads(
+    open_issues: list[dict[str, Any]], closed: Mapping[str, list[dict[str, Any]]]
+) -> tuple[list[list[str]], Callable[[list[str]], subprocess.CompletedProcess[str]]]:
+    """A fake gh: `issue list --state open` gives open_issues, a closed search gives the
+    closed issues keyed by its query; every command is recorded"""
+    ran: list[list[str]] = []
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        ran.append(cmd)
+        assert cmd[:3] == ["gh", "issue", "list"], cmd
+        state = cmd[cmd.index("--state") + 1]
+        if state == "open":
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(open_issues), "")
+        assert state == "closed", cmd
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(closed[cmd[cmd.index("--search") + 1]]), "")
+
+    return ran, run
+
+
+def dedupe_args(*titles: str, as_json: bool = False) -> argparse.Namespace:
+    return argparse.Namespace(repo="o/r", title=list(titles), json=as_json)
+
+
+def test_a_proposal_closed_as_not_planned_reads_declined(rt: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    """#1765: a Direction proposal the maintainer declined is never opened again (D-10)"""
+    closed = {
+        "in:title direction g 7 met for 4 weeks": [
+            {"number": 40, "title": "Direction: G-7 met for 4 weeks", "stateReason": "NOT_PLANNED"},
+            {"number": 41, "title": "Direction: G-7 met for 4 weeks, again?", "stateReason": "NOT_PLANNED"},
+        ],
+        "in:title direction g 7 stalled for 3 weeks": [
+            {"number": 30, "title": "direction: g-7 stalled for 3 weeks", "stateReason": "COMPLETED"},
+        ],
+    }
+    ran, run = issue_reads([], closed)
+    assert rt.dedupe_command(dedupe_args(MET, STALLED), run) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        f"DECLINED   {MET} (closed as not planned as #40)",
+        f"NEW        {STALLED}",
+    ]
+    searched = [cmd for cmd in ran if "closed" in cmd]
+    assert len(searched) == 2
+    assert all("stateReason" in cmd[cmd.index("--json") + 1] for cmd in searched)
+
+
+def test_a_declined_proposal_has_its_field_in_json(rt: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    closed = {"in:title direction g 7 met for 4 weeks": [{"number": 40, "title": MET, "stateReason": "NOT_PLANNED"}]}
+    _, run = issue_reads([], closed)
+    assert rt.dedupe_command(dedupe_args(MET, as_json=True), run) == 1
+    assert json.loads(capsys.readouterr().out) == {"title": MET, "duplicate": None, "existing": "", "declined": 40}
+
+
+def test_an_open_match_reads_duplicate_without_a_closed_search(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran, run = issue_reads([{"number": 50, "title": MET}], {})
+    assert rt.dedupe_command(dedupe_args(MET), run) == 1
+    assert capsys.readouterr().out.splitlines() == [f"DUPLICATE  {MET} (open as #50: {MET})"]
+    assert [cmd for cmd in ran if "closed" in cmd] == []
+
+
+def test_every_title_new_exits_zero(rt: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    _, run = issue_reads([], {"in:title direction g 7 met for 4 weeks": []})
+    assert rt.dedupe_command(dedupe_args(MET), run) == 0
+    assert capsys.readouterr().out.splitlines() == [f"NEW        {MET}"]
+
+
+def test_a_closed_search_at_the_limit_is_refused(rt: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    many = [{"number": n, "title": f"Direction {n}", "stateReason": "COMPLETED"} for n in range(rt.ISSUE_LIMIT)]
+    _, run = issue_reads([], {"in:title direction g 7 met for 4 weeks": many})
+    with pytest.raises(SystemExit) as refused:
+        rt.dedupe_command(dedupe_args(MET), run)
+    assert refused.value.code == 2
+    assert "closed issues" in capsys.readouterr().err
+
+
 def test_refused_and_reworked_pulls_are_the_windows(rt: ModuleType) -> None:
     pulls = [
         pull(1, None, day(2)),  # refused
