@@ -18,7 +18,7 @@ from shipmill.errors import ReleaseError
 from shipmill.moves import Head, Projects, Request, Verb
 
 from .test_answer import QUESTION, at, host
-from .test_app import FakeSigner
+from .test_app import REPO, FakeSigner
 from .test_app_gh import WITH_APP, Host, checkout
 from .test_app_token import MintApi
 from .test_intake_projects import check, head
@@ -54,9 +54,20 @@ class FakeHub:
     login: str = BOT
     fail_label: int | None = None
     written: list[tuple[str, str]] = field(default_factory=list)
+    labels: frozenset[str] = frozenset({"project", "focus", "held", "planned"})  # the repository's
+    fail_create: bool = False
 
     def viewer(self) -> str:
         return self.login
+
+    def repo_labels(self) -> frozenset[str]:
+        return self.labels
+
+    def create_label(self, name: str, color: str, description: str) -> None:
+        assert len(color) == 6 and description
+        if self.fail_create:
+            raise ReleaseError(f"gh label create {name} exited 1; nothing was written")
+        self.written.append(("create label", name))
 
     def item(self, number: int) -> Item:
         if number == 51:  # a closed check issue
@@ -252,12 +263,18 @@ class FakeGh:
     labels: tuple[str, ...] = ("project",)
     edit: int = 0
     calls: list[list[str]] = field(default_factory=list)
+    repo_labels: tuple[str, ...] = ("project", "focus", "held", "planned")
+    create: tuple[int, str] = (0, "")
 
     def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
         args = list(argv[1:])
         self.calls.append(args)
         if args[:2] == ["api", "graphql"]:
             return 0, f"{BOT}\n"
+        if args[:2] == ["api", "--paginate"] and args[2].endswith("/labels"):
+            return 0, "".join(f"{name}\n" for name in self.repo_labels)
+        if args[:2] == ["label", "create"]:
+            return self.create
         if args[:2] == ["api", "--paginate"]:
             return 0, ""
         if args[0] == "api":
@@ -387,6 +404,72 @@ def test_s108_12_through_the_cli_a_failed_label_exits_with_ghs_code(
     root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
     assert cli(root, host, FakeGh(edit=1), "focus") == 1
     assert f"relay is posted at {URL}" in capsys.readouterr().err
+
+
+# #1828: a label the repository lacks is created before the relay, so its step can't fail after it
+@pytest.mark.parametrize(
+    ("verb", "before", "line", "label"),
+    [
+        (Verb.ADD, (), "project", "project"),
+        (Verb.FOCUS, ("project",), "focus", "focus"),
+        (Verb.HOLD, ("project",), "hold", "held"),
+    ],
+)
+def test_a_label_the_repo_lacks_is_created_before_the_one_relay(
+    verb: Verb, before: tuple[str, ...], line: str, label: str
+) -> None:
+    hub = FakeHub(issue(labels=before), labels=frozenset())
+    assert run(hub, verb) == [URL]
+    assert hub.written == [("create label", label), ("comment", relay(line)), ("add", label)]
+
+
+def test_an_accept_creates_planned_when_the_repo_lacks_it() -> None:
+    hub = FakeHub(opportunity_issue(), labels=frozenset({"opportunity"}))
+    run_opportunity(hub, "accept", goal="G-2")
+    assert hub.written == [("create label", "planned"), ("comment", relay("accept G-2")), ("add", "planned")]
+
+
+def test_a_label_that_cant_be_created_writes_no_relay() -> None:
+    hub = FakeHub(issue(), labels=frozenset({"project"}), fail_create=True)
+    with pytest.raises(ReleaseError, match="gh label create held exited 1"):
+        run(hub, Verb.HOLD)
+    assert hub.written == []
+
+
+def test_a_removing_move_creates_no_label() -> None:
+    hub = FakeHub(issue(labels=("project", "held")), labels=frozenset())
+    run(hub, Verb.RESUME)
+    assert hub.written == [("comment", relay("resume")), ("remove", "held")]
+
+
+def test_dry_run_names_the_label_it_would_create_as_its_own_step() -> None:
+    hub = FakeHub(issue(), labels=frozenset({"project"}))
+    assert run(hub, Verb.HOLD, dry_run=True) == ["label: create `held`", relay("hold"), "label: add `held`"]
+    assert hub.written == []
+
+
+@pytest.mark.parametrize("create", [(0, "https://github.com/o/r/labels/held\n"), (1, "HTTP 422: already exists\n")])
+def test_through_the_cli_hold_creates_the_missing_label_then_relays_once(
+    tmp_path: Path, host: Host, create: tuple[int, str]
+) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    gh = FakeGh(repo_labels=("project",), create=create)  # a concurrent run's 422 means it is there
+    assert cli(root, host, gh, "hold") == 0
+    writes = [call[:2] for call in gh.calls if call[0] in ("issue", "label")]
+    assert writes == [["label", "create"], ["issue", "comment"], ["issue", "edit"]]
+    made = next(call for call in gh.calls if call[0] == "label")
+    assert made[2] == "held" and made[made.index("-R") + 1] == REPO
+    assert gh.calls[-1][-2:] == ["--add-label", "held"]
+
+
+def test_through_the_cli_a_failed_label_create_exits_2_and_posts_no_relay(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    gh = FakeGh(repo_labels=("project",), create=(1, "HTTP 403: Resource not accessible\n"))
+    with pytest.raises(ReleaseError, match="gh label create held exited 1: HTTP 403.*nothing was written"):
+        cli(root, host, gh, "hold")
+    assert not any(call[0] == "issue" for call in gh.calls)
 
 
 # -- project check (S-108-5, S-108-6)
