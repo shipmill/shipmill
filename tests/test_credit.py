@@ -1177,3 +1177,40 @@ def test_s050_12_only_the_unmarked_records_get_the_trailer_on_the_merge(
     assert gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash", "--body", "Given."], runner, credit) == 0
     assert body_of(runner.calls[0]) == f"Given.\n\n{OCTOCAT_TRAILER}"
     assert runner.stderr == ["credit: `@octocat` answered the decision on #9\n"]
+
+
+# proves: S-108-10
+def test_s108_10_a_relayed_accept_the_app_labelled_credits_the_maintainer_it_names() -> None:
+    opportunity = issue(3, APP, "NONE", ("opportunity", "planned"))
+    relay = "Decision by `@octocat`, relayed by Claude Code\n\naccept G-2\n\n<!-- shipmill:agent -->"
+    reads = FakeCredit(
+        closes=[issue(9, APP, "NONE", parent=opportunity)],
+        labelers={3: [APP]},
+        comments={3: [said("octocat", "Looks good"), Comment(APP, "NONE", relay, True)]},
+    )
+    assert named(accepters(reads, reads.record, APP_LOGIN)) == [("octocat", True, "accepted #3 (planned, relayed)")]
+    assert [n.person.login for n in deciders(reads, reads.record, APP_LOGIN)] == ["octocat"]
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        [],  # no relay
+        [Comment(APP, "NONE", "Decision by `@octocat`, relayed by Claude Code\n\ndecline: no", True)],
+        [Comment(Person("renovate[bot]", True), "NONE", "Decision by `@octocat`, relayed by X\n\naccept G-2", True)],
+    ],
+)
+def test_s108_10_an_app_label_with_no_relay_of_an_accept_credits_nobody(comments: list[Comment]) -> None:
+    opportunity = issue(3, APP, "NONE", ("opportunity", "planned"))
+    reads = FakeCredit(closes=[issue(9, APP, "NONE", parent=opportunity)], labelers={3: [APP]}, comments={3: comments})
+    assert accepters(reads, reads.record, APP_LOGIN) == []
+
+
+def test_s108_10_a_hand_labelled_accept_is_credited_as_before() -> None:
+    opportunity = issue(3, APP, "NONE", ("opportunity", "planned"))
+    reads = FakeCredit(
+        closes=[issue(9, APP, "NONE", parent=opportunity)],
+        labelers={3: [Person("octocat", False)]},
+        permissions={"octocat": "write"},
+    )
+    assert named(accepters(reads, reads.record, APP_LOGIN)) == [("octocat", True, "accepted #3 (planned)")]

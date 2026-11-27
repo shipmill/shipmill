@@ -1275,12 +1275,17 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
     q.add_argument("--dry-run", action="store_true", help="print the issue and the link step; write nothing")
 
-    p = sub.add_parser("opportunity", help="relay the maintainer's move on an opportunity (spec 107)")
-    q = p.add_subparsers(dest="move", required=True).add_parser(
-        "accept", help="name the goal an accepted opportunity serves"
+    p = sub.add_parser("opportunity", help="relay the maintainer's move on an opportunity (specs 107, 108)")
+    opportunities = p.add_subparsers(dest="move", required=True)
+    q = opportunities.add_parser(
+        "accept", help="accept an opportunity, labelled planned after the relay, and name the goal it serves"
     )
-    q.add_argument("number", type=int, help="the opportunity, labelled planned")
+    q.add_argument("number", type=int, help="the opportunity")
     q.add_argument("goal", metavar="G-n|new", help="the goal it serves, or `new` for a new goal")
+    relay_args(q)
+    q = opportunities.add_parser("decline", help="decline an opportunity: the relay, then the close (spec 108)")
+    q.add_argument("number", type=int, help="the opportunity, not labelled planned")
+    q.add_argument("--reason", help="why it is declined, which intake keeps")
     relay_args(q)
 
     p = sub.add_parser("spec", help="open a spec's pull request, naming its feature issue (spec 053)")
@@ -1540,6 +1545,8 @@ def main(
         if args.command == "project" and args.move == "check":
             check_reads = (_intake_runner(state), chains or link.run_chains)
             return _project_check(root, args, through, login or (lambda: host_login(root)), env, check_reads)
+        if args.command == "opportunity":
+            return _opportunity(root, args, through, login or (lambda: host_login(root)), env)
         if args.command == "project" and args.move in tuple(moves.Verb):
             intake = _intake_runner(state)
             return _move(root, args, through, login or (lambda: host_login(root)), env, intake)
@@ -3657,6 +3664,42 @@ def _move(
         return exc.code
 
 
+def _opportunity(
+    root: Path, args: argparse.Namespace, path: _GhPath, login: Callable[[], str], environ: Mapping[str, str]
+) -> int:
+    """Specs 107, 108: `opportunity accept` and `decline`: the relay, then `planned` or the close
+    as not planned, through `shipmill gh`'s path"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"opportunity runs in the repo's checkout, and git can't read {root}: `git -C {root} status`"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so opportunity has no item to move")
+    resolved = roles.resolve(roles.configured(top), login, environ.get(roles.GATE_MAINTAINER, ""))
+    maintainers = frozenset(str(user).lower() for user in resolved[0].users)
+    request = moves.OpportunityRequest(
+        args.move,
+        args.number,
+        args.by.removeprefix("@"),
+        goal=getattr(args, "goal", None),
+        reason=getattr(args, "reason", None),
+        note=args.note,
+        relayed_by=args.relayed_by,
+        dry_run=args.dry_run,
+    )
+    hub = _MoveHub(top, repo, path, resolved, _intake_runner(None))
+    try:
+        return moves.run_opportunity(request, hub, maintainers, lambda: _open_goals(top), print)
+    except moves.StepFailed as exc:
+        print(f"shipmill: {exc}", file=sys.stderr)
+        return exc.code
+
+
 class _MoveHub(_AnswerHub):
     """The moves' GitHub calls: answer's, a label step, and the heads as intake reads them"""
 
@@ -3678,6 +3721,12 @@ class _MoveHub(_AnswerHub):
         code, out = _through_gh(self._top, self._path, [group, "edit", str(item.number), "-R", self._repo, *edit])
         if code != 0:
             raise moves.StepFailed(f"gh {group} edit exited {code}: {out.strip()[:200]}", code)
+
+    def close(self, item: answer.Item) -> None:
+        argv = ["issue", "close", str(item.number), "-R", self._repo, "--reason", "not planned"]
+        code, out = _through_gh(self._top, self._path, argv)
+        if code != 0:
+            raise moves.StepFailed(f"gh issue close exited {code}: {out.strip()[:200]}", code)
 
     def projects(self, bot_login: str) -> moves.Projects:
         script = skills_dir() / "product-intake" / "scripts" / "intake_state.py"

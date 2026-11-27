@@ -82,6 +82,11 @@ class FakeHub:
         assert bot_login == self.login
         return self.read
 
+    def close(self, found: Item) -> None:
+        if self.fail_label is not None:
+            raise moves.StepFailed("gh issue close exited 4", self.fail_label)
+        self.written.append(("close", "not planned"))
+
 
 def run(hub: FakeHub, verb: Verb, by: str = "amy", **flags: Any) -> list[str]:
     said: list[str] = []
@@ -495,3 +500,142 @@ def test_through_the_cli_check_files_the_issue_then_runs_chains_link(tmp_path: P
     created = next(call for call in gh.calls if call[:2] == ["issue", "create"])
     assert created[created.index("--title") + 1] == "Check: T"
     assert linked[0][0] == "link" and linked[0][2:] == ["--child", linked[0][3]]
+
+
+# -- opportunity accept and decline (S-108-7 to S-108-9, D-115)
+
+GOALS = frozenset({"G-2"})
+
+
+def opportunity_issue(
+    labels: Sequence[str] = ("opportunity",), comments: Sequence[Comment] = (), open_: bool = True
+) -> Item:
+    return Item(7, False, open_, frozenset(labels), "Serves: G-2\n", at(0), tuple(comments), "Plans page")
+
+
+def run_opportunity(hub: FakeHub, verb: str, by: str = "amy", **flags: Any) -> list[str]:
+    said: list[str] = []
+    request = moves.OpportunityRequest(verb, 7, by, **flags)
+    assert moves.run_opportunity(request, hub, MAINTAINERS, lambda: GOALS, said.append) == 0
+    return said
+
+
+def ist() -> Any:
+    return answer._intake()
+
+
+def posted_node(found: Item, body: str, closed: bool = False) -> dict[str, Any]:
+    node = found.node([Comment(BOT, "NONE", f"{body}\n\n<!-- shipmill:agent -->", at(30))])
+    node |= {"title": found.title, "reactions": {"totalCount": 0}}
+    if closed:
+        node |= {"state": "CLOSED", "stateReason": "NOT_PLANNED", "closedAt": at(31)}
+    else:
+        node |= {"state": "OPEN", "stateReason": None, "closedAt": None}
+    names = found.labels | ({"planned"} if not closed else set())
+    node["labels"] = {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in names]}
+    return node
+
+
+# proves: S-108-7
+@pytest.mark.parametrize(("goal", "line", "named"), [("G-2", "accept G-2", "G-2"), ("new", "accept new goal", "new")])
+def test_s108_7_accept_posts_the_relay_then_labels_it_planned(goal: str, line: str, named: str) -> None:
+    found = opportunity_issue()
+    hub = FakeHub(found)
+    assert run_opportunity(hub, "accept", goal=goal) == [URL]
+    assert hub.written == [("comment", relay(line)), ("add", "planned")]
+    node = posted_node(found, relay(line))
+    assert ist().opportunity_state(node, "planned", answer.MARKER, BOT, MAINTAINERS)[0] == "ACCEPTED"
+    assert ist().accept_goal(node, answer.MARKER, BOT, MAINTAINERS) == (ist().NEW_GOAL if named == "new" else named)
+
+
+def test_s108_7_accept_on_an_opportunity_planned_already_is_spec_107s_relay_alone() -> None:
+    hub = FakeHub(opportunity_issue(("opportunity", "planned")))
+    run_opportunity(hub, "accept", goal="G-2")
+    assert hub.written == [("comment", relay("accept G-2"))]
+
+
+# proves: S-108-8
+@pytest.mark.parametrize(
+    ("found", "goal", "said"),
+    [
+        (opportunity_issue(labels=()), "G-2", "isn't labelled `opportunity`"),
+        (opportunity_issue(open_=False), "G-2", "is closed"),
+        (
+            opportunity_issue(("opportunity", "needs-decision"), (Comment(BOT, "NONE", QUESTION, at(1)),)),
+            "G-2",
+            "open needs-decision question",
+        ),
+        (opportunity_issue(), "G-9", "no open goal of kind goal"),
+        (opportunity_issue(), " ", "is empty"),
+    ],
+)
+def test_s108_8_an_accept_its_reader_wouldnt_count_is_refused(found: Item, goal: str, said: str) -> None:
+    hub = FakeHub(found)
+    with pytest.raises(ReleaseError, match=said):
+        run_opportunity(hub, "accept", goal=goal)
+    assert hub.written == []
+
+
+def test_s108_8_an_accept_with_no_goal_is_refused() -> None:
+    hub = FakeHub(opportunity_issue())
+    with pytest.raises(ReleaseError, match="needs the goal it serves"):
+        run_opportunity(hub, "accept")
+    assert hub.written == []
+
+
+# proves: S-108-9
+def test_s108_9_decline_posts_the_relay_then_closes_it_and_intake_reads_its_reason() -> None:
+    found = opportunity_issue()
+    hub = FakeHub(found)
+    assert run_opportunity(hub, "decline", reason="another tool covers it") == [URL]
+    assert hub.written == [("comment", relay("decline: another tool covers it")), ("close", "not planned")]
+    node = posted_node(found, relay("decline: another tool covers it"), closed=True)
+    read = ist().opportunity_state(node, "planned", answer.MARKER, BOT, MAINTAINERS)
+    assert read == ("DECLINED", "another tool covers it")
+
+
+def test_s108_9_a_decline_written_by_hand_reads_as_before() -> None:
+    found = opportunity_issue()
+    node = found.node([Comment("amy", "OWNER", "Not for now: the tool covers it.", at(30))])
+    node |= {"state": "CLOSED", "stateReason": "NOT_PLANNED", "closedAt": at(31)}
+    read = ist().opportunity_state(node, "planned", answer.MARKER, BOT, MAINTAINERS)
+    assert read == ("DECLINED", "Not for now: the tool covers it.")
+
+
+@pytest.mark.parametrize(
+    ("labels", "reason", "said"),
+    [
+        (("opportunity", "planned"), "no", "is accepted"),
+        (("opportunity",), None, "needs --reason"),
+        (("opportunity",), "  ", "is empty"),
+        (("opportunity",), "one\ntwo", "several lines"),
+    ],
+)
+def test_s108_9_a_decline_its_reader_wouldnt_count_is_refused(
+    labels: tuple[str, ...], reason: str | None, said: str
+) -> None:
+    hub = FakeHub(opportunity_issue(labels))
+    with pytest.raises(ReleaseError, match=said):
+        run_opportunity(hub, "decline", **({} if reason is None else {"reason": reason}))
+    assert hub.written == []
+
+
+def test_s108_11_an_opportunity_move_by_someone_else_is_refused() -> None:
+    hub = FakeHub(opportunity_issue())
+    with pytest.raises(ReleaseError, match="is not the maintainer"):
+        run_opportunity(hub, "decline", by="bob", reason="no")
+    assert hub.written == []
+
+
+def test_s108_12_a_failed_close_names_it_and_the_relays_url() -> None:
+    hub = FakeHub(opportunity_issue(), fail_label=1)
+    with pytest.raises(moves.StepFailed, match="but close: as not planned failed") as raised:
+        run_opportunity(hub, "decline", reason="no")
+    assert raised.value.code == 1
+
+
+def test_s108_12_decline_dry_run_prints_the_relay_and_the_close() -> None:
+    hub = FakeHub(opportunity_issue())
+    said = run_opportunity(hub, "decline", reason="no", dry_run=True)
+    assert said == [relay("decline: no"), "close: as not planned"]
+    assert hub.written == []

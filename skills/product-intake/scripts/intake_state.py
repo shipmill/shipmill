@@ -467,6 +467,7 @@ NOTHING = "nothing"  # `- nothing`: a list with no part
 # How a closed item closed, as a plan's PLAN_DONE note names it (spec 097)
 CLOSED_AS = {"COMPLETED": "completed", "NOT_PLANNED": "not planned", "DUPLICATE": "duplicate"}
 DECLINE = re.compile(r"^decline", re.IGNORECASE)
+RELAYED_DECLINE = re.compile(r"^decline:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE)  # spec 108's relayed decline
 # spec 098: a first line starting `hold until` is a hold, never an edit; its rest is one condition
 HOLD = re.compile(r"^hold\s+until(?![\w-])", re.IGNORECASE)
 HOLD_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -766,26 +767,36 @@ def timestamp(text: str) -> dt.datetime:
     return moment
 
 
-def decline_reason(issue: dict[str, Any], marker: str, bot_login: str | None = None) -> str | None:
+def decline_reason(
+    issue: dict[str, Any], marker: str, bot_login: str | None = None, maintainers: frozenset[str] = frozenset()
+) -> str | None:
     """The first line of the oldest comment that isn't a trusted triage comment, from an hour
     before the close on: the maintainer's reason, not a later reply on the closed issue; None
-    when there is none. Anyone else's `Triage:` comment is an ordinary comment here (#1384)"""
+    when there is none. Anyone else's `Triage:` comment is an ordinary comment here (#1384). The
+    --bot-login's relay of a maintainer's decline (D-68, D-115) gives its move's line, the text
+    after `decline:`, not its header (spec 108)"""
     closed = timestamp(issue["closedAt"]) - REASON_WINDOW
     for comment in issue["comments"]["nodes"]:
         triage = verdict(comment["body"], marker) is not None and PLANS.trusted(comment, bot_login)
         if not triage and timestamp(comment["createdAt"]) >= closed:
-            lines = [line.strip() for line in comment["body"].splitlines() if line.strip()]
+            relayed = relayed_answer(comment, bot_login, marker, maintainers)
+            lines = [line.strip() for line in (relayed or comment["body"]).splitlines() if line.strip()]
             if lines:
-                return lines[0]
+                found = RELAYED_DECLINE.match(lines[0]) if relayed is not None else None
+                return lines[0] if found is None else found.group(1)
     return None
 
 
 def opportunity_state(
-    issue: dict[str, Any], accepted: str, marker: str, bot_login: str | None = None
+    issue: dict[str, Any],
+    accepted: str,
+    marker: str,
+    bot_login: str | None = None,
+    maintainers: frozenset[str] = frozenset(),
 ) -> tuple[str, str]:
     if issue["state"] == "CLOSED":
         if issue["stateReason"] == "NOT_PLANNED":
-            reason = decline_reason(issue, marker, bot_login)
+            reason = decline_reason(issue, marker, bot_login, maintainers)
             return ("DECLINED", reason) if reason else ("NO_REASON", "closed as not planned with no comment")
         if issue["stateReason"] == "DUPLICATE":
             return "MERGED", "closed as a duplicate"
@@ -914,6 +925,7 @@ def fetch(
     autonomy: str,
     bot_login: str | None = None,
     run: Runner = gh_graphql,
+    maintainers: frozenset[str] = frozenset(),
 ) -> Intake:
     owner, name = split_repo(repo)
     base: Variables = {"owner": owner, "name": name}
@@ -953,7 +965,7 @@ def fetch(
                 feedback.append(Item(d["number"], "discussion", d["title"], thumbs_up, True, author=opener(d)))
     opportunities = []
     for issue in opps:
-        state, note = opportunity_state(issue, accepted, marker, bot_login)
+        state, note = opportunity_state(issue, accepted, marker, bot_login, maintainers)
         members = sorted(evidence(issue["body"], owner, name) - {issue["number"]})
         item = Item(issue["number"], "opportunity", issue["title"], issue["reactions"]["totalCount"])
         item.state, item.note, item.members = state, note, members
@@ -1902,7 +1914,9 @@ def plan_state(
             return None  # a replaced plan is no decline (spec 106)
         answer = plan_answer(issue, bot_login, marker, maintainers)
         reason = decline_text(answer) if answer is not None and answer.kind == "decline" else ""
-        reason = reason or decline_reason(issue, marker, bot_login) or "closed as not planned with no reason"
+        reason = (
+            reason or decline_reason(issue, marker, bot_login, maintainers) or "closed as not planned with no reason"
+        )
         return PlanRow(goal, "PLAN_DECLINED", title, reason, number, "plan")
     plan, problems = PLANS.parse(issue.get("body") or "", goals)
     if plan is None:
@@ -3439,8 +3453,8 @@ def main() -> int:
         action="append",
         default=[],
         metavar="NAME=FILLER[,FILLER...]",
-        help="with --plans: a role's resolved fillers, as `shipmill roles --flags` prints them; a relayed answer "
-        "counts only when it names a maintainer (D-68)",
+        help="with --plans: a role's resolved fillers, as `shipmill roles --flags` prints them; a relayed answer, "
+        "or a relayed opportunity decline (spec 108), counts only when it names a maintainer (D-68)",
     )
     parser.add_argument(
         "--stable-tag-regex",
@@ -3451,10 +3465,10 @@ def main() -> int:
     args = parser.parse_args()
     if not args.plans and args.wip is not None:
         parser.error("--wip goes with --plans")
-    if not (args.plans or args.projects or args.goals) and args.role:
-        parser.error("--role goes with --plans, --projects, or --goals")
     if args.wip is not None and args.wip < 1:
         parser.error("--wip must be at least 1")
+    if not (args.plans or args.projects or args.goals) and args.role:
+        parser.error("--role goes with --plans, --projects, or --goals")
     if args.bot_login is not None and not args.bot_login.strip():
         parser.error("--bot-login must not be empty")
     try:
@@ -3479,6 +3493,7 @@ def main() -> int:
         categories=set(args.category) if args.category else None,
         autonomy=autonomy,
         bot_login=args.bot_login,
+        maintainers=maintainers,
     )
     local_open = sum(1 for issue in intake.opportunity_issues if issue["state"] == "OPEN")
     outcomes = outcomes_in_flight(product, local_open, args.label, product_gh)

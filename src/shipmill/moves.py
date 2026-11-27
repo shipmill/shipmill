@@ -129,6 +129,7 @@ class Step:
     unlabel: bool
     add: str | None
     remove: str | None
+    close: bool = False  # a decline closes the opportunity as not planned
 
 
 class Hub(answer.Hub, Protocol):
@@ -138,6 +139,10 @@ class Hub(answer.Hub, Protocol):
 
     def projects(self, bot_login: str) -> Projects:
         """The heads as `intake_state.py --projects --json` reads them"""
+        ...
+
+    def close(self, item: answer.Item) -> None:
+        """Close the issue as not planned through shipmill gh; StepFailed with gh's code"""
         ...
 
 
@@ -244,8 +249,14 @@ def _labels(item: answer.Item, verb: Verb) -> None:
         raise ReleaseError(f"project #{item.number} isn't labelled `{HELD_LABEL}`, so there is no hold to lift")
 
 
-def _label_step(add: str | None, remove: str | None) -> str:
-    return f"label: add `{add}`" if add is not None else f"label: remove `{remove}`"
+def _next_step(step: Step) -> str:
+    if step.close:
+        return "close: as not planned"
+    if step.add is not None:
+        return f"label: add `{step.add}`"
+    if step.remove is not None:
+        return f"label: remove `{step.remove}`"
+    return "nothing more"
 
 
 def run(request: Request, hub: Hub, maintainers: frozenset[str], say: Callable[[str], None]) -> int:
@@ -255,20 +266,28 @@ def run(request: Request, hub: Hub, maintainers: frozenset[str], say: Callable[[
     step = compose(
         item, request, bot_login, maintainers, lambda: hub.projects(bot_login), lambda number: hub.item(number).open
     )
-    if request.dry_run:
+    return write(step, item, hub, request.dry_run, say)
+
+
+def write(step: Step, item: answer.Item, hub: Hub, dry_run: bool, say: Callable[[str], None]) -> int:
+    """Post the relay, then take needs-decision off when it answered a question, then the label
+    or the close; with dry_run print each step and write nothing"""
+    if dry_run:
         say(step.body)
         if step.unlabel:
             say(f"{answer.DECISION_LABEL}: comes off")
-        say(_label_step(step.add, step.remove))
+        say(_next_step(step))
         return 0
     url = hub.comment(item, step.body)
     try:
         if step.unlabel:
             hub.unlabel(item)
-        hub.label(item, step.add, step.remove)
+        if step.close:
+            hub.close(item)
+        elif step.add is not None or step.remove is not None:
+            hub.label(item, step.add, step.remove)
     except StepFailed as exc:
-        message = f"the relay is posted at {url}, but {_label_step(step.add, step.remove)} failed: {exc}"
-        raise StepFailed(message, exc.code) from None
+        raise StepFailed(f"the relay is posted at {url}, but {_next_step(step)} failed: {exc}", exc.code) from None
     except ReleaseError as exc:
         raise StepFailed(f"the relay is posted at {url}, but the next step failed: {exc}", 2) from None
     say(url)
@@ -370,3 +389,100 @@ def run_check(request: CheckRequest, hub: CheckHub, say: Callable[[str], None]) 
         ) from None
     say(url)
     return 0
+
+
+# -- opportunity moves (S-108-7 to S-108-9): the maintainer's accept and decline (D-115)
+
+OPPORTUNITY_LABEL = answer.OPPORTUNITY_LABEL
+PLANNED_LABEL = answer.ACCEPTED_LABEL
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityRequest:
+    verb: str  # accept or decline
+    number: int
+    by: str
+    goal: str | None = None
+    reason: str | None = None
+    note: str | None = None
+    relayed_by: str = answer.AGENT
+    dry_run: bool = False
+
+
+def compose_opportunity(
+    item: answer.Item,
+    request: OpportunityRequest,
+    bot_login: str,
+    maintainers: frozenset[str],
+    open_goals: Callable[[], frozenset[str]],
+) -> Step:
+    """The opportunity move's writes, refused (ReleaseError) for one its reader wouldn't count"""
+    _maintainer(request.by, maintainers)
+    where = f"opportunity {request.verb}"
+    if OPPORTUNITY_LABEL not in item.labels:
+        raise ReleaseError(f"#{item.number} isn't labelled `{OPPORTUNITY_LABEL}`, so {where} moves nothing")
+    if item.pull or not item.open:
+        what = "a pull request" if item.pull else "closed"
+        raise ReleaseError(f"#{item.number} is {what}, so {where} moves nothing")
+    planned = PLANNED_LABEL in item.labels
+    accepted = answer.Request(
+        answer.Kind.OPPORTUNITY,
+        item.number,
+        "accept",
+        request.by,
+        goal=request.goal,
+        note=request.note,
+        relayed_by=request.relayed_by,
+    )
+    if request.verb == "accept" and planned:  # spec 107's: the goal of an opportunity accepted already
+        composed = answer.compose(item, accepted, bot_login, maintainers, open_goals)
+        return Step(composed.body, composed.unlabel, None, None)
+    if answer.DECISION_LABEL in item.labels and answer.open_question(item, bot_login):
+        raise ReleaseError(
+            f"#{item.number} has an open needs-decision question, which a relay here would answer: answer it with "
+            f"`{cli_command()} decision answer {item.number}` first"
+        )
+    relay = Request(Verb.ADD, item.number, request.by, request.note, request.relayed_by)
+    intake = answer._intake()
+    if request.verb == "accept":
+        line = answer.opportunity_line(item, accepted, open_goals)
+        body = _relay(relay, line)
+        _read_back(item, body, line, bot_login, maintainers)
+        posted = answer.Comment(bot_login, "NONE", marked(body), answer._after(item))
+        expected = intake.NEW_GOAL if line == "accept new goal" else line.removeprefix("accept ")
+        if intake.accept_goal(item.node([posted]), answer.MARKER, bot_login, maintainers) != expected:
+            raise ReleaseError(f"opportunity #{item.number}'s reader names no goal from `{line}`; nothing was written")
+        return Step(body, False, PLANNED_LABEL, None)
+    if planned:
+        raise ReleaseError(
+            f"opportunity #{item.number} is accepted (`{PLANNED_LABEL}`): stop its project instead, with "
+            f"`{cli_command()} project stop`"
+        )
+    if request.reason is None:
+        raise ReleaseError("opportunity decline needs --reason, which intake keeps as why it was declined")
+    reason = answer._line("reason", request.reason)
+    line = f"decline: {reason}"
+    body = _relay(relay, line)
+    _read_back(item, body, line, bot_login, maintainers)
+    when = answer._after(item)
+    posted = answer.Comment(bot_login, "NONE", marked(body), when)
+    closed = {**item.node([posted]), "closedAt": when}
+    if intake.decline_reason(closed, answer.MARKER, bot_login, maintainers) != reason:
+        raise ReleaseError(
+            f"opportunity #{item.number}'s reader doesn't read `{reason}` as its reason; nothing written"
+        )
+    return Step(body, False, None, None, close=True)
+
+
+def run_opportunity(
+    request: OpportunityRequest,
+    hub: Hub,
+    maintainers: frozenset[str],
+    open_goals: Callable[[], frozenset[str]],
+    say: Callable[[str], None],
+) -> int:
+    """Read the opportunity, compose the move, post the relay, then add `planned` or close it"""
+    bot_login = hub.viewer()
+    item = hub.item(request.number)
+    step = compose_opportunity(item, request, bot_login, maintainers, open_goals)
+    return write(step, item, hub, request.dry_run, say)
