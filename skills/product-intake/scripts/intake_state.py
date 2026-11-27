@@ -467,6 +467,7 @@ NOTHING = "nothing"  # `- nothing`: a list with no part
 # How a closed item closed, as a plan's PLAN_DONE note names it (spec 097)
 CLOSED_AS = {"COMPLETED": "completed", "NOT_PLANNED": "not planned", "DUPLICATE": "duplicate"}
 DECLINE = re.compile(r"^decline", re.IGNORECASE)
+RELAYED_DECLINE = re.compile(r"^decline:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE)  # spec 108's relayed decline
 # spec 098: a first line starting `hold until` is a hold, never an edit; its rest is one condition
 HOLD = re.compile(r"^hold\s+until(?![\w-])", re.IGNORECASE)
 HOLD_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -769,15 +770,37 @@ def timestamp(text: str) -> dt.datetime:
 def decline_reason(issue: dict[str, Any], marker: str, bot_login: str | None = None) -> str | None:
     """The first line of the oldest comment that isn't a trusted triage comment, from an hour
     before the close on: the maintainer's reason, not a later reply on the closed issue; None
-    when there is none. Anyone else's `Triage:` comment is an ordinary comment here (#1384)"""
+    when there is none. Anyone else's `Triage:` comment is an ordinary comment here (#1384). A
+    --bot-login relay (spec 108, D-115) gives the text after `decline:` on its line after the
+    header, not the header: the close is the decision, and the relay only carries its reason"""
     closed = timestamp(issue["closedAt"]) - REASON_WINDOW
     for comment in issue["comments"]["nodes"]:
         triage = verdict(comment["body"], marker) is not None and PLANS.trusted(comment, bot_login)
         if not triage and timestamp(comment["createdAt"]) >= closed:
-            lines = [line.strip() for line in comment["body"].splitlines() if line.strip()]
+            relayed = relay_text(comment, bot_login)
+            lines = [line.strip() for line in (relayed or comment["body"]).splitlines() if line.strip()]
             if lines:
-                return lines[0]
+                found = RELAYED_DECLINE.match(lines[0]) if relayed is not None else None
+                return lines[0] if found is None else found.group(1)
     return None
+
+
+def relay_text(comment: dict[str, Any], bot_login: str | None) -> str | None:
+    """The text a --bot-login comment whose first line is a `Decision by` relay header carries:
+    from its next non-blank line up to a `Note:` line, the agent marker left out; None for any
+    other comment. Whom the header names is relayed_answer's to judge"""
+    if bot_login is None or PLANS.login(comment.get("author")).lower() != bot_login.lower():
+        return None
+    head, _, rest = (comment.get("body") or "").strip().partition("\n")
+    if DECISION_BY.match(head.strip()) is None:
+        return None
+    read: list[str] = []
+    for line in rest.splitlines():
+        if line.strip().casefold().startswith(NOTE_START):
+            break
+        if not AGENT_MARKER.fullmatch(line.strip()):
+            read.append(line)
+    return "\n".join(read).strip() or None
 
 
 def opportunity_state(

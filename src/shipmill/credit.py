@@ -465,18 +465,38 @@ def issue_authors(issues: Sequence[Filed]) -> list[Named]:
 
 def accepters(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-6: the accepters of the issues the pull request closes and their parents"""
-    return issue_accepters(reads, filed(reads, pull))
+    return issue_accepters(reads, filed(reads, pull), app)
 
 
-def issue_accepters(reads: CreditReads, issues: Sequence[Filed]) -> list[Named]:
+def relayed_accepter(comments: Sequence[Comment], app: str) -> Person | None:
+    """S-108-10: the person the App's newest relay of an accept names, its header
+    ``Decision by `@<login>` `` and its move's line starting `accept` (D-115); None without one"""
+    for comment in reversed(comments):
+        if comment.user is None or comment.user.login.lower() != app.lower():
+            continue
+        lines = [line.strip() for line in comment.body.splitlines() if line.strip()]
+        relayed = DECISION_BY.match(lines[0]) if len(lines) > 1 else None
+        if relayed is not None and lines[1].split()[0] == "accept":
+            return Person(relayed["bare"] or relayed["span"], False)
+    return None
+
+
+def issue_accepters(reads: CreditReads, issues: Sequence[Filed], app: str) -> list[Named]:
     """S-049-6: for each opportunity issue labelled planned, the person whose `labeled` event
-    added planned last, trusted by a write, maintain, or admin permission on the repo"""
+    added planned last, trusted by a write, maintain, or admin permission on the repo; when the
+    App added it (spec 108, D-115), the maintainer its relay of the accept names"""
     found: list[Named] = []
     for issue in issues:
         if not {OPPORTUNITY, PLANNED} <= issue.labels:
             continue
         added = reads.credit_labelers(issue.number, PLANNED)
         person = added[-1] if added else None
+        if person is not None and person.bot and person.login.lower() == app.lower():
+            relayed = relayed_accepter(reads.credit_comments(issue.number), app)
+            if relayed is not None:  # trusted as a hand label is, by the named person's permission
+                trusted = reads.credit_permission(relayed.login) in WRITERS
+                found.append(Named(relayed, trusted, f"accepted #{issue.number} ({PLANNED}, relayed)"))
+            continue
         if person is not None:
             trusted = not person.bot and reads.credit_permission(person.login) in WRITERS
             found.append(Named(person, trusted, f"accepted #{issue.number} ({PLANNED})"))
@@ -521,7 +541,7 @@ def issue_deciders(reads: CreditReads, issues: Sequence[Filed], app: str) -> lis
         (
             lambda: issue_answerers(reads, issues, app),
             lambda: issue_authors(issues),
-            lambda: issue_accepters(reads, issues),
+            lambda: issue_accepters(reads, issues, app),
         )
     )({app.lower()})
 
