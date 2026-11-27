@@ -3162,6 +3162,36 @@ class Started:
         return f"project #{self.head}: check waits on its work {self.progress}"
 
 
+class Work:
+    """#1802: a started project's work as project_work reads it: whether it is done, the head's
+    merged pull requests that count, whether one linked to it is open, and the note on its progress"""
+
+    def __init__(self, done: bool, merged: list[int], opened: bool, progress: str) -> None:
+        self.done, self.merged, self.opened, self.progress = done, merged, opened, progress
+
+
+def project_work(
+    head: dict[str, Any], parts: Sequence[dict[str, Any]], bot_login: str | None, unmerged: Callable[[int], bool]
+) -> Work:
+    """#1802, S-106-29: a started project's work is done once every part is closed, no pull
+    request linked to the head is open, and, with no part filed, one of them merged (the head
+    built like any issue, its PRs saying `Part of #<head>`). A merged PR whose revert the
+    --bot-login reopened the head over is no merged work while the revert stands, that is
+    unless ``unmerged`` says the revert was closed unmerged (spec 079, as classify_open reads
+    it), and the revert itself is no work of the head's. Read from the head's timelineItems
+    (linked_prs) and comments; intake_state.py --projects reads its heads with it too"""
+    standing = {n: r for n, r in reverts(head, bot_login).items() if not unmerged(r)}
+    prs = [p for p in linked_prs(head) if p[0] not in standing.values()]
+    merged = [n for n, s, _ in prs if s == "MERGED" and n not in standing]
+    open_parts = sum(1 for p in parts if p.get("state") == "OPEN")
+    opened = any(s == "OPEN" for _, s, _ in prs)
+    done = open_parts == 0 and not opened and bool(parts or merged)
+    progress = f"{open_parts} of {len(parts)} parts open"
+    if not parts:
+        progress = "no part filed, a PR open" if opened else f"no part filed, {len(merged)} PR merged"
+    return Work(done, merged, opened, progress)
+
+
 def started_projects(
     issues: list[dict[str, Any]],
     repo: tuple[str, str],
@@ -3195,19 +3225,9 @@ def started_projects(
         number = int(check["number"])
         inner = ((by_number.get(number) or {}).get("subIssues") or {}).get("nodes") or []
         parts = [s for s in subs if not is_check(s)] + list(inner)
-        standing = {
-            n: r for n, r in reverts(head, bot_login).items() if (states or {}).get((*repo, r)) != "CLOSED_UNMERGED"
-        }
-        prs = [p for p in linked_prs(head) if p[0] not in standing.values()]
-        merged = [n for n, s, _ in prs if s == "MERGED" and n not in standing]
-        open_parts = sum(1 for p in parts if p.get("state") == "OPEN")
-        opened = any(s == "OPEN" for _, s, _ in prs)
-        done = open_parts == 0 and not opened and bool(parts or merged)
-        ends = [str(p["closedAt"]) for p in parts if p.get("closedAt")] + merge_times(head, merged)
-        progress = f"({open_parts} of {len(parts)} parts open)" if parts else "(no part filed)"
-        if not parts:
-            progress = "(no part filed, a PR open)" if opened else f"(no part filed, {len(merged)} PR merged)"
-        started = Started(int(head["number"]), number, done, ends, progress)
+        work = project_work(head, parts, bot_login, lambda r: (states or {}).get((*repo, r)) == "CLOSED_UNMERGED")
+        ends = [str(p["closedAt"]) for p in parts if p.get("closedAt")] + merge_times(head, work.merged)
+        started = Started(int(head["number"]), number, work.done, ends, f"({work.progress})")
         found[started.head] = started
         found.setdefault(number, started)
     return found

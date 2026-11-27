@@ -110,7 +110,7 @@ will be true>` with a `## Check` section someone other than the builder can run,
 | held | the head has no check issue yet, or is labelled `held` |
 | active | the head and its check issue are open, and a part is open or none is filed yet |
 | in focus | active and labelled `focus` |
-| closing | every part is closed and the check issue is open, for someone other than the builder to run |
+| closing | the project's work is done (every part closed, no pull request on the head open, and with no part filed one merged) and the check issue is open, for someone other than the builder to run |
 | closed | the head closed as completed |
 | stopped | the head closed as not planned with the App's stop record |
 

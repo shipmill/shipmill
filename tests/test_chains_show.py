@@ -123,11 +123,23 @@ class Forge:
         }
         if not native:
             return fields
+        children = self.connection(item.get("children", []))
+        for child in children["nodes"]:  # a sub-issue's title and body (S-106-30)
+            known = self.items.get(key(f"{child['repository']['nameWithOwner']}#{child['number']}"), {})
+            child |= {"title": known.get("title", ""), "body": known.get("body", "")}
+        parent = None
+        if item.get("parent"):  # a parent's state and labels (S-106-30)
+            parent = self.related(item["parent"]) | {
+                "labels": {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [{"name": n} for n in self.items[key(item["parent"])].get("labels", ())],
+                }
+            }
         return fields | {
             "blockedBy": self.connection(item.get("blocked_by", []), more=more == "blockedBy"),
-            "subIssues": self.connection(item.get("children", [])),
+            "subIssues": children,
             "blocking": self.connection(item.get("blocking", []), states=False),
-            "parent": self.related(item["parent"], states=False) if item.get("parent") else None,
+            "parent": parent,
         }
 
     def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:

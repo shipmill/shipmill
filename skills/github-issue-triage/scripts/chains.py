@@ -217,11 +217,14 @@ from triage_state import (
     DEPENDENCY,
     DEPENDS,
     MAINTAINER,
+    PROJECT_HELD_LABEL,
+    PROJECT_LABEL,
     STRICT_REF,
     TRUSTED,
     UPSTREAM_LABEL,
     dependency_refs,
     depends_lines,
+    is_check,
     item_roles,
     login,
     malformed_dependencies,
@@ -314,11 +317,18 @@ LINKED = "pageInfo { hasNextPage } nodes { number repository { nameWithOwner } }
 # The forge's relations, asked for until it refuses them (a GitHub Enterprise Server
 # without issue dependencies or sub-issues): then the walk reads text holds alone
 NATIVE_SHOW = ("blockedBy", "subIssues", "blocking", "parent")
+# a sub-issue's title and body tell a project's check issue (S-106-29), and a parent's state
+# and labels a started project's head, which no walk reads as held on its check issue
+SUB = "pageInfo { hasNextPage } nodes { number state stateReason title body repository { nameWithOwner } }"
+PARENT = (
+    "number state repository { nameWithOwner } "
+    f"labels(first: {LINKS}) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}"
+)
 NATIVE_ITEM = f"""
         blockedBy(first: {LINKS}) {{ {HELD} }}
-        subIssues(first: {LINKS}) {{ {HELD} }}
+        subIssues(first: {LINKS}) {{ {SUB} }}
         blocking(first: {LINKS}) {{ {LINKED} }}
-        parent {{ number repository {{ nameWithOwner }} }}"""
+        parent {{ {PARENT} }}"""
 NATIVE_NAMED = re.compile(r"\b(?:" + "|".join(NATIVE_SHOW) + r")\b")
 CLOSERS = "closedByPullRequestsReferences"  # the pull requests that close an issue (spec 086)
 CLOSING = "pageInfo { hasNextPage } nodes { state updatedAt }"
@@ -1015,6 +1025,23 @@ def connection(node: dict[str, Any], field: str, ref: Ref) -> list[dict[str, Any
     return nodes
 
 
+def started_head(node: dict[str, Any], labels: set[str]) -> bool:
+    """S-106-29, as triage_state.py's started_projects reads one: an open head labelled
+    `project` and not `held`, whose open check issue of its repo (own_check) it is never held on"""
+    return node.get("state") == "OPEN" and PROJECT_LABEL in labels and PROJECT_HELD_LABEL not in labels
+
+
+def own_check(node: dict[str, Any], head: Ref) -> bool:
+    """An open check issue (spec 042: titled `Check: `, a `## Check` section) in head's repo;
+    a head and its check issue in different repos read as any parent and sub-issue (S-106-29)"""
+    return node.get("state") == "OPEN" and is_check(node) and ref_of(node).same_repo(head.owner, head.name)
+
+
+def parent_labels(parent: dict[str, Any], ref: Ref) -> set[str]:
+    """A sub-issue's parent's label names; none when the parent was read without them"""
+    return {str(n["name"]) for n in connection(parent, "labels", ref)} if "labels" in parent else set()
+
+
 def parse_item(node: dict[str, Any], reader: Reader) -> Item:
     ref = ref_of(node)
     title = str(node["title"])
@@ -1049,9 +1076,14 @@ def parse_item(node: dict[str, Any], reader: Reader) -> Item:
         hold = Ref(owner, name, number)
         holds[hold.key] = (holds.get(hold.key, (hold, None))[0], state)  # the text's spelling, GitHub's state
     holds.pop(ref.key, None)
+    if "subIssues" in node and started_head(node, labels):  # S-106-29: never held on its check issue
+        for sub in node["subIssues"]["nodes"]:
+            if own_check(sub, ref):
+                holds.pop(ref_of(sub).key, None)
     waiting = [ref_of(n) for n in connection(node, "blocking", ref)] if "blocking" in node else []
-    if node.get("parent"):
-        waiting.append(ref_of(node["parent"]))
+    parent = node.get("parent")
+    if parent and not (own_check(node, ref_of(parent)) and started_head(parent, parent_labels(parent, ref))):
+        waiting.append(ref_of(parent))
     downstream = {r.key: r for r in waiting if r.key != ref.key}
     milestone = node["milestone"]
     if milestone is not None and not (isinstance(milestone, dict) and isinstance(milestone.get("title"), str)):
