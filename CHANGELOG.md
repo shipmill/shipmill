@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.192.0] - 2026-11-27
+
+### Fixed
+
+- `retro.py dedupe` also searches the closed issues by each title's words, and a proposal whose title matches one closed as not planned reads `DECLINED` (a `declined` field in `--json`, exit 1) so the weekly retro no longer reopens a declined `Direction: G-n met` or `stalled` proposal; one closed as completed still reads NEW (#1765)
+- An issue labelled `postponed` with no `Triage:` comment by an OWNER, MEMBER, or COLLABORATOR or the `--bot-login` reads NEW in `triage_state.py`, its note `postponed label without a triage comment`, so a session triages it instead of skipping it for good; `intake_state.py` reads the label the same way, and an issue postponed with a trusted triage comment reads POSTPONED or REVISIT as before (#1766)
+
+### Changed
+
+- `pr_gate.py` refuses an agent's pull request whose plan's `Serves:` names none of the goals the newest trusted `Triage:` verdict of an issue it closes or is `Part of` names (`Serves: quality bar` included), read from the issue threads it already reads; a verdict naming no goal accepts the plan as before. github-issue-resolve, triaging an issue itself, reads the direction's Goals and Non-goals and applies triage's rule (#1767)
+
+### Added
+
+- Commands that write the maintainer's answer a session heard, in the form its reader counts, as `shipmill gh` writes, and remove `needs-decision`: `shipmill decision answer <n> <option>|--own`, `shipmill goal-plan answer <n> accept|decline|hold|send-back`, `shipmill project continue|hold|stop <n>`, and `shipmill opportunity accept <n> G-<n>|new`, each with `--by <login>`; each refuses before writing any answer its reader wouldn't count (spec 107, #1783)
+- `shipmill project add|focus|unfocus|resume <n> --by <login>` record the maintainer's move on a project as a relay, then move its label (`project`, `focus`, `held`), and `shipmill project hold` now labels the head `held` after its comment; each refuses a move the head's reader wouldn't count, and `resume` waits for a free slot under `[agents] projects` (spec 108, #1810)
+
 ## [0.191.0] - 2026-11-27
 
 ### Changed
@@ -3315,7 +3331,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.191.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.192.0...HEAD
+[0.192.0]: https://github.com/shipmill/shipmill/compare/v0.191.0...v0.192.0
 [0.191.0]: https://github.com/shipmill/shipmill/compare/v0.190.1...v0.191.0
 [0.190.1]: https://github.com/shipmill/shipmill/compare/v0.190.0...v0.190.1
 [0.190.0]: https://github.com/shipmill/shipmill/compare/v0.189.0...v0.190.0
