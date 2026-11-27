@@ -114,6 +114,8 @@ elif args[:1] == ["api"] and "/commits/" in joined:  # base_red.py: a green defa
     print(json.dumps({"sha": "c" * 40, "statuses": [], "total_count": 0}) if "/status?" in joined else "")
 elif args[:1] == ["api"] and "/issues?" in joined:  # base_red.py's open items, the direction issues
     print("")
+elif args[:1] == ["api"] and re.fullmatch(r"repos/o/r/issues/\\d+", args[1]):  # #1831: an item's labels
+    print("[]")
 else:
     sys.stderr.write("unexpected gh call: " + joined + "\\n")
     sys.exit(1)
@@ -292,3 +294,62 @@ def test_1469_the_item_rule_is_shipmill_status_own(ws: ModuleType) -> None:
     assert ws.OWN_NUMBER.pattern == item_status.OWN_NUMBER.pattern
     whole = {"HOLD", "NEEDS_DECISION", "PRS_OPEN", "PRS_PARKED"}  # what item_status reads whole
     assert whole == ws.ITEM_WHOLE
+
+
+@pytest.mark.parametrize(
+    ("item", "labels", "plans"),
+    [
+        ("G-3", None, True),  # a goal reads GOAL_STATE and the PLANS row naming it
+        (12, [], False),
+        (12, ["bug", "project", "held"], False),  # a project head reads PROJECT_STATE, from --projects
+        (12, ["goal-plan"], True),
+        (12, ["goal-proposal"], True),
+        (12, ["opportunity", "planned"], True),  # ACCEPTED_INTO or SPEC_DUE, which --plans decides
+    ],
+)
+def test_1831_an_item_read_reads_plans_and_goals_only_for_an_item_they_can_name(
+    ws: ModuleType, item: int | str, labels: list[str] | None, plans: bool
+) -> None:
+    asked: list[list[str]] = []
+
+    def read(cmd: list[str]) -> str:
+        asked.append(cmd)
+        return json.dumps(labels)
+
+    assert ws.item_plans("o/r", item, read) is plans
+    assert asked == ([] if labels is None else [["gh", "api", "repos/o/r/issues/12", "--jq", "[.labels[].name]"]])
+
+
+def test_1831_an_unreadable_label_list_stops_the_item_read(ws: ModuleType) -> None:
+    with pytest.raises(ws.Refused, match="o/r#12's labels"):
+        ws.item_plans("o/r", 12, lambda cmd: json.dumps({"labels": "bug"}))
+
+
+def test_1831_an_item_read_of_the_heads_alone_runs_intake_state_with_projects(ws: ModuleType, tmp_path: Path) -> None:
+    asked: list[list[str]] = []
+
+    def execute(cmd: list[str], cwd: Path | None, env: dict[str, str] | None) -> subprocess.CompletedProcess[str]:
+        asked.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    ws.intake_run("o/r", tmp_path, True, "t", BOT, 3, execute, roles=["maintainer=amy"], projects_only=True)
+    want = [str(ws.INTAKE_STATE), "o/r", "--projects", "--json", "--tool", "t", "--bot-login", BOT]
+    assert asked[-1][1:] == [*want, "--role", "maintainer=amy"]  # no --wip: it goes with --plans
+    ws.intake_run("o/r", tmp_path, False, "t", BOT, 3, execute, projects_only=True)  # no direction: no flag
+    assert asked[-1][1:] == [str(ws.INTAKE_STATE), "o/r", "--json", "--bot-login", BOT]
+
+
+def test_1831_an_item_read_in_a_planned_checkout_reads_no_plan_goal_or_retro(tmp_path: Path) -> None:
+    """With docs/product.md, an item no plan or goal row can name runs intake_state.py with
+    --projects alone: --plans would read the goals through uvx, which fails here"""
+    host = Host(tmp_path)
+    (tmp_path / "fakes" / "uvx").write_text(f"#!{sys.executable}\nimport sys\nsys.exit('uvx was run')\n")
+    (tmp_path / "fakes" / "uvx").chmod(0o700)
+    (host.work / "docs").mkdir()
+    (host.work / "docs" / "product.md").write_text("# Direction\n", encoding="utf-8")
+    item, calls = host.watch("--item", "12")
+    assert item.returncode in (0, 1), item.stderr
+    assert ["api", "repos/o/r/issues/12", "--jq", "[.labels[].name]"] in calls
+    assert any(r["subject"] == "ISSUES NEW #12" for r in map(json.loads, item.stdout.splitlines()))
+    full, _ = host.watch()
+    assert full.returncode == 2 and "uvx was run" in full.stderr  # the full report reads the plans
