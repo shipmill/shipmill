@@ -3,7 +3,8 @@ then verb: a project head's add, focus, unfocus, and resume, and hold's `held` l
 107's comment.
 
 Each is the maintainer's: the App's relay naming them comes first, in spec 107's form, then the
-label, both through `shipmill gh`'s path. The head is read as `intake_state.py --projects` reads
+label, both through `shipmill gh`'s path; a label the repository lacks is created before either
+(#1828). The head is read as `intake_state.py --projects` reads
 it, so a move its reader wouldn't count, or that would read otherwise than meant, is refused
 before any write."""
 
@@ -46,6 +47,13 @@ LABELS: dict[Verb, tuple[str | None, str | None]] = {
     Verb.UNFOCUS: (None, FOCUS_LABEL),
     Verb.HOLD: (HELD_LABEL, None),
     Verb.RESUME: (None, HELD_LABEL),
+}
+# Each label a move adds, as it creates it in a repository that lacks it (#1828): (color, description)
+LOOKS: dict[str, tuple[str, str]] = {
+    PROJECT_LABEL: ("5319e7", "A project head the maintainer added (spec 106)"),
+    FOCUS_LABEL: ("fbca04", "A project head the maintainer put in focus (spec 108)"),
+    HELD_LABEL: ("d93f0b", "A project head the maintainer put on hold (spec 108)"),
+    answer.ACCEPTED_LABEL: ("1d76db", "Accepted opportunity, goes through the spec gate"),
 }
 
 
@@ -143,6 +151,15 @@ class Hub(answer.Hub, Protocol):
 
     def close(self, item: answer.Item) -> None:
         """Close the issue as not planned through shipmill gh; StepFailed with gh's code"""
+        ...
+
+    def repo_labels(self) -> frozenset[str]:
+        """The names of the repository's labels"""
+        ...
+
+    def create_label(self, name: str, color: str, description: str) -> None:
+        """Create the label through shipmill gh, one a concurrent run created meanwhile counting
+        as made; ReleaseError when it fails, before any other write"""
         ...
 
 
@@ -270,14 +287,21 @@ def run(request: Request, hub: Hub, maintainers: frozenset[str], say: Callable[[
 
 
 def write(step: Step, item: answer.Item, hub: Hub, dry_run: bool, say: Callable[[str], None]) -> int:
-    """Post the relay, then take needs-decision off when it answered a question, then the label
-    or the close; with dry_run print each step and write nothing"""
+    """Create the label the move adds when the repository lacks it (#1828), then post the relay,
+    then take needs-decision off when it answered a question, then the label or the close; with
+    dry_run print each step and write nothing"""
+    names = {name.lower() for name in hub.repo_labels()} if step.add is not None else set()
+    missing = step.add if step.add is not None and step.add.lower() not in names else None  # GitHub ignores case
     if dry_run:
+        if missing is not None:
+            say(f"label: create `{missing}`")
         say(step.body)
         if step.unlabel:
             say(f"{answer.DECISION_LABEL}: comes off")
         say(_next_step(step))
         return 0
+    if missing is not None:  # before the relay, so a label it can't make writes nothing
+        hub.create_label(missing, *LOOKS[missing])
     url = hub.comment(item, step.body)
     try:
         if step.unlabel:
