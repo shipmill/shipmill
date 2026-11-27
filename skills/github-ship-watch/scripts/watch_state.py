@@ -304,7 +304,10 @@ Intake (github-issue-triage's triage_state.py):
                   projects, and its overdue plans (PROJECT_STATE), as ids, numbers, states,
                   and dates; `shipmill status --item` reads them. --item takes a goal id
                   (G-3) too, which reads these rows, a hold, the gate's pause, and the PLANS
-                  row naming the goal
+                  row naming the goal. An --item read of a number runs intake_state.py with
+                  --projects alone, so no plan, goal, or retro is read, unless the item is
+                  labelled goal-plan, goal-proposal, or opportunity, or --trusted-only is
+                  given (#1831)
   SPEC_DUE        from the same intake_state.py run (spec 074): `ACCEPTED #N ...`, every
                   opportunity the maintainer accepted that triage hasn't taken, oldest first;
                   the session runs github-issue-triage's spec gate on each. An agent's row at
@@ -4298,19 +4301,23 @@ def intake_run(
     wip: int | None = None,
     execute: Spawn = spawn,
     roles: Sequence[str] = (),
+    projects_only: bool = False,
 ) -> str:
     """intake_state.py --json's lines, run once per repo in the checkout, where it reads the
     config (spec 074). With plans (a checkout with docs/product.md, spec 028) it runs with
     --plans, --goals, and --projects (spec 106: each goal's state and the project heads, whose
     actions are the PLANS row's too) and reads the direction with `shipmill product show` (the plugin's pinned version,
     or --tool's when a person passed one), with wip as --wip and each of roles as a --role, so
-    a relayed answer naming a maintainer counts (D-68); without, none of those flags. A failure
+    a relayed answer naming a maintainer counts (D-68); without, none of those flags. With
+    projects_only beside plans, --projects alone, still with --tool and the roles: an --item
+    read of an item no plan or goal row can name (#1831). A failure
     (exit 2) stops the watch, save the pinned shipmill's "no version" error, which it has
     retried already: that raises PypiWait (#597)"""
-    cmd = [sys.executable, str(INTAKE_STATE), repo, *(["--plans", "--goals", "--projects"] if plans else []), "--json"]
+    flags = (["--projects"] if projects_only else ["--plans", "--goals", "--projects"]) if plans else []
+    cmd = [sys.executable, str(INTAKE_STATE), repo, *flags, "--json"]
     if plans:
         cmd += ["--tool", tool] if tool is not None else []
-        cmd += ["--wip", str(wip)] if wip is not None else []
+        cmd += ["--wip", str(wip)] if wip is not None and not projects_only else []
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     cmd += [item for value in roles for item in ("--role", value)] if plans else []
     proc = execute(cmd, repo_dir, None)
@@ -7633,6 +7640,28 @@ def item_row(row: Row, number: int | str) -> bool:
     return names_item(row, number) and (row.state in GATE_WAITS or bool(row.json()["agent"]))
 
 
+# #1831: the labels of the items intake_state.py's --plans and --goals rows can name: a plan
+# (its PLANS, PLAN_STATE, PLAN_HELD, and PLAN_FILED parts), a goal proposal (GOAL_STATE), and
+# an opportunity (accepted into a goal's plan, ACCEPTED_INTO rather than SPEC_DUE)
+PLAN_ROW_LABELS = frozenset({"goal-plan", "goal-proposal", OPPORTUNITY_LABEL})
+
+
+def item_labels(repo: str, number: int, read: Callable[[list[str]], str] = run) -> frozenset[str]:
+    """The labels of the issue or pull request numbered number, one REST read"""
+    found = json.loads(read(["gh", "api", f"repos/{repo}/issues/{number}", "--jq", "[.labels[].name]"]))
+    if not isinstance(found, list) or not all(isinstance(n, str) for n in found):
+        raise Refused(f"error: gh api printed {str(found)[:200]} for {repo}#{number}'s labels")
+    return frozenset(found)
+
+
+def item_plans(repo: str, item: int | str, read: Callable[[list[str]], str] = run) -> bool:
+    """#1831: whether an --item read runs intake_state.py with --plans and --goals, the reads of
+    the plans, the goals, and the retro: for a goal id, or an item labelled one of
+    PLAN_ROW_LABELS; any other item reads the project heads alone, as no other row of theirs
+    can name it"""
+    return isinstance(item, str) or bool(item_labels(repo, item, read) & PLAN_ROW_LABELS)
+
+
 def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> list[Row]:
     """--item's rows (#1469): the full report's rows less the sections no row item_row keeps
     can come from, each kept one read as report_rows reads it, the independent ones at once,
@@ -7643,13 +7672,11 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
     out, as their agent's rows never name a #N: BOT_FAILED and OPERATE_FAILED (a run's URL),
     WORK_BRANCH_STALE and NOT_PUBLISHED (a branch or a tag), and the upstream reports
     (owner/repo#N). BOT_STALLED, whose
-    reason is the planner's, is read only with a release due"""
-    view = json.loads(run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef,deleteBranchOnMerge"]))
+    reason is the planner's, is read only with a release due. The triage read, the longest,
+    and an intake read of the heads alone start before the default branch's read and fetch,
+    which neither needs (#1831)"""
     policy = policy_file(repo_dir)
     text = None if policy is None else (repo_dir / policy).read_text(encoding="utf-8")
-    default = view["defaultBranchRef"]["name"]
-    branch = landing_branch(text, POLICY, default)
-    fetch_landing(repo_dir, branch)
     read = None if policy is None or text is None else config(text, policy, args.incident_label)
     table = None if policy is None or text is None else agents_table(text, policy)
     planned = (repo_dir / DIRECTION).is_file()
@@ -7667,11 +7694,18 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         revert = "observe" if read is None else read.revert
         return base_red_rows(args.repo, repo_dir, default, args.bot_login, revert)
 
-    def intake_lines() -> str | PypiWait:
+    def intake_lines(projects_only: bool) -> str | PypiWait:
         wip = plan_wip(table, POLICY) if planned else None
         try:
             return intake_run(
-                args.repo, repo_dir, planned, args.tool, args.bot_login, wip, roles=args.role if planned else ()
+                args.repo,
+                repo_dir,
+                planned,
+                args.tool,
+                args.bot_login,
+                wip,
+                roles=args.role if planned else (),
+                projects_only=projects_only,
             )
         except PypiWait as wait:
             return wait
@@ -7681,12 +7715,21 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         return triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        bot_read = pool.submit(stalled)
-        base_read = pool.submit(base_red)
-        intake_read = pool.submit(intake_lines)
         # with --trusted-only, PyPI's wait for the plans' shipmill leaves the issues and the pull
         # requests unread (D-16), so neither starts before the intake's lines say it's read
         triage_read = None if args.trusted_only else pool.submit(triage)
+        # #1831: with --trusted-only the plans' read is what keeps an outsider's plan in UNTRUSTED (D-16)
+        projects_only = planned and not args.trusted_only and not item_plans(args.repo, args.item)
+        # the heads alone start now; the plans' read runs retro.py, which checks the checkout
+        # against origin/HEAD, so it starts after the fetch, as in the full report
+        early = pool.submit(intake_lines, True) if projects_only else None
+        view = json.loads(run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef,deleteBranchOnMerge"]))
+        default = view["defaultBranchRef"]["name"]
+        branch = landing_branch(text, POLICY, default)
+        fetch_landing(repo_dir, branch)
+        intake_read = early if early is not None else pool.submit(intake_lines, False)
+        bot_read = pool.submit(stalled)
+        base_read = pool.submit(base_red)
         idle_read = pool.submit(gate_wait_rows, args.repo, repo_dir, now)
 
         def pulls() -> IntakeReads:
