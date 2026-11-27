@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.4] - 2026-11-27
+
+### Fixed
+
+- `intake_state.py --plans` reads spec 027's goal report (`retro.py gather --goals`): a goal the report reads stalled gets a `stalled` plan, waiting for room under `--wip` like `no-work`, a goal whose measure it reads met gets no `no-work` plan, and a report that can't be read exits 2 (#1764)
+
 ## [0.193.3] - 2026-11-27
 
 ### Fixed
@@ -3359,7 +3365,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.3...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.4...HEAD
+[0.193.4]: https://github.com/shipmill/shipmill/compare/v0.193.3...v0.193.4
 [0.193.3]: https://github.com/shipmill/shipmill/compare/v0.193.2...v0.193.3
 [0.193.2]: https://github.com/shipmill/shipmill/compare/v0.193.1...v0.193.2
 [0.193.1]: https://github.com/shipmill/shipmill/compare/v0.193.0...v0.193.1
