@@ -143,12 +143,19 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
                                      opened by an OWNER, MEMBER, or COLLABORATOR or the
                                      --bot-login, under plan #P of the goal); never for a
                                      goal whose newest plan was closed as not planned or
-                                     reads PLAN_DONE (spec 097: the outcome comes first)
-                    stalled          spec 027's report says the goal is stalled; spec 027
-                                     isn't built yet, so this trigger never fires
+                                     reads PLAN_DONE (spec 097: the outcome comes first),
+                                     nor for a goal whose measure spec 027's report reads
+                                     met
+                    stalled          spec 027's report says the goal is stalled, whatever
+                                     serves it and after a declined plan too
   PLAN_WAITS        with --wip N, a no-work or stalled trigger holds while
                     `triage_state.py --wip N` reports no room left; the note is the
                     trigger and "waits for room". A request never waits
+Spec 027's report is `retro.py gather <repo> --goals --checkout <the current directory>
+--json` (github-ship-watch's, with the --bot-login as --bot), run once, and only when a goal
+reaches the stalled and no-work triggers; a gather that fails (a checkout not at
+origin/HEAD among its causes), a report without the direction, a goal it leaves out, or one
+it lists malformed exits 2, never read as not stalled (#1764).
 A goal the direction records as met or dropped (its `state`, spec 106) reads no trigger, not
 even a request's. A goal whose `kind` is measure (spec 105, a standing measure) is planned only on request:
 it reads `requested in #N` alone, never a no-work or stalled PLAN_DUE or PLAN_WAITS. A goal
@@ -240,7 +247,7 @@ Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_R
 OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, PLAN_HOLD_MET, or PLAN_MALFORMED
 (PLAN_HELD and HELD are no action), 2 on bad input (an
 issue with more than 100 labels, a malformed config or goals, an existing item naming no
-issue) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
+issue) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx and git.
 Python 3.10+, standard library only.
 """
 
@@ -418,6 +425,8 @@ Runner = Callable[[str, Variables], dict[str, Any]]
 PLAN_LABEL = "goal-plan"
 WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
 TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
+RETRO = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "retro.py"  # spec 027's report
+REPORT_STATUSES = ("met", "not met", "no data", "no measure")  # retro.py's, a goal's measure status
 PLAN_ITEM = re.compile(r"^<!-- shipmill:plan-item #([1-9][0-9]*) W-[1-9][0-9]* -->$")
 GOAL_ID = re.compile(r"(?<![\w-])G-[1-9][0-9]*(?![\w-])")
 SERVES = re.compile(r"(?<![\w-])Serves:[ \t]*(G-[1-9][0-9]*(?:[ \t]*,[ \t]*G-[1-9][0-9]*)*)")
@@ -1071,6 +1080,18 @@ GoalsReader = Callable[[], list[Goal]]
 RoomReader = Callable[[int], int]
 
 
+@dataclass(frozen=True)
+class GoalReport:
+    """What spec 027's report says of one goal: its measure met this week, and stalled"""
+
+    met: bool
+    stalled: bool
+
+
+# Reads spec 027's report per goal, by goal id
+ReportReader = Callable[[], dict[str, GoalReport]]
+
+
 def parse_goals(text: str) -> list[Goal]:
     """`shipmill product show --section goals --json`'s output, strictly; a goal's `kind`
     (spec 105) is `goal`, `measure`, or null, and its `state` (spec 106) `met`, `dropped`, or
@@ -1180,6 +1201,53 @@ def triage_room(repo: str, bot_login: str | None, script: Path = TRIAGE_STATE) -
     return read
 
 
+def parse_goal_report(text: str) -> dict[str, GoalReport]:
+    """`retro.py gather --goals --json`'s report per goal (spec 027), strictly: each goal's id,
+    its measure's status, and whether it is stalled. A report that can't be read exits 2 naming
+    why, never read as "not stalled" (#1764)"""
+    try:
+        record = json.loads(text)
+    except json.JSONDecodeError as exc:
+        fail(f"retro.py gather --goals printed no JSON: {exc}")
+    goals = record.get("goals") if isinstance(record, dict) else None
+    if not isinstance(goals, dict):
+        fail("retro.py gather --goals --json printed no `goals` report")
+    if goals.get("direction") is not True:
+        fail("retro.py gather --goals read no direction (docs/product.md) in the checkout --plans reads")
+    listed = goals.get("goals")
+    if not isinstance(listed, list):
+        fail("retro.py gather --goals --json printed no `goals` list")
+    found: dict[str, GoalReport] = {}
+    for entry in listed:
+        ident = entry.get("id") if isinstance(entry, dict) else None
+        status = entry.get("status") if isinstance(entry, dict) else None
+        stalled = entry.get("stalled") if isinstance(entry, dict) else None
+        well_formed = isinstance(ident, str) and GOAL_ID.fullmatch(ident) is not None and ident not in found
+        if not well_formed or status not in REPORT_STATUSES or not isinstance(stalled, bool):
+            fail(f"retro.py gather --goals --json listed a goal it doesn't report as spec 027 says: {entry!r}")
+        found[ident] = GoalReport(status == "met", stalled)
+    return found
+
+
+def retro_report(repo: str, bot_login: str | None, checkout: Path, script: Path = RETRO) -> ReportReader:
+    """The default report reader: `retro.py gather <repo> --goals --checkout <checkout> --json`,
+    spec 027's report, with the --bot-login as --bot so the App's verdicts count (D-29); a gather
+    that fails (a checkout not at origin/HEAD, a gh failure) exits 2 naming it"""
+
+    def read() -> dict[str, GoalReport]:
+        cmd = [sys.executable, str(script), "gather", repo, "--goals", "--checkout", str(checkout), "--json"]
+        cmd += ["--bot", bot_login] if bot_login else []
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            fail(
+                f"retro.py gather --goals failed with exit {proc.returncode}: {proc.stderr.strip()}; "
+                "--plans reads spec 027's report from it"
+            )
+        return parse_goal_report(proc.stdout)
+
+    return read
+
+
 def goal_ids(text: str) -> set[str]:
     return set(GOAL_ID.findall(text))
 
@@ -1240,12 +1308,16 @@ def plan_rows(
     maintainers: frozenset[str] = frozenset(),
     checked: set[str] | None = None,
     into: dict[str, tuple[int, dt.datetime]] | None = None,
+    report: ReportReader | None = None,
 ) -> list[PlanRow]:
     """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has; a
     PLAN_DUE row's dropped lists the items the goal's earlier plans dropped (spec 096). After
     the goal's newest plan closed as completed with a trusted outcome, the row follows it (its
     note ends `; follows #P`, with the outcome's `Still missing:` items); without an outcome,
-    that plan reads PLAN_DONE and no `no-work` row is read for its goal (spec 097)"""
+    that plan reads PLAN_DONE and no `no-work` row is read for its goal (spec 097). report is
+    spec 027's report, read once and only when a goal reaches the `stalled` and `no-work`
+    triggers: a goal it reads stalled reads `stalled`, and one whose measure it reads met reads
+    no `no-work` (#1764); main always passes it, and without one neither is read"""
     listed = {g.id for g in goals}
     cut = dropped_items(plan_issues, frozenset(listed), marker, bot_login, maintainers)
     plans_of: dict[int, str] = {}  # each plan issue's goal
@@ -1320,6 +1392,7 @@ def plan_rows(
 
     found: list[PlanRow] = []
     left: int | None = None  # the room under --wip, read once and only when a goal waits on it
+    reports: dict[str, GoalReport] | None = None  # spec 027's report, read once and only when needed
     for goal in goals:
         if goal.state is not None:  # S-106-3: a met or dropped goal reads no trigger, a request's either
             continue
@@ -1336,10 +1409,18 @@ def plan_rows(
             continue
         if goal.kind == "measure":  # spec 105: a standing measure is planned only on request
             continue
-        # `stalled` reads spec 027's report, which isn't built: until it is, it never fires
-        if goal.id in served or goal.id in declined or goal.id in finished:  # the outcome comes first
-            continue
-        trigger = "no-work"
+        reading = GoalReport(met=False, stalled=False)
+        if report is not None:  # spec 027's report (#1764): a goal it leaves out can't be read
+            reports = report() if reports is None else reports
+            if goal.id not in reports:
+                fail(f"retro.py gather --goals reported no {goal.id}, a goal the direction lists")
+            reading = reports[goal.id]
+        if reading.stalled:  # spec 028: a stalled goal is planned again, after a decline too
+            trigger = "stalled"
+        elif goal.id in served or goal.id in declined or goal.id in finished or reading.met:
+            continue  # the outcome comes first, and a goal spec 027 reports met needs no work (spec 028)
+        else:
+            trigger = "no-work"
         if wip is not None:
             left = room(wip) if left is None else left
             if left <= 0:
@@ -2153,11 +2234,13 @@ def fetch_plans(
     checked: set[str] | None = None,
     into: dict[str, tuple[int, dt.datetime]] | None = None,
     opportunities: dict[int, set[str]] | None = None,
+    report: ReportReader | None = None,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
     than PAGE, for each accepted plan its items' issues, and for each held plan its item, or
-    the tags once (spec 098); triage_state.py only when a goal waits on --wip"""
+    the tags once (spec 098); triage_state.py only when a goal waits on --wip, and spec 027's
+    report only when a goal reaches the `stalled` and `no-work` triggers (#1764)"""
     owner, name = split_repo(repo)
     if holds is None:
         holds = gh_holds(repo, run, now or dt.datetime.now(UTC), stable)
@@ -2196,6 +2279,7 @@ def fetch_plans(
         room=room,
         checked=checked,
         into=into,
+        report=report,
     )
     found = by_goal + by_issue
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
@@ -3505,6 +3589,7 @@ def main() -> int:
             bot_login=args.bot_login,
             wip=args.wip,
             room=triage_room(args.repo, args.bot_login),
+            report=retro_report(args.repo, args.bot_login, Path.cwd().resolve()),
             maintainers=maintainers,
             holds=gh_holds(args.repo, gh_graphql_unreadable, dt.datetime.now(UTC), stable),
         )
