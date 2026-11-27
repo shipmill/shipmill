@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.1] - 2026-11-27
+
+### Fixed
+
+- `shipmill status --item` and `shipmill queue` no longer show the maintainer as the holder of an accepted goal plan whose kept items all have another parent: the watch carries such a plan in a report-only PLAN_FILED row, `#N(another parent: #a, #b)`, that starts no session, and the plan reads as waiting on those open items, then on product intake once its work has closed (PLAN_DONE) (#1724)
+- A started project's head is no longer held on its own check issue: a head with no parts is built like any issue, its pull requests saying `Part of #<head>`, and once its work is done it reads BLOCKED on its check; the check issue reads BLOCKED until then and VERIFY_DUE after, never NEW, and product intake reads no check issue as feedback (spec 106, S-106-29, #1802)
+
 ## [0.193.0] - 2026-11-27
 
 ### Added
@@ -3339,7 +3346,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.1...HEAD
+[0.193.1]: https://github.com/shipmill/shipmill/compare/v0.193.0...v0.193.1
 [0.193.0]: https://github.com/shipmill/shipmill/compare/v0.192.0...v0.193.0
 [0.192.0]: https://github.com/shipmill/shipmill/compare/v0.191.0...v0.192.0
 [0.191.0]: https://github.com/shipmill/shipmill/compare/v0.190.1...v0.191.0
