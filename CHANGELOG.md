@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.190.1] - 2026-11-27
+
+### Fixed
+
+- Product intake no longer lists a filed plan item, or an issue labelled `project`, as NEW_FEEDBACK until triage gives it a verdict: an issue whose body's first line is the plan-item marker, written by the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR, is the maintainer's accepted work, and an outsider's copy of the marker changes nothing (#1774)
+
 ## [0.190.0] - 2026-11-27
 
 ### Added
@@ -3303,7 +3309,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.190.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.190.1...HEAD
+[0.190.1]: https://github.com/shipmill/shipmill/compare/v0.190.0...v0.190.1
 [0.190.0]: https://github.com/shipmill/shipmill/compare/v0.189.0...v0.190.0
 [0.189.0]: https://github.com/shipmill/shipmill/compare/v0.188.0...v0.189.0
 [0.188.0]: https://github.com/shipmill/shipmill/compare/v0.187.0...v0.188.0
