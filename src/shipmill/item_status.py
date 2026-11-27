@@ -657,7 +657,7 @@ def head_condition(facts: Facts, head: HeadState, product: Projects) -> Conditio
         )
     if head.state == "PROJECT_CLOSING":
         return Condition(
-            f"closing: every part is closed, and {check} waits to be run",
+            f"closing: its work is done, and {check} waits to be run",
             Who.PERSON,
             f"someone other than the builder runs {check} and closes it",
         )
@@ -890,6 +890,9 @@ def assigned_to_maintainer(facts: Facts, issue: Issue) -> bool:
 
 
 HELD_PROJECT = re.compile(r"project #(?P<head>[1-9]\d*) held")
+# S-106-29: triage_state.py's notes on a started project's check issue and head
+CHECK_WAITS = re.compile(r"project #(?P<head>[1-9]\d*): check waits on its work(?: \((?P<progress>[^)]*)\))?")
+CHECK_DUE = re.compile(r"project #(?P<head>[1-9]\d*): check #(?P<check>[1-9]\d*) due\b.*")
 
 
 def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
@@ -899,7 +902,8 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
     head = product.heads.get(issue.number)
     found = None if head is None else head_condition(facts, head, product)
     if found is not None:
-        held = issue.state == "BLOCKED" and HELD_PROJECT.fullmatch(issue.note) is not None
+        # a held head's note, and a done project's (its closing state says so), add nothing
+        held = issue.state == "BLOCKED" and any(r.fullmatch(issue.note) for r in (HELD_PROJECT, CHECK_DUE))
         return [found, *([] if held else state_conditions(facts, issue))]
     proposal = goal_states(facts)[1].get(issue.number)
     if proposal is not None:
@@ -946,6 +950,27 @@ def state_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                     Who.EVENT,
                     f"project #{head} starting; {facts.command} status --item {head} says what it waits for",
                     where=Holder.POSTPONED,
+                )
+            )
+        work = CHECK_WAITS.fullmatch(note)
+        if work is not None:  # S-106-29: a started project's check issue waits on the project's work
+            head, progress = work["head"], work["progress"]
+            found.append(
+                Condition(
+                    f"project #{head}'s check: waits on its work" + (f" ({progress})" if progress else ""),
+                    Who.AGENT,
+                    f"#{head}'s parts closing and its pull requests merging; "
+                    f"{facts.command} status --item {head} says what holds it",
+                    where=Holder.POSTPONED,
+                )
+            )
+        due = CHECK_DUE.fullmatch(note)
+        if due is not None:  # S-106-29: a done project's head waits on its check
+            found.append(
+                Condition(
+                    f"its project's work is done: waits on check #{due['check']}",
+                    Who.PERSON,
+                    f"someone other than the builder runs check #{due['check']} and closes it",
                 )
             )
         if note == "labelled blocked":

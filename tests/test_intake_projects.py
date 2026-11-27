@@ -390,8 +390,9 @@ def test_s106_28_the_run_counts_the_homes_product(tmp_path: Path) -> None:
 def test_s106_12_the_project_reads_cost_a_few_points(ist: ModuleType) -> None:
     """A page of heads with their sub-issues and those sub-issues' own, and the pull requests
     closing them, cost 258 points before the pages shrank (#1741's review); pinned, as
-    tests/test_intake_cost.py pins intake's other queries (#1459)"""
-    assert worst_case(ist.OPEN_HEADS, {}) == (4760, 5)  # the checkout's open heads, a page of 10
+    tests/test_intake_cost.py pins intake's other queries (#1459). An open head's linked pull
+    requests (S-106-29) add 50 nodes a head and, for three repos, a point"""
+    assert worst_case(ist.OPEN_HEADS, {}) == (5260, 5)  # the checkout's open heads, a page of 10
     assert worst_case(ist.CLOSED_HEADS, {}) == (1710, 1)  # a check issue's parts as counts
     assert worst_case(ist.heads_query(["o/a"]), {})[1] == 1  # a product count, per repo
-    assert worst_case(ist.heads_query(["o/a", "o/b", "o/c"]), {})[1] == 3
+    assert worst_case(ist.heads_query(["o/a", "o/b", "o/c"]), {})[1] == 4

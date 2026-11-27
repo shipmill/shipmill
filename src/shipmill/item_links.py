@@ -23,6 +23,10 @@ WAIT = re.compile(r"(?P<ref>[\w.-]+/[\w.-]+#\d+):(?P<state>\w+)")  # item_status
 MENTIONS = re.compile(r"^(?:@[\w.-]+(?:/[\w.-]+)?[\s,]*)+")
 LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")  # C0, DEL, and C1: a comment's escape sequence never reaches the terminal
+# triage_state.py's notes on a started project (S-106-29): its check issue waits on the head's
+# work, and once the work is done the head waits on its due check
+PROJECT_WORK = re.compile(r"project #(?P<head>[1-9]\d*): check waits on its work\b")
+PROJECT_DUE = re.compile(r"project #[1-9]\d*: check #(?P<check>[1-9]\d*) due\b")
 WAITING_STATES = frozenset({"BLOCKED", "CYCLE"})  # chains.py show's open issue held by an open item
 CHAIN_BUCKET = {"BLOCKED": "parked", "CYCLE": "to triage"}  # the picture's line for each (ISSUE_LINES)
 
@@ -283,7 +287,9 @@ def chain_holds(text: str) -> Holds:
 
 def local_holds(repo: str, notes: Sequence[tuple[int, str, str]]) -> Holds:
     """This repo's BLOCKED issues from triage_state.py's notes (`owner/repo#5:open`), the
-    Depends on lines a walk from the item can't find, since GitHub records no reverse of one"""
+    Depends on lines a walk from the item can't find, since GitHub records no reverse of one;
+    and a started project's (S-106-29): its check issue held on its head until the work is
+    done, then the head on its check issue, which no walk reads as the head's hold"""
     found: Holds = {}
     for number, state, note in notes:
         if state != "BLOCKED":
@@ -293,6 +299,9 @@ def local_holds(repo: str, notes: Sequence[tuple[int, str, str]]) -> Holds:
             for w in WAIT.finditer(note)
             if w["state"].lower() not in ("closed", "merged", "not_planned")
         )
+        project = PROJECT_WORK.match(note) or PROJECT_DUE.match(note)
+        if project is not None:
+            holds += (ItemRef(repo, int(project.group(1))),)
         if holds:
             ref = ItemRef(repo, number)
             found[ref.key] = (ref, state, holds)

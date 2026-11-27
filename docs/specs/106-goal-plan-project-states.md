@@ -139,7 +139,7 @@ other sub-issues and the check issue's sub-issues, two levels deep. Issues not l
 | held | the head is open and has no check issue, or is labelled `held` | its start (a free slot, its turn, no overdue plan) |
 | active | the head is open, its check issue open, and a part open or none filed yet | agents and the maintainer's steps |
 | in focus | active and labelled `focus` | the maintainer's steps first |
-| closing | the check issue is open and every part is closed | someone other than the builder, who runs the check |
+| closing | the check issue is open and the project's work is done (S-106-29): every part is closed, no pull request linked to the head is open, and with no part filed one merged | someone other than the builder, who runs the check |
 | closed | the head is closed as completed | none |
 | stopped | the head is closed as not planned with a trusted stop record (below) | none |
 
@@ -186,6 +186,15 @@ null), and `parts` (open and closed counts). A closing row's note lists the unch
   Triage never reads that check issue as new work, and product intake reads no sub-issue
   titled `Check: ` with a `## Check` section as feedback to group. A head and its check issue
   in different repos read as before
+- **Every reader reads a started project so.** `intake_state.py --projects` reads its work as
+  `triage_state.py` does, from the pull requests linked to each open head (a closing keyword,
+  `Part of #<head>`, or a link by hand), in the checkout's read and the product count, so a
+  head whose work is done reads PROJECT_CLOSING and counts nothing against `[agents] projects`;
+  a head with more cross-references than the read's page is refused, never read done. Those
+  pull requests move the tree's last update. `chains.py show` never reads a started head as
+  held on its own check issue, and `shipmill status --item` reads triage's notes for the
+  direction: the check issue waits on the head while the work runs, then the head on its due
+  check
 - **A held project is not split into issues.** `triage_state.py` reads a head in held, and
   each open sub-issue under it, as BLOCKED with the note `project #<head> held`, so no spec,
   build issue, or implementer starts for it
@@ -279,6 +288,7 @@ idle questions reach it as any needs-decision item does.
 - S-106-27: `docs/flow.md` and the skills' references give the states, the labels (`project`, `held`, `focus`, `goal-proposal`, `goal-review`), and the markers this spec adds
 - S-106-28: a config with `[product] home` that sets `[agents] projects` is refused with a message naming the home; in a home `intake_state.py --projects` counts the active and in-focus heads of the home and of every repo its `[product] repos` lists, reading other repos through `shipmill gh --product`, one call per owner, and in a component it reads the limit from the home's config on its default branch and counts the same set; a read that fails exits 2 naming the repo; the second line reads `projects active: K of N (product <owner/home>)` and `--json`'s first line carries `projects` with `limit`, `active`, and `room`
 - S-106-29: on a started project whose head has no parts, `triage_state.py` reads the head NEEDS_PR once it has an implement verdict, never held on its check issue, and the check issue BLOCKED `project #<head>: check waits on its work`, never NEW; once a `Part of #<head>` pull request merged and none is open (or, with parts, every part closed) the check issue reads VERIFY_DUE and the head BLOCKED `project #<head>: check #<check> due`; `intake_state.py` reads no sub-issue titled `Check: ` with a `## Check` section as NEW_FEEDBACK
+- S-106-30: `intake_state.py --projects` reads a started head with no parts PROJECT_ACTIVE until a pull request linked to it merged with none open, then PROJECT_CLOSING, and a head whose parts are closed but whose own pull request is open PROJECT_ACTIVE with `, a PR open` in its note, a merged pull request reverted by the `--bot-login`'s record counting for nothing, in the checkout's read and the product count; `chains.py show` lists no started head as held on its own check issue in its repo, a held head's and another repo's reading as before; and `shipmill status --item` on the check issue prints no `blocks:` naming the head while the work runs, and on the head names the check issue as waiting on it
 
 ## Out of scope
 
@@ -318,6 +328,7 @@ idle questions reach it as any needs-decision item does.
 - shipmill/shipmill#1742: S-106-10, S-106-22, S-106-23, S-106-24
 - shipmill/shipmill#1743: S-106-25, S-106-26, S-106-27
 - shipmill/shipmill#1802: S-106-29
+- shipmill/shipmill#1823: S-106-30
 
 ## Verification
 
@@ -355,3 +366,4 @@ running the tests named below, every one whose name carries its criterion's id
 - S-106-27: docs/flow.md's "Goals, plans, and projects" and product-intake's plan.md give the states, the five labels, and the three markers, the names intake_state.py reads (`test_s106_27_the_labels_and_markers_are_documented`, `test_s106_27_flow_gives_each_state`, `test_s106_27_the_documented_names_are_the_ones_intake_reads`); holds
 - S-106-28: a component setting `[agents] projects` is refused naming its home; the home counts its own and its repos' active and in-focus heads, one call per owner, a component reads the limit from its home, a failed read exits 2 naming the repo, and the text and `--json` carry the count (`test_s106_28_the_product_counts_active_and_focus_heads_one_call_per_owner`, `test_s106_28_a_product_count_reads_a_check_issues_parts_as_counts`, `test_s106_28_a_failed_read_exits_2_naming_the_repo`, `test_s106_28_without_the_key_nothing_is_read`, `test_s106_28_a_component_reads_the_limit_from_its_home`, `test_s106_28_a_component_that_sets_projects_is_refused_naming_the_home`, `test_s106_28_the_run_counts_the_homes_product`, `test_s106_28_a_component_that_sets_the_projects_limit_is_refused_naming_the_home`, `test_s106_28_the_home_and_a_lone_repo_keep_their_projects_limit`); holds
 - S-106-29: a started project's head is built like any issue, its check issue waits on its work and then reads by its `## Check`, and no check issue is feedback (`test_s106_29_a_head_with_no_parts_is_built_like_any_issue_not_held_on_its_check`, `test_s106_29_the_check_is_due_once_the_heads_part_of_prs_merged`, `test_s106_29_a_head_with_parts_waits_on_them_and_then_on_its_check`, `test_s106_29_a_due_check_still_waits_on_its_own_holds`, `test_s106_29_the_run_reads_a_started_project`, `test_s106_29_a_reverted_part_of_pr_is_no_done_work`, `test_s106_29_a_project_check_issue_is_no_feedback`); holds
+- S-106-30: intake reads a started project's work from its head's linked pull requests, the walk drops the head's hold on its own check issue, and `--item` reads the direction from triage's notes (`test_s106_30_a_head_with_no_parts_reads_closing_once_its_part_of_pr_merged`, `test_s106_30_a_head_with_parts_closes_once_they_closed_and_no_pr_of_its_is_open`, `test_s106_30_a_reverted_pr_is_no_done_work_while_its_revert_stands`, `test_s106_30_a_head_read_without_its_prs_or_with_more_than_a_page`, `test_s106_30_a_done_head_of_another_repo_counts_nothing`, `test_s106_30_a_pr_linked_to_the_head_moves_its_tree`, `test_s106_30_the_walk_never_holds_a_started_head_on_its_check`, `test_s106_30_a_held_head_another_repos_check_or_no_project_reads_as_before`, `test_s106_30_the_check_issue_waits_on_the_heads_work_not_the_head_on_it`, `test_s106_30_a_done_projects_head_waits_on_its_check`); holds

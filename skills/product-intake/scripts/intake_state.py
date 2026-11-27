@@ -2580,18 +2580,32 @@ STOP_ANSWER = re.compile(r"^stop\.?$", re.IGNORECASE)
 # the pull requests that close the head or one of its sub-issues, read for an open head of the
 # checkout's own only (the idle read); a part's pull request moves the part's own updatedAt
 LINKED = "closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { updatedAt } }"
+# S-106-29: the pull requests linked to an open head of the checkout's own, as triage_state.py's
+# linked_prs reads them (a closing keyword, a `Part of #<head>`, or a link by hand), its work
+# done once they merged; a head with more refuses the read
+HEAD_PRS = 50
+WORK = (
+    f"prs: timelineItems(itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT], first: {HEAD_PRS}) {{"
+    " pageInfo { hasNextPage } nodes {"
+    " ... on CrossReferencedEvent { willCloseTarget isCrossRepository"
+    " source { ... on PullRequest { number state title body mergedAt updatedAt } } }"
+    " ... on ConnectedEvent { subject { ... on PullRequest { number state mergedAt updatedAt } } } } }"
+)
 
 
-def head_fields(linked: str, summary: bool = False) -> str:
+def head_fields(linked: str, summary: bool = False, work: bool = True) -> str:
     """A head's fields, as GraphQL text; linked adds the head's and its sub-issues' pull requests;
-    summary reads each sub-issue's own sub-issues as counts (subIssuesSummary), no connection"""
+    work the head's linked ones (WORK); summary reads each sub-issue's own sub-issues as counts
+    (subIssuesSummary), no connection"""
     parts = (
         "subIssuesSummary { total completed }"
         if summary
         else f"subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state updatedAt }} }}"
     )
+    work_fields = WORK if work else ""
     return f"""
 number title body state stateReason createdAt closedAt author {{ __typename login }} authorAssociation {linked}
+{work_fields}
 parent {{ number }}
 labels(first: 100) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
 timelineItems(itemTypes: [LABELED_EVENT], first: 20) {{
@@ -2611,8 +2625,9 @@ subIssues(first: {PROJECT_SUBS}) {{
 # a closed head's and a product count's: the states alone, a check issue's parts as counts, so
 # an owner's repos cost a point or two (a part closed as not planned that GitHub doesn't count
 # completed leaves the head active: counted, never a slot given away)
-COUNT_FIELDS = head_fields("", summary=True)
+COUNT_FIELDS = head_fields("", summary=True)  # an open head's of another repo of the product
 LOCAL_FIELDS = head_fields(LINKED)  # an open head's of the checkout's own
+CLOSED_FIELDS = head_fields("", summary=True, work=False)  # a closed head's: its work is no longer read
 
 
 def projects_query(states: str, fields: str) -> str:
@@ -2627,7 +2642,7 @@ def projects_query(states: str, fields: str) -> str:
 
 
 OPEN_HEADS = projects_query("OPEN", LOCAL_FIELDS)
-CLOSED_HEADS = projects_query("CLOSED", COUNT_FIELDS)
+CLOSED_HEADS = projects_query("CLOSED", CLOSED_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -2747,6 +2762,42 @@ def stopped(head: dict[str, Any], bot_login: str | None) -> str | None:
     return None
 
 
+def triage_module() -> ModuleType:
+    """github-issue-triage's triage_state.py, loaded once: a project's work as triage reads it"""
+    loaded = sys.modules.get("shipmill_triage_state")
+    if loaded is not None:
+        return loaded
+    spec = importlib.util.spec_from_file_location("shipmill_triage_state", TRIAGE_STATE)
+    if spec is None or spec.loader is None:
+        fail(f"can't load {TRIAGE_STATE}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+def head_work(head: dict[str, Any], parts: list[dict[str, Any]], bot_login: str | None) -> Any:
+    """S-106-29: a started project's work as triage_state.py's started_projects reads it
+    (project_work), from the head's linked pull requests (WORK) and comments; None for a head
+    read without them (a closed head's). A revert is read closed unmerged
+    only when the head links it so; otherwise its merged pull request counts for nothing"""
+    prs = head.get("prs")
+    if prs is None:
+        return None
+    if (prs.get("pageInfo") or {}).get("hasNextPage"):
+        fail(f"project #{head['number']} has more than {HEAD_PRS} cross-references, more than intake_state.py reads")
+    nodes = prs.get("nodes") or []
+    closed = {
+        int(pr["number"])
+        for node in nodes
+        for pr in [node.get("subject", node.get("source")) or {}]
+        if pr.get("state") == "CLOSED" and pr.get("number") is not None
+    }
+    view = {"number": head["number"], "timelineItems": {"nodes": nodes}, "comments": head.get("comments") or {}}
+    view["comments"] = {"nodes": view["comments"].get("nodes") or []}
+    return triage_module().project_work(view, parts, bot_login, lambda revert: revert in closed)
+
+
 def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | None:
     """S-106-12: the state a head reads, None for an issue that is no head (not labelled
     `project`, or not by a trusted author) and for a head closed otherwise than completed or
@@ -2800,10 +2851,17 @@ def project_row(head: dict[str, Any], bot_login: str | None) -> ProjectRow | Non
         return row("PROJECT_HELD", "no check issue")
     if check["state"] != "OPEN":  # checked, but the head is still open: whoever closes it next
         return row("PROJECT_CLOSING", f"check #{check_number} closed; the head is open")
-    if all_parts and open_parts == 0:
+    done_parts = parts
+    if counted is not None:  # the check issue's parts as counts: as many closed and open parts
+        shut = int(counted["completed"])
+        done_parts = parts + [{"state": "CLOSED"}] * shut + [{"state": "OPEN"}] * (int(counted["total"]) - shut)
+    work = head_work(head, done_parts, bot_login)
+    if (all_parts and open_parts == 0) if work is None else work.done:  # S-106-29: its work done
         return row("PROJECT_CLOSING", cleanup_note(check.get("body") or ""))
     focus = PROJECT_FOCUS_LABEL in names
     note = f"{open_parts} of {all_parts} parts open" if all_parts else "no part filed"
+    if work is not None and work.opened and open_parts == 0:  # S-106-29: a pull request on the head is open
+        note += ", a PR open"
     return row("PROJECT_FOCUS" if focus else "PROJECT_ACTIVE", note)
 
 
@@ -2856,6 +2914,15 @@ def tree_updated(head: dict[str, Any], bot_login: str | None) -> dt.datetime:
         return [timestamp(p["updatedAt"]) for p in refs]
 
     times += linked(head)
+    nodes = (head.get("prs") or {}).get("nodes") or []
+    # the pull requests linked to the head as triage_state.py's linked_prs reads them; one that
+    # only mentions it, or one of another repo, is no work of the head's
+    view = {"number": head["number"], "timelineItems": {"nodes": nodes}}
+    own = {n for n, _, _ in triage_module().linked_prs(view)} if nodes else set()
+    for node in nodes:
+        pr = node.get("subject", node.get("source")) or {}
+        if pr.get("number") in own and pr.get("updatedAt"):
+            times.append(timestamp(pr["updatedAt"]))
     for sub in (head.get("subIssues") or {}).get("nodes") or []:
         times += [timestamp(sub["updatedAt"]), *linked(sub)]
         for part in (sub.get("subIssues") or {}).get("nodes") or []:

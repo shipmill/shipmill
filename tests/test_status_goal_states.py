@@ -149,7 +149,7 @@ def test_s106_25_a_held_project_names_what_it_waits_for(ws: ModuleType, ist: Mod
 def test_s106_25_an_open_head_names_its_state(ws: ModuleType, ist: ModuleType) -> None:
     found = read(ws, ist)
     assert conditions(found, 55)[0] == (
-        "closing: every part is closed, and check #72 waits to be run",
+        "closing: its work is done, and check #72 waits to be run",
         Who.PERSON,
         "someone other than the builder runs check #72 and closes it",
     )
