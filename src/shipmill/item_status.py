@@ -282,6 +282,17 @@ PLAN_HOLD_MET_WAITS = Condition(
 )
 PLAN_HELD = "PLAN_HELD"
 HELD_PART = re.compile(r"#([1-9]\d*) until (\S+)")
+# #1724: an accepted plan whose kept items have another parent (D-114) has no children, and
+# the watch's PLAN_FILED row, `#N(another parent: #a, #b); ...`, names those items
+PLAN_FILED = "PLAN_FILED"
+FILED_PART = re.compile(r"#(?P<number>[1-9]\d*)\(another parent: (?P<items>#[1-9]\d*(?:, #[1-9]\d*)*)\)")
+# spec 097: an accepted plan whose work closed is product intake's, to post its outcome
+PLAN_DONE = "PLAN_DONE "
+PLAN_DONE_WAITS = Condition(
+    "triaged as plan and its work closed: waits on product intake to post its outcome",
+    Who.AGENT,
+    "a product intake pass posts the plan's outcome and closes it",
+)
 SPEC_DUE = "SPEC_DUE"  # watch_state.py's row `ACCEPTED #N ...`: intake_state.py's ACCEPTED opportunities (spec 074)
 # #1643: a request triaged as an opportunity that no open opportunity issue names yet is product
 # intake's to group, not the maintainer's to accept
@@ -341,6 +352,47 @@ def plans_hold_met(facts: Facts) -> frozenset[int]:
         if part.startswith(PLAN_HOLD_MET)
         for n in OWN_NUMBER.findall(part)
     )
+
+
+def plans_done(facts: Facts) -> frozenset[int]:
+    """Spec 097: the plans intake_state.py reads PLAN_DONE (accepted, every issue of its work
+    closed), as the watch's PLANS row names them in its PLAN_DONE part"""
+    return frozenset(
+        int(n)
+        for r in facts.rows
+        if r.state == PLANS
+        for part in r.detail.split("; ")
+        if part.startswith(PLAN_DONE)
+        for n in OWN_NUMBER.findall(part)
+    )
+
+
+def plans_filed(facts: Facts) -> dict[int, tuple[int, ...]]:
+    """#1724: the accepted plans intake_state.py reads PLAN_FILED, each with its kept items
+    that have another parent, from the watch's PLAN_FILED row; no read of its own"""
+    found: dict[int, tuple[int, ...]] = {}
+    for part in parts_of(facts, PLAN_FILED):
+        filed = FILED_PART.fullmatch(part)
+        if filed is None:
+            raise unreadable(PLAN_FILED, part)
+        found[int(filed["number"])] = tuple(int(n) for n in OWN_NUMBER.findall(filed["items"]))
+    return found
+
+
+def filed_waits(facts: Facts, items: tuple[int, ...]) -> list[Condition]:
+    """#1724: an accepted plan with no children waits on its open items with another parent,
+    each an event, as a plan moving through its children does (S-094-4); the open ones are
+    those triage_state.py reads a line for, and all of them when it reads none"""
+    opened = {i.number for i in facts.issues if i.state not in CLOSED_STATES and not i.closed}
+    return [
+        Condition(
+            f"triaged as plan and accepted: waits on #{n}, an item with another parent, closing",
+            Who.EVENT,
+            f"#{n} closing; {facts.command} status --item {n} says what holds it",
+            where=Holder.POSTPONED,
+        )
+        for n in ([n for n in items if n in opened] or items)
+    ]
 
 
 def plans_held(facts: Facts) -> dict[int, str]:
@@ -961,6 +1013,11 @@ def state_conditions(facts: Facts, issue: Issue) -> list[Condition]:
             return [PLAN_ACCEPTED_WAITS]
         if issue.verdict == "plan" and issue.number in plans_hold_met(facts):
             return [PLAN_HOLD_MET_WAITS]
+        if issue.verdict == "plan" and issue.number in plans_done(facts):
+            return [PLAN_DONE_WAITS]
+        filed = plans_filed(facts).get(issue.number) if issue.verdict == "plan" else None
+        if filed is not None:  # #1724: accepted, its items another parent's: never the maintainer's
+            return filed_waits(facts, filed)
         held = plans_held(facts).get(issue.number) if issue.verdict == "plan" else None
         if held is not None:
             return [held_waits(held)]

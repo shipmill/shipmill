@@ -286,7 +286,13 @@ Intake (github-issue-triage's triage_state.py):
                   accept asked" (spec 096) is in no plan row: its question is
                   NEEDS_DECISION's while it waits. A plan intake_state.py reads
                   PLAN_OVERDUE, past its answer date (spec 106), is in this row too
-  PLAN_HELD       in an --item read only (spec 098, S-098-13), from the same run: the
+  PLAN_FILED      from the same run (#1724): the accepted plans intake_state.py reads
+                  PLAN_FILED whose note names kept items with another parent (D-114), each
+                  `#N(another parent: #a, #b)`, trusted as PLAN_OPEN; `shipmill status
+                  --item` and queue read what such a plan waits on from it. Report-only,
+                  never an action or an agent's, and in no --tier or --sweep read; the
+                  PLANS row still lists no filed plan (S-096-13)
+  PLAN_HELD      in an --item read only (spec 098, S-098-13), from the same run: the
                   plan issues intake_state.py reads PLAN_HELD, each `#N until <condition>`
                   as its hold names it, trusted as PLAN_OPEN; `shipmill status --item`
                   reads a held plan's condition from it. The full report lists no held
@@ -721,6 +727,11 @@ PLAN_OVERDUE = "PLAN_OVERDUE"
 # keeps the two equal)
 PLAN_OPEN = "PLAN_OPEN"
 PLAN_OPEN_FIX = "answer the goal plan"
+# #1724: the report-only row of the accepted plans intake_state.py reads PLAN_FILED whose kept
+# items of this repo have another parent (D-114, so none is the plan's child), each
+# `#N(another parent: #a, #b)` from its note; no session, no tier, no action
+PLAN_FILED = "PLAN_FILED"
+ANOTHER_PARENT = re.compile(r"(?:^|; )another parent: (#[1-9]\d*(?:, #[1-9]\d*)*)(?:; |$)")
 # Spec 098: intake_state.py's held plans, `#N until <condition>`, read in an --item read only
 PLAN_HELD = "PLAN_HELD"
 HELD_UNTIL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}|release|(?:[\w.-]+/[\w.-]+)?#[1-9][0-9]*", re.IGNORECASE)
@@ -4501,6 +4512,33 @@ def plans_held(text: str, repo: str, bot_login: str | None = None, trusted_only:
     return [Row(PLAN_HELD, repo, "; ".join(held))] if held else []
 
 
+def plans_filed(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> list[Row]:
+    """#1724: PLAN_FILED from intake_state.py --plans --json's lines, the accepted plans it reads
+    PLAN_FILED whose note names kept items of this repo with another parent (D-114: named, never
+    the plan's sub-issues), each `#N(another parent: #a, #b)`, trusted as plans_waiting trusts a
+    plan (D-16); `shipmill status --item` and queue read what such a plan waits on from it.
+    Report-only: no action, no agent's, and in no --tier or --sweep read, so no session starts
+    for it, and S-096-13's PLANS row still lists no filed plan. A note naming another parent in
+    any other form is refused, so no issue's text reaches the row"""
+    filed: list[str] = []
+    for line in text.splitlines():
+        row = plan_line(line)
+        if row is None or row["kind"] != "plan" or row["state"] != PLAN_FILED:
+            continue
+        note, association = str(row.get("note") or ""), row.get("association")
+        if association is not None and not isinstance(association, str):
+            raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+        found = ANOTHER_PARENT.search(note)
+        if found is None:
+            if "another parent:" in note:
+                raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+            continue
+        ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+        if ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS):
+            filed.append(f"#{row['number']}(another parent: {found.group(1)})")
+    return [Row(PLAN_FILED, repo, "; ".join(filed))] if filed else []
+
+
 def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> list[Row]:
     """S-106-25: in an --item read only, from intake_state.py --plans --goals --projects --json's
     lines, the rows `shipmill status --item` reads a goal's, a plan's, and a project head's
@@ -7484,7 +7522,8 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
 
     plans = Plans([], frozenset())
     feedback = Feedback([], frozenset())
-    waiting: list[Row] = []  # #1680: the plans waiting on the maintainer's answer, report-only
+    # #1680: the plans waiting on the maintainer's answer, and #1724's unlinked filed plans, report-only
+    waiting: list[Row] = []
     unplanned = None  # PyPI's wait for the plans' pinned shipmill (#597)
     planned = (repo_dir / DIRECTION).is_file()  # a goal's plan needs goals (spec 028)
     try:  # one intake_state.py run per repo, its plans only with goals (spec 074)
@@ -7493,6 +7532,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         lines = intake_run(args.repo, repo_dir, planned, args.tool, args.bot_login, wip, roles=roles)
         plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
         waiting = plans_waiting(lines, args.repo, args.bot_login, args.trusted_only) if planned else []
+        waiting += plans_filed(lines, args.repo, args.bot_login, args.trusted_only) if planned else []  # #1724
         feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
     except PypiWait as wait:
         unplanned = wait
@@ -7588,6 +7628,8 @@ def item_row(row: Row, number: int | str) -> bool:
         return True
     if row.state == PLAN_HELD:  # S-098-13: names a held plan, read for its condition
         return any(part.startswith(f"#{number} ") for part in row.detail.split("; "))
+    if row.state == PLAN_FILED:  # #1724: names an accepted plan, read for the items it waits on
+        return any(part.startswith(f"#{number}(") for part in row.detail.split("; "))
     return names_item(row, number) and (row.state in GATE_WAITS or bool(row.json()["agent"]))
 
 
@@ -7692,6 +7734,7 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         rows += plans.rows + feedback.rows
         if planned and not isinstance(lines, PypiWait):  # S-098-13: a held plan's condition
             rows += plans_held(lines, args.repo, args.bot_login, args.trusted_only)
+            rows += plans_filed(lines, args.repo, args.bot_login, args.trusted_only)  # #1724
             rows += item_states(lines, args.repo, args.bot_login, args.trusted_only)  # S-106-25
         if not (isinstance(lines, PypiWait) and args.trusted_only):
             code, triaged = triage_read.result() if triage_read is not None else triage()
