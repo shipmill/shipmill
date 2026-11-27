@@ -760,6 +760,7 @@ PLAN_STATE = "PLAN_STATE"
 PROJECT_STATE = "PROJECT_STATE"
 # intake_state.py's PLAN_WAITS note while a plan of the product is overdue (S-106-9)
 OVERDUE_NOTE = re.compile(r"^plan ([\w.-]+/[\w.-]+#[1-9]\d*) overdue$")
+OVERDUE_REF = re.compile(r"[\w.-]+/[\w.-]+#[1-9]\d*")
 NOTE_NUMBER = re.compile(r"(?<![\w/#])#([1-9]\d*)\b")
 # spec 074: intake_state.py's feedback lines the watch places, the kinds they come in, its intake
 # levels, the wait after triage's hand-off before an intake pass is due, and the trusted openers
@@ -4371,12 +4372,37 @@ def goal_line(line: str) -> dict[str, Any] | None:
         well_formed &= isinstance(parts, dict) and all(a_count(v) for v in parts.values())
         what = "project"
     elif kind == "opportunity" and state in OPPORTUNITY_GOAL_STATES:
-        well_formed, what = a_number(number), "opportunity"
+        author, association = row.get("author"), row.get("association")
+        well_formed, what = a_number(number) and {"author", "association"} <= set(row), "opportunity"
+        well_formed &= author is None or (isinstance(author, str) and bool(author))
+        well_formed &= association is None or (isinstance(association, str) and association.isupper())
     else:
         return None
     if not well_formed:
         raise Refused(f"error: intake_state.py printed a malformed {what} row: {line[:200]!r}")
     return row
+
+
+def trusted_plans(text: str, bot_login: str | None, trusted_only: bool) -> frozenset[int]:
+    """The plan issues trusted as PLAN_OPEN's are (D-16): the --bot-login's, or with
+    trusted_only off an OWNER's, MEMBER's, or COLLABORATOR's"""
+    found = set()
+    for line in text.splitlines():
+        row = plan_line(line) if goal_line(line) is None else None
+        if row is None or row["kind"] != "plan":
+            continue
+        ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+        if ours or (not trusted_only and row.get("association") in TRUSTED_ASSOCIATIONS):
+            found.add(int(row["number"]))
+    return frozenset(found)
+
+
+def replaced_by(line: str, row: dict[str, Any]) -> int:
+    """A PLAN_REPLACED row's newer plan, from its note `by #<new>` (S-106-10)"""
+    by = re.fullmatch(r"by #([1-9]\d*)", str(row.get("note") or ""))
+    if by is None:
+        raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+    return int(by.group(1))
 
 
 def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> Plans:
@@ -4393,8 +4419,17 @@ def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only:
     issue's text (D-16)"""
     listed: dict[str, list[str]] = {}
     untrusted: set[int] = set()
+    trusted = trusted_plans(text, bot_login, trusted_only)
     for line in text.splitlines():
         found = goal_line(line)
+        if (
+            found is not None
+            and found["kind"] == "opportunity"
+            and trusted_only
+            and not opener_trusted(found, bot_login)
+        ):
+            untrusted.add(found["number"])  # D-16: an outsider's accepted opportunity starts no session
+            continue
         if found is not None and found["state"] in PLANS_ACTION:
             token = found["goal"] if found["kind"] == "goal-state" else f"#{found['number']}"
             listed.setdefault(found["state"], []).append(token)
@@ -4406,6 +4441,8 @@ def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only:
             if not ours:
                 untrusted.add(row["number"])
                 continue
+        if row["state"] == "PLAN_REPLACED" and replaced_by(line, row) not in trusted:
+            continue  # D-16: only a trusted plan replaces one, so an outsider's never closes the App's
         if row["state"] in PLAN_ACTION:
             token = row["goal"] if row["kind"] == "goal" else f"#{row['number']}"
             listed.setdefault(row["state"], []).append(token)
@@ -4510,19 +4547,19 @@ def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only
         if not (ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS)):
             continue
         answer_by = row.get("answer_by")
-        if row["state"] in (PLAN_OPEN, PLAN_OVERDUE) and answer_by is not None:
+        dated = row["state"] == PLAN_OVERDUE or (row["state"] == PLAN_OPEN and answer_by is not None)
+        if dated:  # an overdue plan always carries its date (S-106-8)
             if not isinstance(answer_by, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", answer_by) is None:
                 raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
             plans.append(f"#{row['number']} {row['state']} answer_by={answer_by}")
             overdue += [f"{repo}#{row['number']}"] if row["state"] == PLAN_OVERDUE else []
         elif row["state"] == "PLAN_REPLACED":
-            by = re.fullmatch(r"by #([1-9]\d*)", note)
-            if by is None:
-                raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
-            plans.append(f"#{row['number']} PLAN_REPLACED replaced_by=#{by.group(1)}")
-    projects = intake_first(text).get("projects") if text else None
+            plans.append(f"#{row['number']} PLAN_REPLACED replaced_by=#{replaced_by(line, row)}")
+    first = intake_first(text) if text else {}
+    projects = first.get("projects")
     if projects is not None:
         heads.append(f"active {projects['active']} of {projects['limit']}")
+    overdue += list(first.get("overdue") or ())  # the product's, other repos' among them (S-106-25)
     heads += [f"overdue {ref}" for ref in dict.fromkeys(sorted(overdue))]
     found_rows = [(GOAL_STATE, goals), (PLAN_STATE, plans), (PROJECT_STATE, heads)]
     return [Row(state, repo, "; ".join(parts)) for state, parts in found_rows if parts]
@@ -4559,6 +4596,12 @@ def intake_projects(value: object) -> bool:
     return bool(value["limit"] >= 1 and value["room"] == max(value["limit"] - value["active"], 0))
 
 
+def intake_overdue(value: object) -> bool:
+    """Whether the autonomy line's overdue (S-106-25) is well formed: one or more owner/repo#P"""
+    refs = value if isinstance(value, list) else []
+    return bool(refs) and all(isinstance(r, str) and OVERDUE_REF.fullmatch(r) is not None for r in refs)
+
+
 def intake_first(text: str) -> dict[str, Any]:
     """The first line intake_state.py --json prints, as intake_level checked it"""
     intake_level(text)
@@ -4576,7 +4619,8 @@ def intake_level(text: str) -> str:
     except json.JSONDecodeError:
         line = None
     keys = set(line) if isinstance(line, dict) else set()
-    well_formed = {"autonomy"} <= keys <= {"autonomy", "outcomes", "projects"}
+    well_formed = {"autonomy"} <= keys <= {"autonomy", "outcomes", "projects", "overdue"}
+    well_formed &= "overdue" not in keys or intake_overdue(line["overdue"])
     well_formed &= "outcomes" not in keys or intake_outcomes(line["outcomes"])
     well_formed &= "projects" not in keys or intake_projects(line["projects"])
     level = line.get("autonomy") if isinstance(line, dict) and well_formed else None

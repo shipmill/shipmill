@@ -98,7 +98,8 @@ With --json each has kind "project", state, holder, check, and parts {"open", "c
 [agents] projects = N, the product's heads reading active or in focus are counted, the product
 read as for [agents] outcomes; the text output then prints `projects active: K of N (product
 <owner/home>)` after the outcomes line, and --json's first line gains "projects": {"limit": N,
-"active": K, "room": R}.
+"active": K, "room": R}. While a plan of the product reads PLAN_OVERDUE, --json's first line
+also carries "overdue": ["<owner/repo>#P", ...], so a held head can name what it waits for.
 
 With --goals (spec 106), a row per goal after those: GOAL_PROPOSED for an open goal-proposal
 issue by a trusted author or the --bot-login, then per goal of kind goal GOAL_MET, GOAL_DROPPED,
@@ -107,7 +108,8 @@ GOAL_OVERDUE, an action, for a written or planned goal past its date or with its
 tagged, until the --bot-login's goal-review issue names that goal and horizon. With --json each
 has kind "goal-state", goal, number, state, holder, and by.
 
-With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
+With --json, each NEW_FEEDBACK and ACCEPTED line, and each ACCEPTED_INTO, GOAL_PROPOSAL_DUE,
+GOAL_PROPOSED, and NEEDS_GOAL line (spec 106), also has (spec 074): author, the opener's
 login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
 association, the opener's author association, null for a discussion; and handed, the
 createdAt of the issue's newest trusted triage comment, as feedback reads it, when its
@@ -2477,14 +2479,19 @@ def outcomes_in_flight(product: Product, local_open: int, label: str, gh: Produc
     return Outcomes(product.home, product.limit, total)
 
 
-def first_line(autonomy: str, outcomes: Outcomes | None, projects: Projects | None = None) -> dict[str, Any]:
+def first_line(
+    autonomy: str, outcomes: Outcomes | None, projects: Projects | None = None, overdue: tuple[str, ...] = ()
+) -> dict[str, Any]:
     """--json's first line: the autonomy, and with a limit the outcomes (spec 101) and the
-    projects (spec 106)"""
+    projects (spec 106); with --projects, the product's overdue plans as owner/repo#P while any
+    is (S-106-25: what a held head waits for)"""
     line: dict[str, Any] = {"autonomy": autonomy}
     if outcomes is not None:
         line["outcomes"] = outcomes.json()
     if projects is not None:
         line["projects"] = projects.json()
+    if overdue:
+        line["overdue"] = list(overdue)
     return line
 
 
@@ -3347,7 +3354,9 @@ def show(row: Item) -> str:
     return f"#{row.number:<5} {row.state:<16} {row.title[:70]}  [{'; '.join(detail)}]"
 
 
-PLACED = {"NEW_FEEDBACK", "ACCEPTED"}  # the lines the watch places (spec 074)
+# the lines the watch places (spec 074), and the accepted opportunities that name their goal,
+# whose opener the watch's trust reads before a session starts for one (spec 106, D-16)
+PLACED = {"NEW_FEEDBACK", "ACCEPTED", "ACCEPTED_INTO", "GOAL_PROPOSAL_DUE", "GOAL_PROPOSED", "NEEDS_GOAL"}
 
 
 def json_row(row: Item) -> dict[str, Any]:
@@ -3495,6 +3504,7 @@ def main() -> int:
         now = dt.datetime.now(UTC)
         heads = fetch_projects(args.repo, args.bot_login, now, gh_graphql, args.marker, maintainers)
     others: dict[str, list[ProjectRow]] = {}
+    overdue: tuple[str, ...] = ()
     if args.plans or args.projects:  # spec 106: the product, as [agents] projects reads it
         limits = product_of(args.repo, config, product_gh.home_config, "projects")
         if args.projects:  # with [agents] projects, the product's active count
@@ -3506,6 +3516,7 @@ def main() -> int:
         issues = product_plan_issues(limits, here, product_gh)
         product_plans = read_product_plans(issues, when, args.bot_login, args.marker, maintainers, own)
         planned = overdue_waits(planned, product_plans.overdue)  # S-106-9
+        overdue = product_plans.overdue if args.projects else ()
         heads = start_due({args.repo: heads, **others}, args.repo, projects, product_plans)  # S-106-14
     goal_states: list[GoalRow] = []
     if args.goals:  # spec 106: a row per goal of kind goal, and per goal proposal
@@ -3518,7 +3529,7 @@ def main() -> int:
     planned = planned if args.plans else []
     heads = heads if args.projects else []
     if args.json:
-        print(json.dumps(first_line(autonomy, outcomes, projects)))
+        print(json.dumps(first_line(autonomy, outcomes, projects, overdue)))
         for r in found:
             print(json.dumps(json_row(r), sort_keys=True))
         for p in planned:

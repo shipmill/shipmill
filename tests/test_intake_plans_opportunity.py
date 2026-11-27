@@ -219,3 +219,12 @@ def test_s106_23_a_closed_opportunity_still_carries_its_item(ist: ModuleType) ->
     fake = Fake(plans=[accepted], carriers=[carrier(302, "W-3")], parents={401: ("o/r", 20)}, states=closed)
     done = plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake, {401: {"opportunity", "project"}}))[20]
     assert done[0] in ("PLAN_FILED", "PLAN_DONE") and "not filed" not in done[1]
+
+
+def test_s106_24_a_goal_naming_opportunity_line_carries_its_opener(ist: ModuleType) -> None:
+    """D-16: the watch trusts an accepted opportunity by its opener before a session starts
+    for it, so each state that names a goal prints author and association, as ACCEPTED does"""
+    for state in ("ACCEPTED_INTO", "GOAL_PROPOSAL_DUE", "GOAL_PROPOSED", "NEEDS_GOAL"):
+        item = ist.Item(12, "opportunity", "t", 0, state=state, author="drive-by", association="NONE")
+        line = ist.json_row(item)
+        assert (line["author"], line["association"], line["handed"]) == ("drive-by", "NONE", None), state

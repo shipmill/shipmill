@@ -34,9 +34,12 @@ def head(ist: ModuleType, number: int, state: str, note: str, check: int | None 
     return json.dumps(ist.project_json(ist.ProjectRow(number, state, "SECRET title", note, check, 1, 2)))
 
 
-def opportunity(ist: ModuleType, number: int, state: str, note: str = "") -> str:
+def opportunity(
+    ist: ModuleType, number: int, state: str, note: str = "", author: str = BOT, association: str = "NONE"
+) -> str:
     """intake_state.py's own --json line for an accepted opportunity that names its goal"""
-    return json.dumps(ist.json_row(ist.Item(number, "opportunity", "SECRET", 0, state=state, note=note)))
+    item = ist.Item(number, "opportunity", "SECRET", 0, state=state, note=note, author=author, association=association)
+    return json.dumps(ist.json_row(item))
 
 
 def plan(ist: ModuleType, number: int, state: str, note: str, answer_by: str | None = None) -> str:
@@ -70,6 +73,7 @@ def spec106_lines(ist: ModuleType) -> str:
         plan(ist, 60, "PLAN_OPEN", "waits on your answer; answer by 2026-12-01", "2026-12-01"),
         plan(ist, 61, "PLAN_OVERDUE", "answer by 2026-11-20", "2026-11-20"),
         plan(ist, 62, "PLAN_REPLACED", "by #63"),
+        plan(ist, 63, "PLAN_OPEN", "waits on your answer; answer by 2026-12-03", "2026-12-03"),
     ]
     return "\n".join(rows) + "\n"
 
@@ -131,7 +135,8 @@ def test_s106_25_the_item_read_gives_each_goal_plan_and_head_its_state(ws: Modul
         " #45 GOAL_PROPOSED holder=maintainer"
     )
     assert found["PLAN_STATE"].detail == (
-        "#60 PLAN_OPEN answer_by=2026-12-01; #61 PLAN_OVERDUE answer_by=2026-11-20; #62 PLAN_REPLACED replaced_by=#63"
+        "#60 PLAN_OPEN answer_by=2026-12-01; #61 PLAN_OVERDUE answer_by=2026-11-20; #62 PLAN_REPLACED replaced_by=#63;"
+        " #63 PLAN_OPEN answer_by=2026-12-03"
     )
     assert found["PROJECT_STATE"].detail == (
         "#50 PROJECT_START_DUE holder=agent; #51 PROJECT_IDLE holder=agent check=#70;"
@@ -165,3 +170,43 @@ def test_s106_25_item_reads_a_goal_id(ws: ModuleType, ist: ModuleType) -> None:
     kept = [(r.state, r.detail) for r in rows if ws.item_row(r, "G-2")]
     assert [s for s, _ in kept] == ["PLANS", "GOAL_STATE", "PLAN_STATE", "PROJECT_STATE", "HOLD"]
     assert "GOAL_OVERDUE G-20" not in [d for _, d in kept]
+
+
+def test_s106_26_an_outsiders_opportunity_or_plan_starts_no_session(ws: ModuleType, ist: ModuleType) -> None:
+    """D-16: under --trusted-only an accepted opportunity an outsider opened is UNTRUSTED, and a
+    plan replaced by an untrusted plan is in no row, so the App's plan is never closed for it"""
+    text = intake_lines(
+        opportunity(ist, 40, "NEEDS_GOAL", author="drive-by"),
+        opportunity(ist, 41, "GOAL_PROPOSAL_DUE", author="amy", association="OWNER"),
+        plan(ist, 62, "PLAN_REPLACED", "by #64"),
+        json.dumps(ist.plan_json(ist.PlanRow("G-1", "PLAN_OPEN", "t", "n", 64, "plan", "drive-by", "NONE"))),
+    )
+    headless = ws.plans_rows(text, REPO, BOT, trusted_only=True)
+    # the OWNER's opportunity is trusted, as feedback_rows trusts an ACCEPTED one (opener_trusted)
+    assert [r.detail for r in headless.rows] == ["GOAL_PROPOSAL_DUE #41"] and headless.untrusted == {40, 64}
+    # a person's pass lists the outsider's opportunity too, and still never the outsider's replacing plan
+    (row,) = ws.plans_rows(text, REPO, BOT).rows
+    assert row.detail == "GOAL_PROPOSAL_DUE #41; NEEDS_GOAL #40"
+    trusted = intake_lines(plan(ist, 62, "PLAN_REPLACED", "by #63"), plan(ist, 63, "PLAN_OPEN", "n", "2026-12-03"))
+    assert [r.detail for r in ws.plans_rows(trusted, REPO, BOT, trusted_only=True).rows] == ["PLAN_REPLACED #62"]
+
+
+def test_s106_26_an_opportunity_row_without_its_opener_is_refused(ws: ModuleType) -> None:
+    line = '{"kind": "opportunity", "number": 12, "state": "NEEDS_GOAL", "note": ""}'
+    with pytest.raises(ws.Refused, match="malformed opportunity"):
+        ws.plans_rows(intake_lines(line), REPO, BOT)
+
+
+def test_s106_25_the_products_overdue_plans_reach_the_heads(ws: ModuleType, ist: ModuleType) -> None:
+    line = json.dumps(ist.first_line("propose", None, None, ("o/other#8",)))
+    text = "\n".join([line, head(ist, 53, "PROJECT_HELD", "no check issue")]) + "\n"
+    (row,) = ws.item_states(text, REPO, BOT)
+    assert row.detail == "#53 PROJECT_HELD holder=start held=check; overdue o/other#8"
+    assert ws.intake_level(text) == "propose"
+    for bad in ([], ["o/other"], "o/other#8"):
+        with pytest.raises(ws.Refused, match="not its autonomy line"):
+            ws.intake_level(json.dumps({"autonomy": "propose", "overdue": bad}) + "\n")
+    late = '{"goal": "G-1", "kind": "plan", "number": 9, "state": "PLAN_OVERDUE", "title": "t", "note": "",'
+    late += ' "author": "shipmill-app[bot]", "association": "NONE"}'
+    with pytest.raises(ws.Refused, match="malformed plan row"):
+        ws.item_states(intake_lines(late), REPO, BOT)

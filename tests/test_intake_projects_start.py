@@ -181,3 +181,12 @@ def test_s106_9_the_checkouts_own_plans_read_as_plans_prints_them(ist: ModuleTyp
     found = ist.read_product_plans(issues, now, BOT, "Triage:", frozenset(), own)
     assert found.overdue == ("o/r#30",)  # re-checked 2026-10-06: due 2026-10-13
     assert ist.read_product_plans(issues, now, BOT, "Triage:", frozenset()).overdue == ()  # no reader: held
+
+
+def test_s106_25_the_first_line_names_the_products_overdue_plans(ist: ModuleType) -> None:
+    """What a held head waits for: the product's overdue plans on --json's first line, while any is"""
+    assert ist.first_line("propose", None, None, ("o/r#3", "o/s#8")) == {
+        "autonomy": "propose",
+        "overdue": ["o/r#3", "o/s#8"],
+    }
+    assert ist.first_line("propose", None, None) == {"autonomy": "propose"}
