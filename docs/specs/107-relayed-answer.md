@@ -1,6 +1,6 @@
 # S-107: One command writes the maintainer's relayed answer in the form its reader counts
 
-status: approved
+status: built
 serves: G-6
 
 ## Problem
@@ -139,4 +139,19 @@ Like `shipmill gh`, it exits 2 when the App's token can't be had, and with
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+Checked on the build branch for shipmill/shipmill#1783, on main at 2a48a0cc, by running
+`tests/test_answer.py` (every test named for its criterion, 56 passed), `specs.py coverage
+--spec 107` (exit 0), and `shipmill answer --dry-run` against open items of this repository: a
+plan (#990), a needs-decision question (#1674), and a project head (#1771).
+
+- S-107-1: an option posts the header, `2. <name>`, removes the label, and prints the URL (`test_s107_1_an_option_posts_the_relay_takes_the_label_off_and_prints_the_url`); holds
+- S-107-2: an option and `--own`, with and without a note, read as counted by `parse_relay`, `relay_refusal`, `pr_gate.py`'s `whole_reply`, `triage_state.py`'s `relayed` and `relay_refused`, and the label rule's `removing_refusal` (`test_s107_2_the_relay_is_counted_by_every_reader`); holds
+- S-107-3: an unlisted option, no open question, and an empty or multi-line flag are refused with nothing written (`test_s107_3_an_answer_no_question_counts_is_refused`); holds
+- S-107-4: each plan answer writes its line and `intake_state.py` reads it as the accept with its kept items, the decline, the hold, or the edit; a hold reads PLAN_HELD `until <condition>` by `held_row`, the row `status --item` names (`test_s107_4_a_plans_answers_read_as_intake_reads_them`, `test_s107_4_a_held_plan_reads_held_with_its_wake_condition_in_status_item`); holds
+- S-107-5: each plan answer its reader wouldn't count is refused with nothing written (`test_s107_5_a_plan_answer_its_reader_wouldnt_count_is_refused`); holds
+- S-107-6: a project's answers write their lines, `stop_reason` reads the stop, the idle question's label comes off, and a stop without a reason and a closed head are refused (`test_s107_6_a_projects_answers_and_its_stop`, `test_s107_6_a_project_answer_on_its_idle_question_takes_the_label_off`, `test_s107_6_a_stop_without_a_reason_and_a_closed_head_are_refused`); holds
+- S-107-7: an accepted opportunity's goal is read by `accept_goal`, and one without `planned`, an id no open goal has, and no `--goal` are refused (`test_s107_7_an_accepted_opportunitys_goal`, `test_s107_7_an_opportunity_its_reader_wouldnt_count_is_refused`); holds
+- S-107-8: a non-maintainer `--by`, a verb of another kind, two kinds, no kind, and a stray flag are refused (`test_s107_8_a_wrong_maintainer_kind_or_flag_is_refused`); holds
+- S-107-9: through the CLI, no App key exits 2 with no gh call, and `identity = "none"` exits 2 with the owner's choice and no write (`test_s107_9_without_the_apps_key_it_exits_2_and_writes_nothing`, `test_s107_9_with_identity_none_it_exits_2_with_the_owners_choice`); holds
+- S-107-10: `--dry-run` prints the comment and the label step and writes nothing (`test_s107_10_dry_run_prints_the_comment_and_the_label_step_and_writes_nothing`); holds
+- S-107-11: the four documents name `shipmill answer` (`test_s107_11_the_protocols_name_the_command`); holds

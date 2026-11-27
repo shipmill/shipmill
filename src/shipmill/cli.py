@@ -158,6 +158,7 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
@@ -170,6 +171,7 @@ from typing import TextIO
 
 from shipmill import (
     agent_as_person,
+    answer,
     area_record,
     cli_command,
     decide,
@@ -1219,6 +1221,28 @@ def _parser() -> argparse.ArgumentParser:
     ):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
+    p = sub.add_parser(
+        "answer", help="write the maintainer's answer a session heard, in the form its reader counts (spec 107)"
+    )
+    p.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    p.add_argument("number", type=int, help="the issue or pull request")
+    p.add_argument(
+        "answer",
+        nargs="?",
+        help="an option's number; on a plan accept, decline, hold, or send-back; on a project continue, hold, "
+        "or stop; on an accepted opportunity accept",
+    )
+    p.add_argument("--by", required=True, help="the maintainer who answered, a login `shipmill roles` gives")
+    p.add_argument("--own", help="the maintainer's own words, for a question (`own: <words>`)")
+    p.add_argument("--only", metavar="W-1,W-3", help="accept: keep only these plan items")
+    p.add_argument("--except", dest="excepted", metavar="W-2", help="accept: drop these plan items")
+    p.add_argument("--until", help="hold: the wake condition, YYYY-MM-DD, #N, owner/repo#N, or release")
+    p.add_argument("--reason", help="decline, send-back, or stop: the reason, or the change to make")
+    p.add_argument("--goal", metavar="G-n", help="accept on an opportunity: the goal it serves, or `new`")
+    p.add_argument("--note", help="a Note: line after the answer, which no reader reads")
+    p.add_argument("--relayed-by", default=answer.AGENT, help=f"the relaying agent (default: {answer.AGENT})")
+    p.add_argument("--dry-run", action="store_true", help="print the comment and the label step; write nothing")
+
     p = sub.add_parser("spec", help="open a spec's pull request, naming its feature issue (spec 053)")
     speccing = p.add_subparsers(dest="spec", required=True)
     q = speccing.add_parser(
@@ -1451,7 +1475,7 @@ def main(
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
-    if args.command in ("spec", "revert") or (args.command == "review" and args.review_command == "record"):
+    if args.command in ("spec", "revert", "answer") or (args.command == "review" and args.review_command == "record"):
         readers = _GhReaders(
             merge_reader or _gh_reader,
             credit_reader or _credit_reader,
@@ -1473,6 +1497,8 @@ def main(
             return _review_record(root, args, through, classify)
         if args.command == "revert":
             return _revert_open(root, args, through)
+        if args.command == "answer":
+            return _answer(root, args, through, login or (lambda: host_login(root)), env)
         return _spec_open(root, args, through, spec_checkout)
     if args.command == "leaks":  # reads no config: the private file and what is checked alone (spec 081)
         if args.leaks == "check":
@@ -3402,6 +3428,123 @@ class _SpecHub:
         code, _ = self._run(["issue", "comment", str(number), "-R", self._repo, "--body", body])
         if code != 0:
             raise ReleaseError(f"gh issue comment {number} exited {code}")
+
+
+def _answer(
+    root: Path, args: argparse.Namespace, path: _GhPath, login: Callable[[], str], environ: Mapping[str, str]
+) -> int:
+    """Spec 107: `answer`, in the checkout's own repo, its GitHub reads and writes through
+    `shipmill gh`'s path; prints the comment's URL"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(f"answer runs in the repo's checkout, and git can't read {root}: `git -C {root} status`")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so answer has no item to answer")
+    resolved = roles.resolve(roles.configured(top), login, environ.get(roles.GATE_MAINTAINER, ""))
+    maintainers = frozenset(str(user).lower() for user in resolved[0].users)
+    request = answer.Request(
+        args.number,
+        args.answer,
+        args.by.removeprefix("@"),
+        own=args.own,
+        only=args.only,
+        excepted=args.excepted,
+        until=args.until,
+        reason=args.reason,
+        goal=args.goal,
+        note=args.note,
+        relayed_by=args.relayed_by,
+        dry_run=args.dry_run,
+    )
+    return answer.run(request, _AnswerHub(top, repo, path), maintainers, lambda: _open_goals(top), print)
+
+
+def _open_goals(top: Path) -> frozenset[str]:
+    """S-107-7: the direction's goals of kind goal neither met nor dropped"""
+    return frozenset(
+        str(item.id)
+        for item in product.read(top).goals
+        if isinstance(item.form, product.GoalForm) and item.form.end is None
+    )
+
+
+class _AnswerHub:
+    """answer's GitHub calls, each one `shipmill gh`'s (`_gh`), gh's output read through the capture"""
+
+    _JQ = '.[] | [(.user.login // "ghost"), (.author_association // "NONE"), (.body // ""), .created_at] | @json'
+
+    def __init__(self, top: Path, repo: str, path: _GhPath) -> None:
+        self._top = top
+        self._repo = repo
+        self._path = path
+
+    def _run(self, gh_args: list[str], what: str) -> str:
+        code, out = _through_gh(self._top, self._path, gh_args)
+        if code != 0:
+            raise ReleaseError(f"gh {what} exited {code}")
+        return out
+
+    def viewer(self) -> str:
+        out = self._run(["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"], "api viewer")
+        login = out.strip()
+        if not login:
+            raise ReleaseError("gh api graphql named no viewer, so whose relay and question are whose can't be read")
+        return login
+
+    def item(self, number: int) -> answer.Item:
+        route = f"repos/{self._repo}/issues/{number}"
+        try:
+            data = json.loads(self._run(["api", route], f"api {route}"))
+            rows = [
+                json.loads(line)
+                for line in self._run(
+                    ["api", "--paginate", f"{route}/comments", "--jq", self._JQ], "api comments"
+                ).splitlines()
+                if line.strip()
+            ]
+        except json.JSONDecodeError:
+            raise ReleaseError(f"gh api {route} answered no JSON, so #{number} can't be read") from None
+        if not isinstance(data, dict) or data.get("state") not in ("open", "closed"):
+            raise ReleaseError(f"gh api {route} answered no issue's state, so #{number} can't be read")
+        comments = tuple(answer.Comment(str(r[0]), str(r[1]), str(r[2]), str(r[3])) for r in rows)
+        return answer.Item(
+            number,
+            "pull_request" in data,
+            data["state"] == "open",
+            frozenset(str(label["name"]) for label in data.get("labels") or []),
+            str(data.get("body") or ""),
+            str(data["created_at"]),
+            comments,
+        )
+
+    def comment(self, item: answer.Item, body: str) -> str:
+        group = "pr" if item.pull else "issue"
+        folder = self._top / "tmp"
+        folder.mkdir(exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", suffix=".md", dir=folder, delete=False, encoding="utf-8") as file:
+            file.write(body)
+        written = Path(file.name)
+        try:
+            out = self._run(
+                [group, "comment", str(item.number), "-R", self._repo, "--body-file", str(written)], f"{group} comment"
+            )
+        finally:
+            written.unlink()
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        if not lines:
+            raise ReleaseError(f"gh {group} comment printed no comment URL")
+        return lines[-1]
+
+    def unlabel(self, item: answer.Item) -> None:
+        group = "pr" if item.pull else "issue"
+        self._run(
+            [group, "edit", str(item.number), "-R", self._repo, "--remove-label", answer.DECISION_LABEL],
+            f"{group} edit",
+        )
 
 
 def _revert_open(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
