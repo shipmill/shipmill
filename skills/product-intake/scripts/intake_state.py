@@ -9,9 +9,12 @@ Usage: intake_state.py <owner/repo> [--config PATH] [--label opportunity]
                                 [--stable-tag-regex REGEX]]
 
 Feedback is an open issue, or an open discussion when the repo enables Discussions, that:
-  - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
-    them, so a plan issue or a request for one is never feedback), no --skip-label
-    (repeatable, added to SKIP_LABELS), and not --label
+  - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan and
+    project among them, so a plan issue, a request for one, or a project head is never
+    feedback), no --skip-label (repeatable, added to SKIP_LABELS), and not --label
+  - is not a filed plan item: its body's first line the plan-item marker
+    (<!-- shipmill:plan-item #P W-n -->) by an OWNER, MEMBER, or COLLABORATOR or the
+    --bot-login (D-16; an outsider's copy of the marker changes nothing)
   - is not triage's by its labels, whatever its comments say: not labelled postponed (it
     reads POSTPONED there), human, or role:<name> (a person's item; these two compared
     case-insensitively), as triage_state.py reads them
@@ -282,6 +285,7 @@ SKIP_LABELS = (
     "release-blocker",
     "milestone-proposal",
     "goal-plan",  # a goal's plan, or the maintainer's request for one (spec 028): never a request for a feature
+    "project",  # a project head or a filed plan item: the maintainer's accepted work (spec 106, #1774)
 )
 # Triage's own, whatever its comments say (#1628), as triage_state.py reads them: an issue
 # labelled postponed (its --postponed-label default) reads POSTPONED, and one labelled human
@@ -804,9 +808,15 @@ def triage_owns(names: set[str]) -> bool:
     return POSTPONED_LABEL in names or HUMAN_LABEL in folded or any(n.startswith(ROLE_PREFIX) for n in folded)
 
 
+def plan_item(issue: dict[str, Any], bot_login: str | None) -> bool:
+    """An accepted plan's filed item (#1774): its body's first line the plan-item marker, by
+    the --bot-login or an OWNER, MEMBER, or COLLABORATOR (D-16); an outsider's copy is none"""
+    return PLAN_ITEM.match(PLANS.first_line(issue.get("body") or "")) is not None and PLANS.trusted(issue, bot_login)
+
+
 def is_feedback(issue: dict[str, Any], skip: set[str], marker: str, bot_login: str | None = None) -> bool:
     names = labels(issue)
-    if names & skip or triage_owns(names):
+    if names & skip or triage_owns(names) or plan_item(issue, bot_login):
         return False
     found = trusted_verdict(issue, marker, bot_login)
     return found is None or not found.startswith(CLOSING_VERDICTS)
