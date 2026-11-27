@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.3] - 2026-11-27
+
+### Fixed
+
+- `shipmill status --item` no longer reads a started project's head as waiting on its own check issue: the check issue waits on the head's work, then the head on its due check, and `intake_state.py --projects` reads a head whose `Part of #<head>` pull requests merged as closing, so it stops counting against `[agents] projects` (spec 106, S-106-30)
+- `shipmill status` gives every state the watch prints a deliberate place: the App's held drafts leave the "other" line for the drafts line, the `--item`-only rows are silent, and the rows it still shows under "other" (a plan due, a red default branch, a land window's queue, and the rest no other line says) are named on a list with why, which a test checks against `watch_state.py`'s rows (#1824)
+
 ## [0.193.2] - 2026-11-27
 
 ### Fixed
@@ -3352,7 +3359,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.3...HEAD
+[0.193.3]: https://github.com/shipmill/shipmill/compare/v0.193.2...v0.193.3
 [0.193.2]: https://github.com/shipmill/shipmill/compare/v0.193.1...v0.193.2
 [0.193.1]: https://github.com/shipmill/shipmill/compare/v0.193.0...v0.193.1
 [0.193.0]: https://github.com/shipmill/shipmill/compare/v0.192.0...v0.193.0
