@@ -1267,6 +1267,13 @@ def _parser() -> argparse.ArgumentParser:
         if verb == "stop":
             q.add_argument("--reason", help="why it stops, which its stop record gives")
         relay_args(q)
+    q = projecting.add_parser("check", help="file a head's check issue and link it as its sub-issue (spec 108)")
+    q.add_argument("number", type=int, help="the project's head issue")
+    q.add_argument("--title", required=True, help="what will be true; the issue is titled `Check: <title>`")
+    q.add_argument("--check-file", type=Path, required=True, help="the check a person other than the builder runs")
+    q.add_argument("--cleanup-file", type=Path, help="the cleanup the check issue lists, as - [ ] lines")
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("--dry-run", action="store_true", help="print the issue and the link step; write nothing")
 
     p = sub.add_parser("opportunity", help="relay the maintainer's move on an opportunity (spec 107)")
     q = p.add_subparsers(dest="move", required=True).add_parser(
@@ -1530,6 +1537,9 @@ def main(
             return _review_record(root, args, through, classify)
         if args.command == "revert":
             return _revert_open(root, args, through)
+        if args.command == "project" and args.move == "check":
+            check_reads = (_intake_runner(state), chains or link.run_chains)
+            return _project_check(root, args, through, login or (lambda: host_login(root)), env, check_reads)
         if args.command == "project" and args.move in tuple(moves.Verb):
             intake = _intake_runner(state)
             return _move(root, args, through, login or (lambda: host_login(root)), env, intake)
@@ -3686,6 +3696,93 @@ class _MoveHub(_AnswerHub):
         if proc.returncode not in (0, 1) or not proc.stdout.strip():  # 1: an action is due, rows printed
             raise ReleaseError(f"intake_state.py --projects exited {proc.returncode}, so the heads can't be read")
         return moves.read_projects(proc.stdout)
+
+
+class _CheckHub(_MoveHub):
+    """`project check`'s GitHub calls: the moves', an issue's creation, and the link"""
+
+    def __init__(
+        self,
+        top: Path,
+        repo: str,
+        path: _GhPath,
+        resolved: tuple[roles.ResolvedRole, ...],
+        intake: _IntakeRunner,
+        chains: link.ChainsRunner,
+    ) -> None:
+        super().__init__(top, repo, path, resolved, intake)
+        self._chains = chains
+
+    def create(self, title: str, body: str) -> str:
+        folder = self._top / "tmp"
+        folder.mkdir(exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", suffix=".md", dir=folder, delete=False, encoding="utf-8") as file:
+            file.write(body)
+        written = Path(file.name)
+        try:
+            out = self._run(
+                ["issue", "create", "-R", self._repo, "--title", title, "--body-file", str(written)], "issue create"
+            )
+        finally:
+            written.unlink()
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        if not lines:
+            raise ReleaseError("gh issue create printed no issue URL")
+        return lines[-1]
+
+    def link_child(self, head: int, child: int) -> None:
+        request = link.LinkRequest(False, link.LinkRef(self._repo, head), link.LinkRef(self._repo, child), True)
+        proc = self._chains(request.command(sys.executable, link.chains_script()), self._top)
+        sys.stderr.write(proc.stderr)
+        if proc.returncode != 0:
+            raise moves.StepFailed(
+                f"chains.py link exited {proc.returncode}: {proc.stdout.strip()[:200]}", proc.returncode
+            )
+
+
+def _read_text(flag: str, path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ReleaseError(f"{flag} {path} is missing") from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ReleaseError(f"{flag} {path} can't be read as UTF-8 text: {exc}") from None
+
+
+def _project_check(
+    root: Path,
+    args: argparse.Namespace,
+    path: _GhPath,
+    login: Callable[[], str],
+    environ: Mapping[str, str],
+    reads: tuple[_IntakeRunner, link.ChainsRunner],
+) -> int:
+    """Spec 108: `project check`, in the checkout's own repo: the check issue through `shipmill
+    gh`'s path, then its link as the head's sub-issue as `shipmill link --child` writes it"""
+    request = moves.CheckRequest(
+        args.number,
+        args.title,
+        _read_text("--check-file", args.check_file),
+        None if args.cleanup_file is None else _read_text("--cleanup-file", args.cleanup_file),
+        args.dry_run,
+    )
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(f"project runs in the repo's checkout, and git can't read {root}: `git -C {root} status`")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so project has no item to move")
+    # the roles intake_state.py counts a relayed stop by, so a head with a stop pending reads it
+    resolved = roles.resolve(roles.configured(top), login, environ.get(roles.GATE_MAINTAINER, ""))
+    hub = _CheckHub(top, repo, path, resolved, *reads)
+    try:
+        return moves.run_check(request, hub, print)
+    except moves.StepFailed as exc:
+        print(f"shipmill: {exc}", file=sys.stderr)
+        return exc.code
 
 
 def _revert_open(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
