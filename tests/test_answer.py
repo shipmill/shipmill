@@ -221,6 +221,9 @@ def test_s107_4_a_held_plan_reads_held_with_its_wake_condition_in_status_item() 
         (item(["goal-plan"], body=PLAN), goal_plan("send-back"), "needs --reason"),
         (item(["goal-plan"], body=PLAN), goal_plan("send-back", reason="accept it all"), "may not start with"),
         (item(["goal-plan"], body=PLAN), goal_plan("send-back", reason="Hold until May"), "may not start with"),
+        (item(["goal-plan"], body=PLAN), goal_plan("send-back", reason="hold  until 2027-01-01"), "may not start with"),
+        (item(["goal-plan"], body=PLAN), goal_plan("send-back", reason="hold\tuntil #5"), "may not start with"),
+        (item(["goal-plan"], body=PLAN), goal_plan("send-back", reason="ACCEPT."), "may not start with"),
         (item(["goal-plan"], body=PLAN, open_=False), goal_plan("accept"), "is closed"),
     ],
 )
@@ -394,3 +397,10 @@ def test_s107_10_dry_run_prints_the_comment_and_the_label_step_and_writes_nothin
 def test_s107_11_the_protocols_name_the_command(doc: str) -> None:
     root = Path(__file__).resolve().parents[1]
     assert re.search(r"shipmill(?:==[0-9.]+)? (?:decision|goal-plan) answer", (root / doc).read_text(encoding="utf-8"))
+
+
+def test_s107_6_a_stale_needs_decision_label_with_no_open_question_doesnt_block_the_answer() -> None:
+    head = item(["project", "needs-decision"])
+    hub = FakeHub(head)
+    run(hub, project("hold"))
+    assert [kind for kind, _ in hub.written] == ["comment"]  # the label stays: no question to answer

@@ -269,7 +269,11 @@ def plan_line(item: Item, verb: str, request: Request) -> str:
     reason = _line("reason", request.reason)
     if verb == "decline":
         return f"decline: {reason}"
-    if reason.casefold().startswith(_OTHER_ANSWERS):
+    if (
+        intake.answer_kind(reason) != "edit"
+        or intake.ANSWER_BY.match(reason)
+        or reason.casefold().startswith(_OTHER_ANSWERS)
+    ):
         raise ReleaseError(
             f"a send-back's --reason may not start with {', '.join(_OTHER_ANSWERS)}: the plan's reader would read "
             "it as that answer, not an edit"
@@ -365,7 +369,8 @@ def compose(
     body = f"Decision by `@{request.by}`, relayed by {_line('relayed-by', request.relayed_by)}\n\n{line}"
     if request.note is not None:
         body += f"\n\nNote: {_line('note', request.note)}"
-    composed = Composed(kind, body, DECISION_LABEL in item.labels)
+    # the label comes off only after an open question, as shipmill gh's label rule allows (#1312)
+    composed = Composed(kind, body, question is not None)
     read_back(item, composed, line, request, bot_login, maintainers)
     return composed
 
@@ -391,7 +396,8 @@ def read_back(
     node = item.node([posted])
     if composed.kind is Kind.PLAN:
         found = intake.plan_answer(node, bot_login, MARKER, maintainers)
-        if found is None or intake.PLANS.first_line(found.body) != line:
+        kind = {"send-back": "edit"}.get(request.answer or "", request.answer)
+        if found is None or found.kind != kind or intake.PLANS.first_line(found.body) != line:
             raise ReleaseError(f"plan #{item.number}'s reader doesn't read `{line}` as its answer; nothing was written")
         return
     if composed.kind is Kind.PROJECT and line.startswith("stop:"):
@@ -437,7 +443,8 @@ def run(
     composed = compose(item, request, bot_login, maintainers, open_goals)
     if request.dry_run:
         say(composed.body)
-        say(f"{DECISION_LABEL}: {'comes off' if composed.unlabel else 'not on the item'}")
+        stays = "stays: no open question" if DECISION_LABEL in item.labels else "not on the item"
+        say(f"{DECISION_LABEL}: {'comes off' if composed.unlabel else stays}")
         return 0
     url = hub.comment(item, composed.body)
     if composed.unlabel:
