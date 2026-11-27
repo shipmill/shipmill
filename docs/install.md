@@ -367,6 +367,7 @@ modes](design/agent-modes.md) has the details.
    # app_id = 123456  # sessions write as this GitHub App; unset: as your gh login
    # mode = "headless" # interactive (default): sessions ask you; headless: `claude -p`, they ask on GitHub
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
+   # projects = 2     # at most 2 projects active at once, set in the product's home; unset: no limit
 
    # [agents.roles]   # who receives a step an agent can't do (spec 036); optional
    # maintainer = ["octocat"]        # unset or []: your gh login
@@ -392,6 +393,11 @@ modes](design/agent-modes.md) has the details.
    `shipmill roles` prints each role resolved (`--json`, or `--flags` for triage_state.py's
    `--role` arguments); a malformed `[agents.roles]` exits 2 from every command that reads
    the config, `doctor` included.
+
+   Agents that implement work toward the product's direction, `docs/product.md`, which
+   setup writes from your answers ([direction.md](direction.md)). How one of its goals
+   becomes a plan and projects, what `projects` limits, and how the goal ends met or
+   dropped is in [goals.md](goals.md).
 
    Gate sessions load the installed plugin (spec 031, D-44), as any session on the host
    does: the gate passes no `--plugin-dir` and never changes an install. A session loads the
