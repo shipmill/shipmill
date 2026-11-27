@@ -1,5 +1,6 @@
-"""Spec 107: `shipmill answer` writes the maintainer's answer a session heard, in the form the
-item's reader counts, as `shipmill gh` writes, and removes `needs-decision` when it is on.
+"""Spec 107: `shipmill decision answer`, `goal-plan answer`, `project`, and `opportunity accept`
+write the maintainer's answer a session heard, in the form the item's reader counts, as
+`shipmill gh` writes, and remove `needs-decision` when it is on.
 
 The item picks the reader: an open needs-decision question (triage_state.py and retro.py's relay
 grammar, D-93), a plan (`goal-plan`, intake_state.py's plan answer, specs 096 and 098), a
@@ -18,6 +19,7 @@ from enum import StrEnum
 from types import ModuleType
 from typing import Any, Protocol
 
+from shipmill import cli_command
 from shipmill.agent_marker import marked
 from shipmill.bundle import skills_dir
 from shipmill.decision_label import _asked, _settled_by, _triage
@@ -38,12 +40,18 @@ _OTHER_ANSWERS = ("accept", "decline", "hold until", "answer by")
 
 
 class Kind(StrEnum):
-    QUESTION = "question"
-    PLAN = "plan"
+    QUESTION = "decision"
+    PLAN = "goal-plan"
     PROJECT = "project"
     OPPORTUNITY = "opportunity"
 
 
+# The labels an item of each kind carries
+LABELS: dict[Kind, frozenset[str]] = {
+    Kind.PLAN: frozenset({PLAN_LABEL}),
+    Kind.PROJECT: frozenset({PROJECT_LABEL}),
+    Kind.OPPORTUNITY: frozenset({OPPORTUNITY_LABEL, ACCEPTED_LABEL}),
+}
 # Each kind's verbs; a number or --own answers a question
 VERBS: dict[Kind, tuple[str, ...]] = {
     Kind.PLAN: ("accept", "decline", "hold", "send-back"),
@@ -120,6 +128,7 @@ class Item:
 
 @dataclass(frozen=True, slots=True)
 class Request:
+    kind: Kind  # the entity the command names: decision, goal-plan, project, or opportunity
     number: int
     answer: str | None  # an option's number or a verb; None with --own
     by: str
@@ -179,18 +188,6 @@ def _line(name: str, value: str) -> str:
     return text
 
 
-def kinds_of(item: Item) -> list[Kind]:
-    """The labelled kinds of the item: plan, project, opportunity"""
-    found = []
-    if PLAN_LABEL in item.labels:
-        found.append(Kind.PLAN)
-    if PROJECT_LABEL in item.labels:
-        found.append(Kind.PROJECT)
-    if OPPORTUNITY_LABEL in item.labels:
-        found.append(Kind.OPPORTUNITY)
-    return found
-
-
 def open_question(item: Item, bot_login: str) -> str | None:
     """The body of the item's newest needs-decision question when nothing answers or touches it
     yet, as `shipmill gh`'s label rule reads it (#1312, #1331); None otherwise"""
@@ -224,7 +221,7 @@ def _refuse_flags(kind: Kind, verb: str, given: dict[str, str]) -> None:
     extra = sorted(set(given) - allowed)
     if extra:
         flags = ", ".join(f"--{name}" for name in extra)
-        raise ReleaseError(f"answer {verb} on a {kind} takes no {flags}")
+        raise ReleaseError(f"{verb} on a {kind} takes no {flags}")
 
 
 def _ids(value: str) -> str:
@@ -242,7 +239,7 @@ def plan_line(item: Item, verb: str, request: Request) -> str:
     intake = _intake()
     if verb == "accept":
         if request.only is not None and request.excepted is not None:
-            raise ReleaseError("answer accept takes --only or --except, not both")
+            raise ReleaseError("goal-plan answer accept takes --only or --except, not both")
         line = "accept"
         if request.only is not None:
             line = f"accept {_ids(request.only)}"
@@ -258,7 +255,7 @@ def plan_line(item: Item, verb: str, request: Request) -> str:
         return line
     if verb == "hold":
         if request.until is None:
-            raise ReleaseError("answer hold on a plan needs --until: a date YYYY-MM-DD, #N, owner/repo#N, or release")
+            raise ReleaseError("goal-plan answer hold needs --until: a date YYYY-MM-DD, #N, owner/repo#N, or release")
         line = f"hold until {_line('until', request.until)}"
         stub = intake.Answer("hold", dt.datetime.now(dt.UTC), line)
         if intake.read_hold(stub) is None:
@@ -268,7 +265,7 @@ def plan_line(item: Item, verb: str, request: Request) -> str:
             )
         return line
     if request.reason is None:
-        raise ReleaseError(f"answer {verb} on a plan needs --reason")
+        raise ReleaseError(f"goal-plan answer {verb} needs --reason")
     reason = _line("reason", request.reason)
     if verb == "decline":
         return f"decline: {reason}"
@@ -286,18 +283,13 @@ def project_line(item: Item, verb: str, request: Request) -> str:
     if verb != "stop":
         return verb
     if request.reason is None:
-        raise ReleaseError("answer stop on a project needs --reason, which its stop record gives (spec 106)")
+        raise ReleaseError("project stop needs --reason, which its stop record gives (spec 106)")
     return f"stop: {_line('reason', request.reason)}"
 
 
 def opportunity_line(item: Item, request: Request, open_goals: Callable[[], frozenset[str]]) -> str:
-    if ACCEPTED_LABEL not in item.labels:
-        raise ReleaseError(
-            f"opportunity #{item.number} isn't labelled `{ACCEPTED_LABEL}`: the maintainer's label is the accept, "
-            "which no agent adds, so add it by hand first"
-        )
     if request.goal is None:
-        raise ReleaseError("answer accept on an opportunity needs --goal G-<n>, or --goal new for a new goal")
+        raise ReleaseError("opportunity accept needs the goal it serves, G-<n>, or `new` for a new goal")
     goal = _line("goal", request.goal)
     if goal.casefold() == NEW_GOAL:
         return "accept new goal"
@@ -322,22 +314,20 @@ def compose(
     if request.by.lower() not in maintainers:
         names = ", ".join(sorted(maintainers)) or "nobody"
         raise ReleaseError(
-            f"--by {request.by} is not the maintainer (`shipmill roles` gives {names}), and no reader counts a relay "
-            "naming anyone else (D-68)"
+            f"--by {request.by} is not the maintainer (`{cli_command()} roles` gives {names}), and no reader "
+            "counts a relay naming anyone else (D-68)"
         )
     question = open_question(item, bot_login) if DECISION_LABEL in item.labels else None
-    kinds = kinds_of(item)
     given = request.flags()
-    if request.own is not None or (request.answer is not None and request.answer.isdigit()):
-        kind = Kind.QUESTION
+    kind = request.kind
+    if kind is Kind.QUESTION:
         if question is None:
             raise ReleaseError(
-                f"#{item.number} carries no open needs-decision question, so an option or --own answers nothing; "
-                f"answer its kind instead ({_kinds_named(kinds)})"
+                f"#{item.number} carries no open needs-decision question, so `decision answer` answers nothing"
             )
         if request.own is not None:
             if request.answer is not None:
-                raise ReleaseError("answer takes an option's number or --own, not both")
+                raise ReleaseError("decision answer takes an option's number or --own, not both")
             extra = sorted(set(given) - {"own"})
             if extra:
                 raise ReleaseError(f"--own takes no {', '.join(f'--{name}' for name in extra)}")
@@ -345,25 +335,26 @@ def compose(
         else:
             if given:
                 raise ReleaseError(f"an option takes no {', '.join(f'--{name}' for name in sorted(given))}")
-            line = option_line(question, request.answer or "")
+            if request.answer is None:
+                raise ReleaseError("decision answer needs an option's number or --own")
+            line = option_line(question, request.answer)
     else:
-        if request.answer is None:
-            raise ReleaseError("answer needs an option's number, --own, or a verb of the item's kind")
-        if len(kinds) > 1:
+        label = LABELS[kind]
+        if not label <= item.labels:
+            names = " and ".join(f"`{name}`" for name in sorted(label))
             raise ReleaseError(
-                f"#{item.number} is labelled as {_kinds_named(kinds)} at once, so which reader counts the answer is "
-                "unclear; fix its labels first"
+                f"#{item.number} isn't labelled {names}, so it is no {kind} and its reader doesn't count the answer"
+                + (
+                    f"; the `{ACCEPTED_LABEL}` label is the maintainer's accept, which no agent adds, so add it by hand"
+                    if kind is Kind.OPPORTUNITY and OPPORTUNITY_LABEL in item.labels
+                    else ""
+                )
             )
-        if not kinds:
-            raise ReleaseError(
-                f"#{item.number} is no plan (`{PLAN_LABEL}`), project (`{PROJECT_LABEL}`), or opportunity "
-                f"(`{OPPORTUNITY_LABEL}`), and has no open needs-decision question, so no reader counts "
-                f"`{request.answer}`"
-            )
-        kind = kinds[0]
-        verb = request.answer
+        verb = request.answer or ""
         if verb not in VERBS[kind]:
             raise ReleaseError(f"`{verb}` doesn't answer a {kind}; its answers are {', '.join(VERBS[kind])}")
+        if "own" in given:
+            raise ReleaseError("--own answers a needs-decision question, with `decision answer`")
         _refuse_flags(kind, verb, given)
         if kind is Kind.PLAN:
             line = plan_line(item, verb, request)
@@ -377,10 +368,6 @@ def compose(
     composed = Composed(kind, body, DECISION_LABEL in item.labels)
     read_back(item, composed, line, request, bot_login, maintainers)
     return composed
-
-
-def _kinds_named(kinds: list[Kind]) -> str:
-    return " and ".join(str(k) for k in kinds) or "none"
 
 
 def read_back(

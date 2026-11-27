@@ -1,3 +1,3 @@
 ### Added
 
-- `shipmill answer <n> <answer> --by <login>` writes the maintainer's answer a session heard in the form its reader counts, as `shipmill gh` writes, and removes `needs-decision`: an option or `--own` on a needs-decision question, `accept`, `decline`, `hold --until`, or `send-back` on a plan, `continue`, `hold`, or `stop --reason` on a project head, and `accept --goal` on an accepted opportunity; it refuses before writing any answer its reader wouldn't count (spec 107, #1783)
+- Commands that write the maintainer's answer a session heard, in the form its reader counts, as `shipmill gh` writes, and remove `needs-decision`: `shipmill decision answer <n> <option>|--own`, `shipmill goal-plan answer <n> accept|decline|hold|send-back`, `shipmill project continue|hold|stop <n>`, and `shipmill opportunity accept <n> G-<n>|new`, each with `--by <login>`; each refuses before writing any answer its reader wouldn't count (spec 107, #1783)
