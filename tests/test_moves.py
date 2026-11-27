@@ -264,15 +264,17 @@ class FakeGh:
                 "created_at": at(0),
             }
             return 0, json.dumps(data)
+        if args[:2] == ["issue", "create"]:
+            return 0, "https://github.com/o/r/issues/51\n"
         if args[1] == "edit":
             return self.edit, "" if self.edit == 0 else "HTTP 502\n"
         return 0, URL + "\n"
 
 
-def intake(state_: str = "PROJECT_ACTIVE") -> Any:
+def intake(state_: str = "PROJECT_ACTIVE", check_issue: int | None = 50) -> Any:
     def run_(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         assert "--projects" in cmd and cmd[cmd.index("--bot-login") + 1] == BOT
-        row = {"kind": "project", "number": 7, "state": state_, "check": 50}
+        row = {"kind": "project", "number": 7, "state": state_, "check": check_issue}
         return subprocess.CompletedProcess(cmd, 0, json.dumps({"autonomy": "propose"}) + "\n" + json.dumps(row), "")
 
     return run_
@@ -359,3 +361,137 @@ def test_s108_12_through_the_cli_a_failed_label_exits_with_ghs_code(
     root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
     assert cli(root, host, FakeGh(edit=1), "focus") == 1
     assert f"relay is posted at {URL}" in capsys.readouterr().err
+
+
+# -- project check (S-108-5, S-108-6)
+
+
+@dataclass
+class FakeCheckHub(FakeHub):
+    open_checks: frozenset[int] = frozenset()
+    fail_link: int | None = None
+
+    def item(self, number: int) -> Item:
+        if number == self.found.number:
+            return self.found
+        return Item(number, False, number in self.open_checks, frozenset(), "", at(0), ())
+
+    def create(self, title: str, body: str) -> str:
+        self.written.append(("create", f"{title}\n{body}"))
+        return "https://github.com/o/r/issues/51"
+
+    def link_child(self, head_: int, child: int) -> None:
+        if self.fail_link is not None:
+            raise moves.StepFailed("chains.py link exited 2", self.fail_link)
+        self.written.append(("link", f"#{head_} --child #{child}"))
+
+
+def run_check(hub: FakeCheckHub, title: str = "the page shows the plan", **flags: Any) -> list[str]:
+    said: list[str] = []
+    text = flags.pop("check", "Open /plans and see the new plan.")
+    assert moves.run_check(moves.CheckRequest(7, title, text, **flags), hub, said.append) == 0
+    return said
+
+
+# proves: S-108-5
+def test_s108_5_check_files_the_check_issue_and_links_it_to_the_head() -> None:
+    hub = FakeCheckHub(issue(), heads("PROJECT_HELD", None))
+    said = run_check(hub, cleanup="- [ ] drop the flag")
+    body = "## Check\n\nOpen /plans and see the new plan.\n\n## Cleanup\n\n- [ ] drop the flag\n"
+    assert hub.written == [
+        ("create", f"Check: the page shows the plan\n{body}"),
+        ("link", "#7 --child #51"),
+    ]
+    assert said == ["https://github.com/o/r/issues/51"]
+    assert not any(kind == "comment" for kind, _ in hub.written)  # the session's own step: no relay
+    filed = {"number": 51, "title": "Check: the page shows the plan", "body": body, "state": "OPEN"}
+    filed |= {"updatedAt": "2026-11-25T10:00:00Z", "subIssues": {"totalCount": 0, "nodes": []}}
+    assert state(node_after(("project",), (filed,))) == ("PROJECT_ACTIVE", "no part filed")
+
+
+def test_s108_5_a_closed_check_issue_lets_a_new_one_be_filed() -> None:
+    hub = FakeCheckHub(issue(), heads("PROJECT_CLOSING", 50))
+    run_check(hub)
+    assert [kind for kind, _ in hub.written] == ["create", "link"]
+
+
+# proves: S-108-6
+@pytest.mark.parametrize(
+    ("read", "title", "flags", "said"),
+    [
+        (heads(check_issue=50), "the page shows the plan", {}, "open check issue already, #50"),
+        (heads("PROJECT_HELD", None), " ", {}, "--title is empty"),
+        (heads("PROJECT_HELD", None), "one\ntwo", {}, "several lines"),
+        (heads("PROJECT_HELD", None), "the page shows the plan", {"check": "  \n"}, "--check-file is empty"),
+        (Projects({}), "the page shows the plan", {}, "no project head"),
+        (heads("PROJECT_STOP_DUE", None), "the page shows the plan", {}, "stop pending"),
+    ],
+)
+def test_s108_6_a_check_its_head_already_has_or_a_bad_title_or_file_is_refused(
+    read: Projects, title: str, flags: dict[str, str], said: str
+) -> None:
+    hub = FakeCheckHub(issue(), read, open_checks=frozenset({50}))
+    with pytest.raises(ReleaseError, match=said):
+        run_check(hub, title, **flags)
+    assert hub.written == []
+
+
+def test_s108_6_a_missing_check_file_exits_2_before_any_read(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    gh = FakeGh()
+    with pytest.raises(ReleaseError, match="is missing"):
+        main(
+            ["--repo", str(root), "project", "check", "7", "--title", "T", "--check-file", str(tmp_path / "none.md")],
+            environ=host.env(),
+            home=host.home,
+            gh_capture=gh,
+            login=lambda: "amy",
+            state=intake(),
+        )
+    assert gh.calls == []
+
+
+def test_s108_12_a_failed_link_names_the_check_issues_url() -> None:
+    hub = FakeCheckHub(issue(), heads("PROJECT_HELD", None), fail_link=2)
+    with pytest.raises(moves.StepFailed, match="check issue is open at https://github.com/o/r/issues/51") as raised:
+        run_check(hub)
+    assert raised.value.code == 2
+
+
+def test_s108_12_check_dry_run_prints_the_issue_and_the_link_and_writes_nothing() -> None:
+    hub = FakeCheckHub(issue(), heads("PROJECT_HELD", None))
+    said = run_check(hub, dry_run=True)
+    assert said == [
+        "issue: Check: the page shows the plan",
+        "## Check\n\nOpen /plans and see the new plan.",
+        "link: #7 --child the new issue",
+    ]
+    assert hub.written == []
+
+
+def test_through_the_cli_check_files_the_issue_then_runs_chains_link(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
+    text = tmp_path / "check.md"
+    text.write_text("Open /plans.\n", encoding="utf-8")
+    linked: list[list[str]] = []
+
+    def chains(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        linked.append(cmd[2:])
+        return subprocess.CompletedProcess(cmd, 0, "linked\n", "")
+
+    gh = FakeGh()
+    code = main(
+        ["--repo", str(root), "project", "check", "7", "--title", "T", "--check-file", str(text)],
+        api=MintApi(expires_from=dt.datetime.now(dt.UTC)),
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_capture=gh,
+        login=lambda: "amy",
+        state=intake("PROJECT_HELD", None),
+        chains=chains,
+    )
+    assert code == 0
+    created = next(call for call in gh.calls if call[:2] == ["issue", "create"])
+    assert created[created.index("--title") + 1] == "Check: T"
+    assert linked[0][0] == "link" and linked[0][2:] == ["--child", linked[0][3]]

@@ -273,3 +273,100 @@ def run(request: Request, hub: Hub, maintainers: frozenset[str], say: Callable[[
         raise StepFailed(f"the relay is posted at {url}, but the next step failed: {exc}", 2) from None
     say(url)
     return 0
+
+
+# -- `project check` (S-108-5, S-108-6): the session's own step of a start, no relay
+
+
+@dataclass(frozen=True, slots=True)
+class CheckRequest:
+    number: int
+    title: str
+    check: str  # the text of --check-file
+    cleanup: str | None = None  # the text of --cleanup-file
+    dry_run: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CheckIssue:
+    title: str
+    body: str
+
+
+class CheckHub(answer.Hub, Protocol):
+    def projects(self, bot_login: str) -> Projects: ...
+
+    def create(self, title: str, body: str) -> str:
+        """Open an issue through shipmill gh; its URL"""
+        ...
+
+    def link_child(self, head: int, child: int) -> None:
+        """Link child as head's sub-issue, as `shipmill link #head --child #child` does;
+        StepFailed with its code when it fails"""
+        ...
+
+
+def _text(name: str, value: str) -> str:
+    text = value.strip()
+    if not text:
+        raise ReleaseError(f"project check's {name} is empty; a check issue needs its {name}")
+    return text
+
+
+def compose_check(
+    item: answer.Item,
+    request: CheckRequest,
+    bot_login: str,
+    projects: Callable[[], Projects],
+    is_open: Callable[[int], bool],
+) -> CheckIssue:
+    """The check issue to file, refused (ReleaseError) for one the head's reader wouldn't count"""
+    title = _text("--title", request.title)
+    if "\n" in title or "\r" in title:
+        raise ReleaseError("project check's --title holds several lines; a title is one line")
+    check = _text("--check-file", request.check)
+    if item.pull or not item.open:
+        raise ReleaseError(
+            f"#{item.number} is {'a pull request' if item.pull else 'closed'}, so it gets no check issue"
+        )
+    head = projects().heads.get(item.number)
+    if head is None:
+        raise ReleaseError(f"#{item.number} is no project head as `intake_state.py --projects` reads one")
+    if head.state == STOP_DUE:
+        raise ReleaseError(f"project #{item.number} has a stop pending, so it gets no check issue")
+    if head.check is not None and is_open(head.check):
+        raise ReleaseError(f"project #{item.number} has an open check issue already, #{head.check}")
+    body = f"## Check\n\n{check}\n"
+    if request.cleanup is not None:
+        body += f"\n## Cleanup\n\n{_text('--cleanup-file', request.cleanup)}\n"
+    found = CheckIssue(f"{CHECK_TITLE}{title}", body)
+    sub = {"title": found.title, "body": found.body}
+    if not answer._intake().is_check(sub):
+        raise ReleaseError(f"intake_state.py doesn't read `{found.title}` as a check issue; nothing was written")
+    return found
+
+
+def run_check(request: CheckRequest, hub: CheckHub, say: Callable[[str], None]) -> int:
+    """Read the head, file its check issue, then link it as the head's sub-issue; print its URL"""
+    bot_login = hub.viewer()
+    item = hub.item(request.number)
+    found = compose_check(
+        item, request, bot_login, lambda: hub.projects(bot_login), lambda number: hub.item(number).open
+    )
+    if request.dry_run:
+        say(f"issue: {found.title}")
+        say(found.body.rstrip("\n"))
+        say(f"link: #{request.number} --child the new issue")
+        return 0
+    url = hub.create(found.title, found.body)
+    number = url.rstrip("/").rsplit("/", 1)[-1]
+    if not number.isdigit():
+        raise StepFailed(f"gh issue create printed {url!r}, no issue URL, so the check issue can't be linked", 1)
+    try:
+        hub.link_child(request.number, int(number))
+    except StepFailed as exc:
+        raise StepFailed(
+            f"the check issue is open at {url}, but linking it to #{request.number} failed: {exc}", exc.code
+        ) from None
+    say(url)
+    return 0
