@@ -119,6 +119,8 @@ A goal reads proposed, written, planned, met, or dropped; a plan PLAN_OPEN with 
 | `goal-proposal` | an issue | a goal not yet in the direction; GOAL_PROPOSAL_DUE opens one with the opportunity as its sub-issue |
 | `goal-review` | the App's issue | GOAL_OVERDUE's question: extend, rewrite, or drop the goal |
 
+A head's check issue is filed and linked with `shipmill project check <head> --title "<what will be true>" --check-file <file>`, and an opportunity the maintainer turns down is closed with `shipmill opportunity decline <n> --by <login> --reason "<why>"`, the relay first (spec 108, D-115).
+
 | Marker | Where | Written on |
 |---|---|---|
 | `<!-- shipmill:goal-overdue G-<n> by=<horizon> -->` | the first line of the `goal-review` issue, by the App | GOAL_OVERDUE |

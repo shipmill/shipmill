@@ -722,6 +722,8 @@ def test_s108_13_dry_run_reads_no_state_and_a_failed_read_exits_with_its_code(
     said = capsys.readouterr()
     assert said.out.splitlines() == [URL]
     assert "the move is written, but status --item 7 exited 1: gh: HTTP 502" in said.err
+    assert cli(root, host, FakeGh(), "focus", after=ItemState(out="nothing\n")) == 2
+    assert "the move is written, but status --item 7 printed no state" in capsys.readouterr().err
 
 
 def test_s108_13_the_state_line_reads_status_items_first_line_and_reason() -> None:
@@ -744,4 +746,5 @@ def test_s108_13_the_state_line_reads_status_items_first_line_and_reason() -> No
 def test_s108_14_the_skills_and_the_flow_name_the_moves(doc: str) -> None:
     text = (Path(__file__).resolve().parents[1] / doc).read_text(encoding="utf-8")
     assert "spec 108" in text
-    assert any(name in text for name in ("project add", "project check", "opportunity decline", "project focus"))
+    for name in ("project add", "project check", "opportunity decline"):
+        assert name in text, f"{doc} doesn't name `shipmill {name}`"

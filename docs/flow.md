@@ -119,10 +119,10 @@ A held project's turn reads PROJECT_START_DUE (its session files the check issue
 | `project` | an issue | it is a project's head |
 | `held` | a project's head | held: it starts only in its turn |
 | `focus` | an active project's head | your steps on it come first |
-
-A session makes your moves on these with one command each (spec 108), writing a relay that names you and then the label: `shipmill project add|focus|unfocus|hold|resume <n> --by <login>`, `shipmill project check <head>` for the check issue, and `shipmill opportunity accept <n> G-<n>|new` or `decline <n> --reason "<why>"`. Each refuses a move its reader wouldn't count and prints the item's state after it.
 | `goal-proposal` | an issue | a proposed goal, not yet in the direction |
 | `goal-review` | the App's issue | a goal past its horizon, waiting for your extend, rewrite, or drop |
+
+A session makes your moves on these with one command each (spec 108), writing a relay that names you and then the label or close: `shipmill project add|focus|unfocus|hold|resume <n> --by <login>`, `shipmill project check <head> --title "<what will be true>" --check-file <file>` for the check issue, and `shipmill opportunity accept <n> G-<n>|new --by <login>` or `shipmill opportunity decline <n> --by <login> --reason "<why>"`. Each refuses a move its reader wouldn't count and prints the item's state after it.
 
 | Marker (a comment's or issue's first line, by the App) | Records |
 |---|---|

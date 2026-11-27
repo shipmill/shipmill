@@ -1557,7 +1557,7 @@ def main(
             if code != 0 or args.dry_run:
                 return code
             closed = args.command == "opportunity" and args.move == "decline"
-            return _say_state(root, args.number, closed, item_state or _status_item_json)
+            return _say_state(root, args.number, closed, item_state or _status_item_text)
         return _spec_open(root, args, through, spec_checkout)
     if args.command == "leaks":  # reads no config: the private file and what is checked alone (spec 081)
         if args.leaks == "check":
@@ -3797,11 +3797,15 @@ class _CheckHub(_MoveHub):
 
 # S-108-13: `status --item <n>` run for the item a move wrote on, in its checkout
 type _ItemState = Callable[[Path, int], subprocess.CompletedProcess[str]]
+STATE_TIMEOUT = 180  # seconds a move waits for status --item, its writes already done
 
 
-def _status_item_json(root: Path, number: int) -> subprocess.CompletedProcess[str]:
+def _status_item_text(root: Path, number: int) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "shipmill", "--repo", str(root), "status", "--item", str(number)]
-    return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=root)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=root, timeout=STATE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 1, "", f"no answer in {STATE_TIMEOUT} seconds\n")
 
 
 def _say_state(root: Path, number: int, closed: bool, item_state: _ItemState) -> int:
@@ -3820,7 +3824,12 @@ def _say_state(root: Path, number: int, closed: bool, item_state: _ItemState) ->
             file=sys.stderr,
         )
         return proc.returncode
-    print(moves.state_line(proc.stdout))
+    try:
+        line = moves.state_line(proc.stdout)
+    except ReleaseError as exc:
+        print(f"shipmill: the move is written, but status --item {number} printed no state: {exc}", file=sys.stderr)
+        return 2
+    print(line)
     return 0
 
 
