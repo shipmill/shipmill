@@ -145,7 +145,7 @@ Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answe
 
 | Flag | Act |
 |---|---|
-| NEW | Triage it |
+| NEW | Triage it. `postponed label without a triage comment` in the note: someone labelled it `postponed` with no trusted `Triage:` comment (#1766), so post the verdict; a postpone keeps the label, any other verdict drops it |
 | NEEDS_PR | Dispatch an implementer, or explain on the issue why the plan changed |
 | IN_PROGRESS | Nothing, unless the PR stalled |
 | AGENT_DRAFT | The only open PRs are the App's own drafts, their session ended, none labelled `needs-decision` (D-67): hand each `#N:draft` to github-pr-triage, which marks it ready once nothing on it is open and lands it |
