@@ -101,6 +101,7 @@ class Item:
     body: str
     created_at: str
     comments: tuple[Comment, ...]
+    title: str = ""  # spec 108: a check issue's title starts `Check: `
 
     def triage_comments(self, extra: Iterable[Comment] = ()) -> list[tuple[str, str, str]]:
         """The comments as triage_state.py reads them: (login, author association, body)"""

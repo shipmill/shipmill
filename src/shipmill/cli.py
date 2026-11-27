@@ -157,6 +157,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -186,6 +187,7 @@ from shipmill import (
     land_window,
     link,
     merge_checks,
+    moves,
     plugin_clean,
     product,
     refused,
@@ -319,6 +321,7 @@ from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.app_install import check as app_install_check
 from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, Writer, decider_token, remove_login, store_login
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Stage, StageKind
+from shipmill.bundle import skills_dir
 from shipmill.classify import (
     DEFAULT_REF,
     Base,
@@ -1248,14 +1251,18 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument("--reason", help="decline: why; send-back: the change to make")
     relay_args(q)
 
-    p = sub.add_parser("project", help="relay the maintainer's move on a project head (spec 107)")
-    moves = p.add_subparsers(dest="move", required=True)
+    p = sub.add_parser("project", help="relay the maintainer's move on a project head (specs 107, 108)")
+    projecting = p.add_subparsers(dest="move", required=True)
     for verb, about in (
+        ("add", "make an issue a project head, labelled project (spec 108)"),
+        ("focus", "put a head in focus, labelled focus (spec 108)"),
+        ("unfocus", "take a head's focus off (spec 108)"),
         ("continue", "keep the project going, answering its idle question"),
-        ("hold", "hold the project"),
+        ("hold", "put the head back in line: the comment, then the held label (spec 108)"),
+        ("resume", "start a held head now, its held label off, while a slot is free (spec 108)"),
         ("stop", "stop the project, with its reason"),
     ):
-        q = moves.add_parser(verb, help=about)
+        q = projecting.add_parser(verb, help=about)
         q.add_argument("number", type=int, help="the project's head issue")
         if verb == "stop":
             q.add_argument("--reason", help="why it stops, which its stop record gives")
@@ -1523,6 +1530,9 @@ def main(
             return _review_record(root, args, through, classify)
         if args.command == "revert":
             return _revert_open(root, args, through)
+        if args.command == "project" and args.move in tuple(moves.Verb):
+            intake = _intake_runner(state)
+            return _move(root, args, through, login or (lambda: host_login(root)), env, intake)
         if args.command in _RELAYS:
             return _answer(root, args, through, login or (lambda: host_login(root)), env)
         return _spec_open(root, args, through, spec_checkout)
@@ -3559,6 +3569,7 @@ class _AnswerHub:
             str(data.get("body") or ""),
             str(data["created_at"]),
             comments,
+            str(data.get("title") or ""),
         )
 
     def comment(self, item: answer.Item, body: str) -> str:
@@ -3585,6 +3596,96 @@ class _AnswerHub:
             [group, "edit", str(item.number), "-R", self._repo, "--remove-label", answer.DECISION_LABEL],
             f"{group} edit",
         )
+
+
+type _IntakeRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
+
+
+def _intake_runner(state: StateRunner | None) -> _IntakeRunner:
+    """intake_state.py run in the checkout, whose config and product it reads; state, a test's
+    runner, stands in for it"""
+    if state is not None:
+        return lambda cmd, cwd: state(cmd)
+    return lambda cmd, cwd: subprocess.run(cmd, capture_output=True, text=True, check=False, cwd=cwd)
+
+
+def _move(
+    root: Path,
+    args: argparse.Namespace,
+    path: _GhPath,
+    login: Callable[[], str],
+    environ: Mapping[str, str],
+    intake: _IntakeRunner,
+) -> int:
+    """Spec 108: `project add`, `focus`, `unfocus`, `hold`, and `resume`, in the checkout's own
+    repo: the relay, then the label, through `shipmill gh`'s path; a failed label step exits
+    with gh's code, naming the step and the relay's URL"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(f"project runs in the repo's checkout, and git can't read {root}: `git -C {root} status`")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so project has no item to move")
+    resolved = roles.resolve(roles.configured(top), login, environ.get(roles.GATE_MAINTAINER, ""))
+    maintainers = frozenset(str(user).lower() for user in resolved[0].users)
+    request = moves.Request(
+        moves.Verb(args.move),
+        args.number,
+        args.by.removeprefix("@"),
+        note=args.note,
+        relayed_by=args.relayed_by,
+        dry_run=args.dry_run,
+    )
+    hub = _MoveHub(top, repo, path, resolved, intake)
+    try:
+        return moves.run(request, hub, maintainers, print)
+    except moves.StepFailed as exc:
+        print(f"shipmill: {exc}", file=sys.stderr)
+        return exc.code
+
+
+class _MoveHub(_AnswerHub):
+    """The moves' GitHub calls: answer's, a label step, and the heads as intake reads them"""
+
+    def __init__(
+        self,
+        top: Path,
+        repo: str,
+        path: _GhPath,
+        resolved: tuple[roles.ResolvedRole, ...],
+        intake: _IntakeRunner,
+    ) -> None:
+        super().__init__(top, repo, path)
+        self._resolved = resolved
+        self._intake = intake
+
+    def label(self, item: answer.Item, add: str | None, remove: str | None) -> None:
+        group = "pr" if item.pull else "issue"
+        edit = ["--add-label", add] if add is not None else ["--remove-label", remove or ""]
+        code, out = _through_gh(self._top, self._path, [group, "edit", str(item.number), "-R", self._repo, *edit])
+        if code != 0:
+            raise moves.StepFailed(f"gh {group} edit exited {code}: {out.strip()[:200]}", code)
+
+    def projects(self, bot_login: str) -> moves.Projects:
+        script = skills_dir() / "product-intake" / "scripts" / "intake_state.py"
+        cmd = [
+            sys.executable,
+            str(script),
+            self._repo,
+            "--projects",
+            "--json",
+            "--bot-login",
+            bot_login,
+            *roles.arguments(self._resolved),
+        ]
+        proc = self._intake(cmd, self._top)
+        sys.stderr.write(proc.stderr)
+        if proc.returncode not in (0, 1) or not proc.stdout.strip():  # 1: an action is due, rows printed
+            raise ReleaseError(f"intake_state.py --projects exited {proc.returncode}, so the heads can't be read")
+        return moves.read_projects(proc.stdout)
 
 
 def _revert_open(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
