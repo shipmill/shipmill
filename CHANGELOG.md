@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.191.0] - 2026-11-27
+
+### Changed
+
+- Setup and docs: `shipmill-setup` asks whether each goal ends on a check or is held at a threshold and writes it with `product goal` or `product held`, offering a registry measure only for a standing measure; `docs/direction.md`'s example has one goal and one standing measure; the new `docs/goals.md`, linked from the README and `docs/install.md`, walks one goal from written to met (#1788)
+
 ## [0.190.1] - 2026-11-27
 
 ### Fixed
@@ -3309,7 +3315,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.190.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.191.0...HEAD
+[0.191.0]: https://github.com/shipmill/shipmill/compare/v0.190.1...v0.191.0
 [0.190.1]: https://github.com/shipmill/shipmill/compare/v0.190.0...v0.190.1
 [0.190.0]: https://github.com/shipmill/shipmill/compare/v0.189.0...v0.190.0
 [0.189.0]: https://github.com/shipmill/shipmill/compare/v0.188.0...v0.189.0
