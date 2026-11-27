@@ -3162,10 +3162,17 @@ class Started:
         return f"project #{self.head}: check waits on its work {self.progress}"
 
 
-def started_projects(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dict[int, Started]:
+def started_projects(
+    issues: list[dict[str, Any]],
+    repo: tuple[str, str],
+    bot_login: str | None = None,
+    states: Mapping[Ref, str] | None = None,
+) -> dict[int, Started]:
     """#1802: each started project, keyed by its head's number and by its check issue's, read
     from the open issues' own sub-issues and linked PRs. A head read without sub-issues (a forge
-    that refused them) starts none: no check issue can be told there"""
+    that refused them) starts none: no check issue can be told there. A merged PR whose revert
+    the --bot-login reopened the head over is no merged work while the revert stands (spec 079,
+    as classify_open reads it), and the revert itself is no work of the head's"""
     here = f"{repo[0]}/{repo[1]}".lower()
     by_number = {int(i["number"]): i for i in issues}
     found: dict[int, Started] = {}
@@ -3188,8 +3195,11 @@ def started_projects(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dic
         number = int(check["number"])
         inner = ((by_number.get(number) or {}).get("subIssues") or {}).get("nodes") or []
         parts = [s for s in subs if not is_check(s)] + list(inner)
-        prs = linked_prs(head)
-        merged = [n for n, s, _ in prs if s == "MERGED"]
+        standing = {
+            n: r for n, r in reverts(head, bot_login).items() if (states or {}).get((*repo, r)) != "CLOSED_UNMERGED"
+        }
+        prs = [p for p in linked_prs(head) if p[0] not in standing.values()]
+        merged = [n for n, s, _ in prs if s == "MERGED" and n not in standing]
         open_parts = sum(1 for p in parts if p.get("state") == "OPEN")
         opened = any(s == "OPEN" for _, s, _ in prs)
         done = open_parts == 0 and not opened and bool(parts or merged)
@@ -3765,7 +3775,9 @@ def main() -> int:
     windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql, maintainers=maintainers)
     grouped = grouped_in(issues, (owner, name))  # #1643: the requests open opportunities name
     held = held_projects(issues, (owner, name))  # spec 106: a held project's issues wait
-    started = started_projects(issues, (owner, name))  # #1802: a started project's head and check
+    started = started_projects(
+        issues, (owner, name), args.bot_login, states
+    )  # #1802: a started project's head and check
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(

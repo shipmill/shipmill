@@ -176,3 +176,13 @@ def test_s106_29_the_run_reads_a_started_project(tmp_path: Path) -> None:
     rows = {r["number"]: r for r in map(json.loads, run.stdout.splitlines()) if "number" in r}
     assert rows[7]["state"] == "NEEDS_PR", run.stderr
     assert rows[50]["state"] == "BLOCKED"
+
+
+def test_s106_29_a_reverted_part_of_pr_is_no_done_work(ts: ModuleType) -> None:
+    head, check = started_pair(part_of(80, "MERGED", "2026-11-28T10:00:00Z"))
+    revert = {"body": "<!-- shipmill:reverted #80 by #81 -->", "createdAt": "2026-11-29T10:00:00Z"}
+    head["comments"]["nodes"].append({**revert, "author": {"__typename": "Bot", "login": "app"}})
+    standing = ts.started_projects([head, check], REPO, "app[bot]", {(*REPO, 81): "OPEN"})
+    assert standing[50].done is False
+    refused = ts.started_projects([head, check], REPO, "app[bot]", {(*REPO, 81): "CLOSED_UNMERGED"})
+    assert refused[50].done is True  # the revert closed unmerged: #80 counts again
