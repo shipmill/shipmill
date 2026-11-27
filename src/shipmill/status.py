@@ -163,6 +163,9 @@ PLACED = {
     CHAIN_STALLED,  # spec 086: the stalled chains line says it, with its fix
     *(state for _, state in INTAKE_LINES),  # spec 074: their own lines, with their fix
     PLAN_OPEN,  # #1680: the goal plan line says it, each plan a reason that waits on you
+    # #1787: silent here, never on the goal plan line: such a plan waits on its open items with
+    # another parent, not on you, and `status --item` says so (#1724)
+    "PLAN_FILED",
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
 RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED")
