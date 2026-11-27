@@ -126,6 +126,11 @@ pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= product show )'
 replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
+file = "skills/github-issue-triage/references/needs-decision.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= decision answer )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
 file = "skills/product-intake/references/plan.md"
 pattern = 'uvx shipmill==\d+\.\d+\.\d+'
 replace = 'uvx shipmill=={version}'
