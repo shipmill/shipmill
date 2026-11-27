@@ -959,3 +959,11 @@ entry that supersedes it, never by editing an old one.
 - Why: An accepted plan whose items were all existing had no children, so intake read it PLAN_FILED with nothing to file and the plan stayed on the maintainer's list for good (#1706). Linking them gives every plan one way to wait on its work and to close. Zone rule-departure, decided by `@romamo`'s answer on #1706 (option 1, relayed 2026-11-26)
 - Applies to: skills/product-intake/SKILL.md, skills/product-intake/references/plan.md, skills/product-intake/scripts/intake_state.py, docs/specs/028-plan-from-goals.md, docs/specs/097-plan-outcome.md
 - Enforced by: review, until #1706's tests
+
+## D-115: An opportunity's accept and decline may be the App's, on a relay of the maintainer's
+
+- Decided: 2026-11-27, in shipmill/shipmill#1789
+- Rule: Refines the intake rule that an opportunity becomes planned work only when the maintainer accepts it, and spec 107's line that `planned` is a person's label no agent adds: a session that heard the maintainer accept or decline an opportunity may add `planned`, or close it as not planned, as the App, only through `shipmill opportunity accept` or `decline` (spec 108), which first posts the App's relay naming the maintainer (D-68, D-93). The relay is the record of who decided: `decline_reason` reads a relayed decline's reason from its line, and credit (S-049-6) credits the maintainer the relay names when the App added `planned`. An agent never adds `planned` or declines an opportunity on its own
+- Why: A session that heard the maintainer's accept left the label to them, or labelled with no record of who decided, and a relayed decline read its header as the reason (#1789). Decided by `@romamo` in a session on 2026-11-27
+- Applies to: src/shipmill/moves.py, src/shipmill/credit.py, skills/product-intake/scripts/intake_state.py, skills/product-intake/SKILL.md, docs/specs/107-relayed-answer.md, docs/specs/108-lifecycle-moves.md
+- Enforced by: review, until spec 108's tests
