@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.2] - 2026-11-27
+
+### Fixed
+
+- `shipmill status` no longer lists the watch's report-only PLAN_FILED row under "other": an accepted plan waiting on its items with another parent stays silent in the summary, since it waits on its work rather than on you, and `shipmill status --item` still says what it waits on (#1787)
+
 ## [0.193.1] - 2026-11-27
 
 ### Fixed
@@ -3346,7 +3352,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.2...HEAD
+[0.193.2]: https://github.com/shipmill/shipmill/compare/v0.193.1...v0.193.2
 [0.193.1]: https://github.com/shipmill/shipmill/compare/v0.193.0...v0.193.1
 [0.193.0]: https://github.com/shipmill/shipmill/compare/v0.192.0...v0.193.0
 [0.192.0]: https://github.com/shipmill/shipmill/compare/v0.191.0...v0.192.0
