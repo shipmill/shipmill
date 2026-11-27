@@ -97,10 +97,14 @@ proposal checks a rule proposal's body before it is filed (spec 077). Exit 2, na
          when --max-open (3) or more open Proposed issues carry needs-decision. Exit 0
          printing the title. Read-only
 dedupe   each proposed issue title against the repo's open issues: DUPLICATE with the open
-         issue whose title matches (ignoring case, punctuation, and spacing), else NEW.
-         Read-only: the retro opens only the NEW ones
+         issue whose title matches (ignoring case, punctuation, and spacing); else, searching
+         the closed issues by the title's words, DECLINED with the newest one closed as not
+         planned whose title matches (a declined proposal is never proposed again, D-10; one
+         closed as completed doesn't count); else NEW. --json adds `declined`, that issue's
+         number or null. Read-only: the retro opens only the NEW ones
 
-Exit 0 on success (dedupe: every title is new), 1 when dedupe finds a duplicate or proposal
+Exit 0 on success (dedupe: every title is new), 1 when dedupe finds a duplicate or a declined
+title, or proposal
 refuses a well-formed body, 2 on bad
 input or a gh, git, shipmill, or metrics.py failure. Needs the gh CLI, authenticated, and for
 --goals git and uvx. Python 3.10+, standard library only.
@@ -161,6 +165,7 @@ class Verdict:
     title: str
     duplicate: int | None  # the open issue it matches
     existing: str
+    declined: int | None = None  # with no open match, the issue closed as not planned it matches
 
 
 def fail(message: str) -> SystemExit:
@@ -2126,9 +2131,14 @@ def normal(title: str) -> str:
     return " ".join(re.sub(r"[\W_]+", " ", title.casefold()).split())
 
 
-def dedupe(titles: list[str], issues: list[dict[str, Any]]) -> list[Verdict]:
-    """Each proposed title: the open issue whose title matches it, or none"""
+def dedupe(
+    titles: list[str], issues: list[dict[str, Any]], closed: list[dict[str, Any]] | None = None
+) -> list[Verdict]:
+    """Each proposed title: the open issue whose title matches it; else the newest closed issue
+    closed as not planned whose title matches it, declined (D-10); else none"""
     open_titles = {normal(i["title"]): i for i in sorted(issues, key=lambda i: int(i["number"]))}
+    not_planned = [i for i in closed or [] if i["stateReason"] == "NOT_PLANNED"]
+    declined_titles = {normal(i["title"]): i for i in sorted(not_planned, key=lambda i: int(i["number"]))}
     verdicts = []
     proposed: dict[str, str] = {}
     for title in titles:
@@ -2139,24 +2149,48 @@ def dedupe(titles: list[str], issues: list[dict[str, Any]]) -> list[Verdict]:
             raise fail(f"two proposals share a title: {proposed[key]!r} and {title!r}")
         proposed[key] = title
         match = open_titles.get(key)
-        verdicts.append(Verdict(title, int(match["number"]), match["title"]) if match else Verdict(title, None, ""))
+        declined = declined_titles.get(key)
+        if match:
+            verdicts.append(Verdict(title, int(match["number"]), match["title"]))
+        elif declined:
+            verdicts.append(Verdict(title, None, "", int(declined["number"])))
+        else:
+            verdicts.append(Verdict(title, None, ""))
     return verdicts
 
 
-def dedupe_command(args: argparse.Namespace) -> int:
+def closed_matching(repo: str, title: str, run: Callable[[list[str]], Any]) -> list[dict[str, Any]]:
+    """The closed issues whose titles hold every word of the title; dedupe keeps the exact ones"""
+    query = f"in:title {normal(title)}"
+    cmd = ["issue", "list", "-R", repo, "--state", "closed", "--search", query, "-L", str(ISSUE_LIMIT)]
+    found: list[dict[str, Any]] = json.loads(gh_output([*cmd, "--json", "number,title,stateReason"], run=run))
+    if len(found) >= ISSUE_LIMIT:
+        raise fail(f"{repo} has {ISSUE_LIMIT}+ closed issues for the search {query!r}")
+    return found
+
+
+def dedupe_command(args: argparse.Namespace, run: Callable[[list[str]], Any] = run_command) -> int:
     cmd = ["issue", "list", "-R", args.repo, "--state", "open", "-L", str(ISSUE_LIMIT), "--json", "number,title"]
-    issues = gh(cmd)
+    issues = json.loads(gh_output(cmd, run=run))
     if len(issues) >= ISSUE_LIMIT:
         raise fail(f"{args.repo} has {ISSUE_LIMIT}+ open issues")
-    verdicts = dedupe(args.title, issues)
+    closed = [
+        found
+        for v in dedupe(args.title, issues)  # refuses an empty or repeated title before any search
+        if v.duplicate is None
+        for found in closed_matching(args.repo, v.title, run)
+    ]
+    verdicts = dedupe(args.title, issues, closed)
     for v in verdicts:
         if args.json:
             print(json.dumps(asdict(v), sort_keys=True))
-        elif v.duplicate is None:
-            print(f"NEW        {v.title}")
-        else:
+        elif v.duplicate is not None:
             print(f"DUPLICATE  {v.title} (open as #{v.duplicate}: {v.existing})")
-    return 1 if any(v.duplicate is not None for v in verdicts) else 0
+        elif v.declined is not None:
+            print(f"DECLINED   {v.title} (closed as not planned as #{v.declined})")
+        else:
+            print(f"NEW        {v.title}")
+    return 1 if any(v.duplicate is not None or v.declined is not None for v in verdicts) else 0
 
 
 # -- proposal (spec 077) ----------------------------------------------------------------------
@@ -2396,7 +2430,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--max-open", type=int, default=MAX_OPEN, help="open proposals with needs-decision that hold back another"
     )
-    d = sub.add_parser("dedupe", help="each proposed title against the open issues")
+    d = sub.add_parser("dedupe", help="each proposed title against the open issues and the declined ones")
     d.add_argument("repo", help="owner/name")
     d.add_argument("--title", action="append", required=True, help="a proposed issue's title")
     d.add_argument("--json", action="store_true", help="JSON lines")
