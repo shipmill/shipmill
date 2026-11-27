@@ -14,6 +14,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-issue-triage" / "scripts" / "triage_state.py"
 REPO = ("o", "r")
+MAINTAINER = {"author": {"__typename": "User", "login": "ana"}, "authorAssociation": "MEMBER"}
 
 
 @pytest.fixture(scope="module")
@@ -27,12 +28,13 @@ def ts() -> ModuleType:
 
 
 def issue(*comments: tuple[str, str], labels: tuple[str, ...] = (), body: str = "") -> dict[str, Any]:
-    """Comments as (createdAt, body), oldest first, as GitHub returns them"""
+    """Comments as (createdAt, body), oldest first, as GitHub returns them, by a member: a
+    postpone counts only from a trusted author (D-16, #1766)"""
     return {
         "number": 7,
         "body": body,
         "labels": {"nodes": [{"name": n} for n in labels]},
-        "comments": {"nodes": [{"createdAt": at, "body": body} for at, body in comments]},
+        "comments": {"nodes": [{"createdAt": at, "body": body, **MAINTAINER} for at, body in comments]},
         "timelineItems": {"nodes": []},
     }
 
@@ -685,7 +687,7 @@ def test_more_than_100_labels_is_bad_input(ts: ModuleType, capsys: pytest.Captur
 
 def test_tags_are_paged_back_to_the_newest_stable_tag_and_no_further(ts: ModuleType) -> None:
     dev = [tag(f"v1.3.0.dev{i}", f"2026-09-2{i}T10:00:00Z") for i in range(5)]
-    postponed = open_issue(7, [comment("Triage: postpone")], labels=("postponed",))
+    postponed = open_issue(7, [{**comment("Triage: postpone"), **MAINTAINER}], labels=("postponed",))
     gh = FakeGitHub(
         ts,
         {

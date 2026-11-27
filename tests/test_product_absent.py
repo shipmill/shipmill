@@ -176,12 +176,17 @@ def issues() -> list[dict[str, object]]:
         "author": {"__typename": "Bot", "login": "demo-agent"},
         "authorAssociation": "NONE",
     }
+    postpone = {  # a postpone counts only from a trusted author (D-16, #1766)
+        **comment("Triage: **postponed to 1.1**."),
+        "author": {"__typename": "User", "login": "amy"},
+        "authorAssociation": "OWNER",
+    }
     return [
         open_issue(1),
         open_issue(2, [comment("Triage: **implement**. I'll link the PR here.")]),
         open_issue(3, [comment("Triage: **needs a decision**. Which default?")]),
         open_issue(4, [comment("Triage: **implement**.")], labels=("blocked",)),
-        open_issue(5, [comment("Triage: **postponed to 1.1**.")], labels=("postponed",)),
+        open_issue(5, [postpone], labels=("postponed",)),
         open_issue(6, [comment("Triage: **implement**."), question], labels=("needs-decision",)),
     ]
 

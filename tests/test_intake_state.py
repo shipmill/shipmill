@@ -164,14 +164,15 @@ def test_feedback_is_what_triage_left_to_intake(ist: ModuleType) -> None:
 
 
 def test_1628_a_postponed_issue_or_a_persons_item_is_never_feedback(ist: ModuleType) -> None:
-    """#1628: triage_state.py reads an issue labelled postponed as POSTPONED, whatever its
-    comments say, and one labelled human or role:<name> as a person's item, so intake must
-    not read either as a request to group"""
+    """#1628: triage_state.py reads an issue labelled postponed with a trusted triage comment
+    as POSTPONED, whatever that comment says, and one labelled human or role:<name> as a
+    person's item, so intake must not read either as a request to group. Labelled postponed
+    with no trusted triage comment, triage reads it NEW (#1766), and so it is feedback"""
     handed = triage_template("Opportunity")
     fake = Fake(
         [
             issue(1),  # an ordinary request: still feedback
-            issue(2, labels=("postponed",)),  # postponed with no Triage: comment
+            issue(2, labels=("postponed",)),  # postponed with no Triage: comment: NEW in triage (#1766)
             issue(3, labels=("role:maintainer", "postponed")),
             issue(4, labels=("human",)),
             issue(5, labels=("role:infra",)),
@@ -183,7 +184,7 @@ def test_1628_a_postponed_issue_or_a_persons_item_is_never_feedback(ist: ModuleT
         [],
     )
     found = states(ist, fake)
-    assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 9}
+    assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 2, 9}
 
 
 def test_1774_a_filed_plan_item_or_a_project_head_is_never_feedback(ist: ModuleType) -> None:
