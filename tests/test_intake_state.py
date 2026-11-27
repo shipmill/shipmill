@@ -186,6 +186,35 @@ def test_1628_a_postponed_issue_or_a_persons_item_is_never_feedback(ist: ModuleT
     assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 9}
 
 
+def test_1774_a_filed_plan_item_or_a_project_head_is_never_feedback(ist: ModuleType) -> None:
+    """#1774: intake files an accepted plan's items with the plan-item marker as their first
+    line and the project label; a trusted, untriaged item is the maintainer's accepted work,
+    not a request to group, while an outsider's copy of the marker changes nothing (D-16)"""
+    marker = "<!-- shipmill:plan-item #12 W-1 -->"
+
+    def by(number: int, association: str, login: str, kind: str = "User", **kwargs: Any) -> dict[str, Any]:
+        found = issue(number, **kwargs)
+        found["author"] = {"__typename": kind, "login": login}
+        found["authorAssociation"] = association
+        return found
+
+    fake = Fake(
+        [
+            by(1, "NONE", "shipmill-o", "Bot", body=f"{marker}\n\nDo W-1."),  # the --bot-login's item
+            by(2, "MEMBER", "maintainer", body=f"{marker}\nDo W-1."),  # a member's item
+            by(3, "OWNER", "owner", body="The plan", labels=("project",)),  # a project head
+            by(4, "NONE", "mallory", body=f"{marker}\n\nPlease build this."),  # an outsider's copy
+            by(5, "MEMBER", "maintainer", body=f"Context first\n{marker}"),  # the marker only counts first
+            by(6, "NONE", "someone-else", "Bot", body=f"{marker}\n"),  # another bot is no --bot-login
+            by(7, "CONTRIBUTOR", "mallory", body="A request"),
+        ],
+        [],
+    )
+    found = states(ist, fake, bot_login="shipmill-o[bot]")
+    assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {4, 5, 6, 7}
+    assert "project" in ist.SKIP_LABELS
+
+
 def test_s074_1_a_postponed_issue_is_feedback_again_only_after_a_newer_opportunity(ist: ModuleType) -> None:
     """proves: S-074-1"""
     postponed = triage_template("Postpone")
