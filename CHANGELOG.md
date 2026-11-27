@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.5] - 2026-11-27
+
+### Fixed
+
+- `intake_state.py --projects` reads a project head with more than 20 sub-issues, or a check issue with more than 10 parts, in full with a follow-up query on that issue, instead of failing the whole repo's read (#1827)
+- `shipmill project add`, `focus`, and `hold`, and `opportunity accept`, create the label they add when the repository lacks it, before the relay, so a missing `project`, `focus`, `held`, or `planned` label no longer leaves a posted relay with its label step failed, and a rerun no longer posts a second relay; a label that can't be created exits 2 with nothing written, and `--dry-run` names it as its own step (#1828)
+
 ## [0.193.4] - 2026-11-27
 
 ### Fixed
@@ -3365,7 +3372,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.4...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.5...HEAD
+[0.193.5]: https://github.com/shipmill/shipmill/compare/v0.193.4...v0.193.5
 [0.193.4]: https://github.com/shipmill/shipmill/compare/v0.193.3...v0.193.4
 [0.193.3]: https://github.com/shipmill/shipmill/compare/v0.193.2...v0.193.3
 [0.193.2]: https://github.com/shipmill/shipmill/compare/v0.193.1...v0.193.2
