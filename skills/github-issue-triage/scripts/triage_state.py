@@ -2487,6 +2487,7 @@ def classify_open(
     window: str | None = None,
     issues: Container[Ref] = frozenset(),
     project: str | None = None,
+    started: Started | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``issues`` are the holds read as issues,
     the only ones HOLD_UNLINKED names (#1645); ``closes`` says when each closed hold
@@ -2503,12 +2504,19 @@ def classify_open(
     issue's hold by its spec's approval at notify (veto_windows, spec 067), reads BLOCKED, its
     note first, whether triaged or not; without it the issue reads as before. A person's item
     whose sub-issue parent closed reads STALE_HANDOFF before any of these (stale_handoff, #1313).
-    ``project``, the issue's note in held_projects, reads BLOCKED with it after that (spec 106)"""
+    ``project``, the issue's note in held_projects, reads BLOCKED with it after that (spec 106).
+    ``started``, the started project the issue heads or checks (started_projects, #1802): its
+    check issue never reads NEW, but BLOCKED until the project's work is done and then by its
+    ## Check; its head is never held on its check issue, and reads BLOCKED on it once done"""
     stale = stale_handoff(issue, bot_login)
     if stale is not None:
         return stale
     if project is not None:  # S-106-16: a held project is not split into issues
         return "BLOCKED", project
+    if started is not None and int(issue["number"]) == started.check:
+        return project_check(issue, started, states, repo, bot_login)
+    if started is not None and started.done:  # #1802: the head waits on its check
+        return "BLOCKED", started.head_note()
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -2572,6 +2580,8 @@ def classify_open(
     # and a sub-issue (child), and a parent's starts with how many of its children closed
     texts = {fold(r): r for r in named}
     native = native_holds(issue) if held else {}
+    if started is not None:  # #1802: a head is never held on its own check issue as on a child
+        native = {r: v for r, v in native.items() if fold(r) != fold((*repo, started.check))}
     states = {**states}
     closes = {**(closes or {})}
     marks: dict[Ref, str] = {}
@@ -3135,6 +3145,64 @@ def held_projects(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dict[i
     return found
 
 
+class Started:
+    """#1802: a started project, its head open, not held, with an open check issue of this
+    repo among its sub-issues. ``done`` once its work is: every part closed (the head's other
+    sub-issues and the check issue's), no pull request linked to the head open, and, with no
+    part filed, one of them merged (the head built like any issue, its PRs saying
+    `Part of #<head>`). ``ends`` are the parts' closes and those PRs' merges"""
+
+    def __init__(self, head: int, check: int, done: bool, ends: list[str], progress: str) -> None:
+        self.head, self.check, self.done, self.ends, self.progress = head, check, done, ends, progress
+
+    def head_note(self) -> str:
+        return f"project #{self.head}: check #{self.check} due {self.progress}"
+
+    def waits_note(self) -> str:
+        return f"project #{self.head}: check waits on its work {self.progress}"
+
+
+def started_projects(issues: list[dict[str, Any]], repo: tuple[str, str]) -> dict[int, Started]:
+    """#1802: each started project, keyed by its head's number and by its check issue's, read
+    from the open issues' own sub-issues and linked PRs. A head read without sub-issues (a forge
+    that refused them) starts none: no check issue can be told there"""
+    here = f"{repo[0]}/{repo[1]}".lower()
+    by_number = {int(i["number"]): i for i in issues}
+    found: dict[int, Started] = {}
+    for head in issues:
+        if PROJECT_LABEL not in node_labels(head) or held_head(head) or head.get("subIssues") is None:
+            continue
+        subs = head["subIssues"].get("nodes") or []
+        check = next(
+            (
+                s
+                for s in subs
+                if is_check(s)
+                and s.get("state") == "OPEN"
+                and str((s.get("repository") or {}).get("nameWithOwner") or here).lower() == here
+            ),
+            None,
+        )
+        if check is None:
+            continue
+        number = int(check["number"])
+        inner = ((by_number.get(number) or {}).get("subIssues") or {}).get("nodes") or []
+        parts = [s for s in subs if not is_check(s)] + list(inner)
+        prs = linked_prs(head)
+        merged = [n for n, s, _ in prs if s == "MERGED"]
+        open_parts = sum(1 for p in parts if p.get("state") == "OPEN")
+        opened = any(s == "OPEN" for _, s, _ in prs)
+        done = open_parts == 0 and not opened and bool(parts or merged)
+        ends = [str(p["closedAt"]) for p in parts if p.get("closedAt")] + merge_times(head, merged)
+        progress = f"({open_parts} of {len(parts)} parts open)" if parts else "(no part filed)"
+        if not parts:
+            progress = "(no part filed, a PR open)" if opened else f"(no part filed, {len(merged)} PR merged)"
+        started = Started(int(head["number"]), number, done, ends, progress)
+        found[started.head] = started
+        found.setdefault(number, started)
+    return found
+
+
 def stale_handoff(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
     """STALE_HANDOFF (#1313): an open person's item (labelled human or role:<name>) whose
     sub-issue parent, in any repo, is closed, its note "parent owner/repo#N closed": the work
@@ -3180,6 +3248,25 @@ def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: li
     if failed:
         return "CHECK_FAILED", f"check failed {failed[-1]['createdAt']} {shown}"
     return "VERIFY_DUE", f"{shown}: run its ## Check"
+
+
+def project_check(
+    issue: dict[str, Any], started: Started, states: dict[Ref, str], repo: tuple[str, str], bot_login: str | None
+) -> tuple[str, str]:
+    """#1802: a started project's check issue is no work to triage. BLOCKED `project #<head>:
+    check waits on its work` until the project's work is done (Started), then BLOCKED on any
+    of its own holds still open (its `Depends on` lines and the issues it is blocked by; its
+    sub-issues are the project's parts), else by its ## Check as a parent's (parent_check)"""
+    if not started.done:
+        return "BLOCKED", started.waits_note()
+    native = {r: s for r, (kind, s, _) in native_holds(issue).items() if kind == "native"}
+    named = {fold(r) for r in dependency_refs(issue, repo)} | {fold(r) for r in native}
+    read = {**{fold(r): s for r, s in states.items()}, **{fold(r): s for r, s in native.items()}}
+    still = sorted(r for r in named if read.get(r) not in CLOSED_STATES)
+    if still:
+        shown = " ".join(f"{r[0]}/{r[1]}#{r[2]}:{read.get(r, '?').lower()}" for r in still)
+        return "BLOCKED", f"{shown} project #{started.head}"
+    return parent_check(issue["comments"]["nodes"], bot_login, started.ends, f"project #{started.head}")
 
 
 def check_waiting(
@@ -3678,6 +3765,7 @@ def main() -> int:
     windows = veto_windows(args.repo, issues, args.bot_login, run=ahead.graphql, maintainers=maintainers)
     grouped = grouped_in(issues, (owner, name))  # #1643: the requests open opportunities name
     held = held_projects(issues, (owner, name))  # spec 106: a held project's issues wait
+    started = started_projects(issues, (owner, name))  # #1802: a started project's head and check
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(
@@ -3696,6 +3784,7 @@ def main() -> int:
             window=windows.get(issue["number"]),
             issues=read_issues | frozenset(native),
             project=held.get(issue["number"]),
+            started=started.get(issue["number"]),
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before

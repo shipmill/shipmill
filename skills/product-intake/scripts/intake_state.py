@@ -332,7 +332,7 @@ COMMENTS = f"comments(last: {PAGE}) {{ pageInfo {{ hasPreviousPage startCursor }
 OLDER = f"comments(last: {PAGE}, before: $cursor) {{ pageInfo {{ hasPreviousPage startCursor }} nodes {{ "
 ISSUE_FIELDS = (
     """
-        number title url state stateReason closedAt body milestone { title }
+        number title url state stateReason closedAt body milestone { title } parent { number }
         author { __typename login } authorAssociation
         labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
         reactions(content: THUMBS_UP) { totalCount }
@@ -844,6 +844,8 @@ def plan_item(issue: dict[str, Any], bot_login: str | None) -> bool:
 def is_feedback(issue: dict[str, Any], skip: set[str], marker: str, bot_login: str | None = None) -> bool:
     names = labels(issue)
     if names & skip or triage_owns(issue, marker, bot_login) or plan_item(issue, bot_login):
+        return False
+    if is_check(issue) and issue.get("parent"):  # #1802: a check issue is its parent's closing check
         return False
     found = trusted_verdict(issue, marker, bot_login)
     return found is None or not found.startswith(CLOSING_VERDICTS)
