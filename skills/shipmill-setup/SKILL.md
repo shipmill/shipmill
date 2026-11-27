@@ -759,8 +759,24 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    file for people. Write their words into the file's fixed structure, each item
    one line with its id from 1 (`- U-1: ...`, `- G-1: ...`, `- N-1: ...`, `- Q-1: ...`),
    run `$CR product check` until it exits 0, and commit the file in the same pull request
-   as the `[agents]` section. For each goal you write, offer a measure from the registry
-   of spec 027, `<metric> <comparison> <target>` with a comparison of `<`, `<=`, `>`, or
+   as the `[agents]` section.
+
+   Each goal is one of two kinds (spec 105), and you ask the maintainer which, goal by
+   goal: a **goal** ends when its check passes, so it needs the check (what shows it is
+   met, one line) and a horizon (a date `YYYY-MM-DD` or a release `X.Y.Z`); a **standing
+   measure** is held for good, so it needs its threshold (the level it is held at) and its
+   source (where its value is read). Write the goal's line with its words (`- G-n:
+   <outcome>`), then give it its kind with `$CR product goal G-n --check "<check>" --by
+   <horizon>` or `$CR product held G-n --threshold "<threshold>" --source "<source>"`,
+   never by hand. Never pick the kind, the check, the horizon, the threshold, or the
+   source for the maintainer: a goal they can't place yet is a question for them, as a
+   missing section is. `$CR product met` and `$CR product drop` refuse a goal written
+   without a kind, and product intake proposes a plan for a goal from its check
+   ([goals.md](https://github.com/shipmill/shipmill/blob/main/docs/goals.md) walks one
+   goal from written to met). For each goal you write, offer a measure from the registry
+   of spec 027 only once it is a standing measure, since a goal ends on its check and
+   `$CR product goal` refuses one with a measure line, while `$CR product held` keeps it:
+   `<metric> <comparison> <target>` with a comparison of `<`, `<=`, `>`, or
    `>=`: `deploy_frequency` (`<n>/week`), `lead_time_median`, `lead_time_p90`,
    `time_to_restore_median`, `issue_to_release_median`, `issue_to_release_p90`, and issue to
    release by stage (spec 066) `issue_to_agent_comment_median`, `issue_to_agent_comment_p90`,

@@ -100,8 +100,8 @@ Acme turns a folder of photos into a printed album in one command.
 
 ## Goals
 
-- G-1: An album from 200 photos in under a minute
-- G-2: Albums print correctly at the three largest print shops
+- G-1: Albums print correctly at the three largest print shops. Check: a test album prints without a layout error at each of the three. By: 2027-03-31
+- G-2: Held: An album from 200 photos in under a minute. Threshold: 60 seconds on the reference laptop. Source: the album benchmark in CI
 
 ## Non-goals
 
@@ -112,12 +112,16 @@ Acme turns a folder of photos into a printed album in one command.
 - Q-1: A new release opens every album the last one saved
 ```
 
-shipmill's own direction is [product.md](product.md).
+G-1 is a goal: it ends once its check passes. G-2 is a standing measure: it is held for
+good. shipmill's own direction is [product.md](product.md), and [goals.md](goals.md) walks
+one goal from written to met: the plan product intake proposes for it, your answers, the
+projects it files, and how you record it met or dropped.
 
 ## Who changes it
 
 Only you. The shipmill-setup skill writes the first version from your answers when it
-connects `[agents]`, and never invents a goal. Afterwards an agent may propose an edit in a
+connects `[agents]`, asks whether each goal ends on a check or is held at a threshold, and
+never invents a goal or picks its check, horizon, threshold, or source. Afterwards an agent may propose an edit in a
 pull request, but the merge gate holds any pull request that touches `docs/product.md` or
 `docs/product/` for your decision; the agents never merge one on their own judgment.
 

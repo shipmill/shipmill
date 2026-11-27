@@ -130,6 +130,7 @@ has the details.
 | [Install](https://github.com/shipmill/shipmill/blob/main/docs/install.md) | Prerequisites, every setup step, and how to pause or remove shipmill |
 | [Flow](https://github.com/shipmill/shipmill/blob/main/docs/flow.md) | What to say to run each stage, alone or all at once |
 | [Direction](https://github.com/shipmill/shipmill/blob/main/docs/direction.md) | The `docs/product.md` you write when agents implement: what it holds, what the agents do with it, and how you change it |
+| [Goals](https://github.com/shipmill/shipmill/blob/main/docs/goals.md) | One goal from written to met: the plan intake proposes, your answers, the projects it files, the `[agents] projects` limit, and how a goal is met or dropped |
 | [Release lanes](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md) | The policy file, environments, operate, autonomy, versions, the CLI, and limits |
 | [Decisions](https://github.com/shipmill/shipmill/blob/main/docs/decisions.md) | The rules shipmill follows and why |
 | [Software factory](https://github.com/shipmill/shipmill/blob/main/docs/software-factory.md) | shipmill mapped to the terms of the `software-factory` skill: which part fills each slot and task, and the three brakes |
