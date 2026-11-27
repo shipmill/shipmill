@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.6] - 2026-11-27
+
+### Fixed
+
+- `shipmill status --item <n>` reads no plan, goal, or retro for an item that isn't a plan, a goal proposal, or an opportunity: `watch_state.py --item` runs `intake_state.py` with `--projects` alone, and starts its intake and triage reads before the default branch's fetch. On a repo with 120 open items a project head's answer took 17 to 19 seconds and about 22 GraphQL points instead of 405 seconds and 398 (#1831)
+
 ## [0.193.5] - 2026-11-27
 
 ### Fixed
@@ -3372,7 +3378,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.5...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.6...HEAD
+[0.193.6]: https://github.com/shipmill/shipmill/compare/v0.193.5...v0.193.6
 [0.193.5]: https://github.com/shipmill/shipmill/compare/v0.193.4...v0.193.5
 [0.193.4]: https://github.com/shipmill/shipmill/compare/v0.193.3...v0.193.4
 [0.193.3]: https://github.com/shipmill/shipmill/compare/v0.193.2...v0.193.3
