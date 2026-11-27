@@ -1220,8 +1220,9 @@ class Tree:
         """Whether word appears as a quoted string literal in any of the sources at the commit"""
         key = (word, sources)
         if key not in self.found:
+            top = [f":(top){source}" for source in sources]  # from the top, as ls-tree --full-tree lists them
             done = subprocess.run(
-                ["git", "grep", "-q", "-F", "-e", f'"{word}"', "-e", f"'{word}'", self.commit, "--", *sources],
+                ["git", "grep", "-q", "-F", "-e", f'"{word}"', "-e", f"'{word}'", self.commit, "--", *top],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

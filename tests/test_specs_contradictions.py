@@ -202,6 +202,12 @@ def test_s099_8_the_code_is_read_at_ref_and_the_decisions_log_from_the_working_t
     ]
 
 
+def test_s099_3_a_command_reads_the_same_from_a_folder_of_the_repo(tmp_path: Path) -> None:
+    root = with_spec(tmp_path, "Runs `tool run --dry-run` and `check.py verify --fast`.")
+    done = specs(root / "src", "contradictions", "--base", "main", f"../{SPEC}")
+    assert (done.returncode, done.stdout) == (0, "no contradictions found\n"), done.stdout
+
+
 def test_s099_11_check_passes_a_spec_with_contradictions(tmp_path: Path) -> None:
     root = with_spec(tmp_path, "Writes `src/tool/gone.py` with `tool frob --wet`.")
     assert run(root).returncode == 1
