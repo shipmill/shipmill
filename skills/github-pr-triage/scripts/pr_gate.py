@@ -8,6 +8,16 @@ And does it keep to the repo's direction (spec 024)?
   `Serves:` names goal ids docs/product.md lists, `quality bar`, or quality-bar ids it
   lists, alone (`Q-6`) or as `quality bar (Q-4, Q-6)`; without a
   docs/product.md the plan isn't checked. A person's PR is never refused for its plan
+- An agent's open PR whose plan has one `Serves:` line names a goal of each issue it closes or
+  names as `Part of #N` whose triage verdict names goals (#1767): the issue's newest comment whose
+  first line, past its leading `<!-- shipmill:... -->` marker lines, starts `Triage:`, by the
+  --bot-login or an OWNER, MEMBER, or COLLABORATOR, created before the PR (the allowance's
+  newest-wins rule below, spec 085), its first line's `Serves: G-n` or `Serves: G-2, G-3`; read
+  from the issue threads the veto reads (no new read). A plan naming none of them, `quality bar`
+  included, is REFUSED, `  refused: `Serves:` names <the plan's>, but the triage verdict on #N
+  serves <its goals>: name one of its goals`. A verdict naming no goal (a bug fix, `Serves no
+  goal`), or no verdict, leaves the plan as above; a goal the direction no longer lists counts
+  for nothing, since the plan can't name it
 - A PR whose files match a REVIEW.md Protected areas glob, or that edits docs/product.md
   or docs/product/, waits on the maintainer (needs-decision) until their answer on GitHub
   accepts it (below)
@@ -671,20 +681,37 @@ def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
     return frozenset(ids)
 
 
-def plan_problems(body: str, ids: frozenset[str]) -> list[str]:
-    """Why a PR body's plan doesn't hold: no `## Plan` section, a missing field, or a
-    `Serves:` naming something other than listed goal ids, `quality bar`, or listed quality-bar
-    ids, alone (`Q-6`) or in `quality bar (Q-4, Q-6)`"""
+def plan_fields(body: str) -> dict[str, list[str]] | str:
+    """The `## Plan` section's field lines, each field's values in order, or why there is no one
+    section to read them from"""
     plans = [lines for level, heading, lines in sections(body) if level == 2 and heading == "Plan"]
     if not plans:
-        return ["no `## Plan` section; an agent's pull request carries its plan (Serves, Files, Order, Proof)"]
+        return "no `## Plan` section; an agent's pull request carries its plan (Serves, Files, Order, Proof)"
     if len(plans) > 1:
-        return ["a second `## Plan` section; the body holds one"]
+        return "a second `## Plan` section; the body holds one"
     fields: dict[str, list[str]] = {}
     for _, line in plans[0]:
         field = _PLAN_FIELD.match(line)
         if field is not None:
             fields.setdefault(field.group(1), []).append(field.group(2).strip())
+    return fields
+
+
+def plan_serves(body: str) -> str | None:
+    """The plan's one non-empty `Serves:` line, or None when plan_problems refuses it for that line"""
+    fields = plan_fields(body)
+    if isinstance(fields, str) or len(fields.get("Serves", [])) != 1:
+        return None
+    return fields["Serves"][0] or None
+
+
+def plan_problems(body: str, ids: frozenset[str]) -> list[str]:
+    """Why a PR body's plan doesn't hold: no `## Plan` section, a missing field, or a
+    `Serves:` naming something other than listed goal ids, `quality bar`, or listed quality-bar
+    ids, alone (`Q-6`) or in `quality bar (Q-4, Q-6)`"""
+    fields = plan_fields(body)
+    if isinstance(fields, str):
+        return [fields]
     problems = [f"the plan has no `{name}:` line" for name in PLAN_FIELDS if name not in fields]
     problems += [f"the plan has {len(v)} `{k}:` lines; it holds one" for k, v in fields.items() if len(v) > 1]
     serves = fields.get("Serves", [""])[0]
@@ -2202,6 +2229,57 @@ def changed_paths(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
     return (*data["files"], *data["previous"])
 
 
+# #1767: the triage verdict whose goals an agent's plan serves, and the gate's line for one it misses
+VERDICT = "Triage:"
+_VERDICT_GOALS = re.compile(r"\bServes:\s*(G-[1-9][0-9]*(?:\s*,\s*G-[1-9][0-9]*)*)")
+SERVES_MISSED = "`Serves:` names {serves}, but the triage verdict on #{issue} serves {goals}: name one of its goals"
+
+
+def verdict_goals(node: object, issue: int, opened: datetime, bot_login: str | None) -> tuple[str, ...]:
+    """The goals issue's triage verdict serves (#1767), read from its thread as GraphQL gives it
+    (THREAD): the newest comment whose first line past its leading marker lines (allowing_line)
+    starts `Triage:`, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR (retro.py's trusted),
+    created before the pull request opened, the allowance's newest-wins rule (spec 085, D-106); the
+    goal ids its line's `Serves: G-n` or `Serves: G-2, G-3` names. None without such a comment (a
+    thread cut off at 100 comments with none among them too), a verdict naming no goal (a bug fix,
+    `Serves no goal`), or a number that is no issue: the plan is then read as before"""
+    if not isinstance(node, dict) or node.get("__typename") != "Issue":
+        return ()
+    rt = retro()
+    bots = frozenset({bot_login}) if bot_login else frozenset()
+    comments, _ = comments_of(node, f"#{issue}")
+    lines = [
+        allowing_line(c["body"])
+        for c in comments
+        if allowing_line(c["body"]).startswith(VERDICT)
+        and rt.trusted(c, bots)
+        and moment(c["createdAt"], f"a comment of #{issue}'s createdAt") < opened
+    ]
+    found = _VERDICT_GOALS.search(lines[-1]) if lines else None
+    return tuple(_GOAL.findall(found.group(1))) if found else ()
+
+
+def serves_missed(
+    data: dict, number: int, thread: dict, issues: Issues, bot_login: str | None, ids: frozenset[str]
+) -> tuple[str, ...]:
+    """The refused: lines of an agent's pull request whose plan's `Serves:` names none of the goals
+    an issue's triage verdict serves (verdict_goals) that the direction still lists (ids; a plan
+    can't name an unlisted one), one for each such issue it closes or names as Part of #N, from the
+    threads threads_of read (#1767); none for a plan without one `Serves:` line, which
+    plan_problems refuses already"""
+    serves = plan_serves(str(data.get("body") or ""))
+    if serves is None:
+        return ()
+    named = {part.strip() for part in _QUALITY_IDS.sub(QUALITY_BAR, serves).split(",")}
+    opened = moment(thread.get("createdAt"), f"#{number}'s createdAt")
+    found: list[str] = []
+    for n in named_issues(data, number):
+        goals = tuple(g for g in verdict_goals(issues.get(n), n, opened, bot_login) if g in ids)
+        if goals and not named.intersection(goals):
+            found.append(SERVES_MISSED.format(serves=serves, issue=n, goals=", ".join(goals)))
+    return tuple(found)
+
+
 def newest_question(comments: list[dict], bots: frozenset[str]) -> int | None:
     """The index of the newest needs-decision question, as retro.py reads one: its first line is
     the marker, by an OWNER, MEMBER, or COLLABORATOR or the --bot-login"""
@@ -3004,6 +3082,9 @@ def main() -> int:
                 if thread is not None and issues is not None and agent:  # the files its issues allow (spec 085)
                     files = files_hold(data, number, args.repo, thread, issues, args.bot_login, base)
                     judged = replace(judged, files=files)
+                    if base.ids is not None:  # the plan serves a goal its issues' verdicts name (#1767)
+                        missed = serves_missed(data, number, thread, issues, args.bot_login, base.ids)
+                        judged = replace(judged, refused=(*judged.refused, *missed))
                 if thread is not None and notify_zone(zones, ACCEPTED_SPEC):  # spec 067
                     why = decided(data, number, args.repo, args.bot_login, bases.checkout, thread)
                     if why is not None:
