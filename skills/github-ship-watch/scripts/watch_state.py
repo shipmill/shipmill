@@ -267,7 +267,13 @@ Intake (github-issue-triage's triage_state.py):
                   PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE (a finished plan whose
                   outcome is due, spec 097), and PLAN_HOLD_MET (a held plan whose
                   condition was met, its re-check due, spec 098; a PLAN_HELD plan is in
-                  no row) with their plan issues (#N); the session
+                  no row), and PLAN_REPLACED (an older open plan of a goal, spec 106) with
+                  their plan issues (#N); with --goals and --projects beside --plans (spec
+                  106), GOAL_OVERDUE with its goals, GOAL_PROPOSAL_DUE and NEEDS_GOAL with
+                  their opportunities, and PROJECT_START_DUE, PROJECT_IDLE, and
+                  PROJECT_STOP_DUE with their heads; each state and holder those rows may
+                  carry is checked, and one intake_state.py could not print stops the watch.
+                  The autonomy line may carry the product's "projects" (S-106-28); the session
                   runs product intake. With --trusted-only, an open plan issue the
                   --bot-login didn't open is in none of these and in UNTRUSTED, and in no
                   other row (D-16)
@@ -285,6 +291,14 @@ Intake (github-issue-triage's triage_state.py):
                   as its hold names it, trusted as PLAN_OPEN; `shipmill status --item`
                   reads a held plan's condition from it. The full report lists no held
                   plan (spec 098's Out of scope), so this row is in no other read
+  GOAL_STATE,     in an --item read only (S-106-25), from the same run: each goal's
+  PLAN_STATE,     state and holder (GOAL_STATE), each trusted open plan's answer date or the
+  PROJECT_STATE   plan replacing it (PLAN_STATE), and each project head's state, its check
+                  issue, why a held one is held, the product's active count under [agents]
+                  projects, and its overdue plans (PROJECT_STATE), as ids, numbers, states,
+                  and dates; `shipmill status --item` reads them. --item takes a goal id
+                  (G-3) too, which reads these rows, a hold, the gate's pause, and the PLANS
+                  row naming the goal
   SPEC_DUE        from the same intake_state.py run (spec 074): `ACCEPTED #N ...`, every
                   opportunity the maintainer accepted that triage hasn't taken, oldest first;
                   the session runs github-issue-triage's spec gate on each. An agent's row at
@@ -714,6 +728,40 @@ HELD_UNTIL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}|release|(?:[\w.-]+/[\w.-]+)
 # plan's question is NEEDS_DECISION's then, never the PLAN_OPEN row's
 UNCLEAR_ACCEPT_ASKED = "unclear accept asked"
 GOAL_ID = re.compile(r"G-[1-9]\d*")
+# Spec 106: intake_state.py's --goals rows ("goal-state"), its --projects rows ("project"), and
+# its opportunity states that name a goal; each that starts a session is a PLANS action
+GOAL_STATES = frozenset({"GOAL_PROPOSED", "GOAL_WRITTEN", "GOAL_PLANNED", "GOAL_MET", "GOAL_DROPPED", "GOAL_OVERDUE"})
+GOAL_HOLDERS = frozenset({"maintainer", "agent", "projects"})  # or null, a met or dropped goal's
+GOAL_ACTION = ("GOAL_OVERDUE",)
+PROJECT_ACTION = ("PROJECT_START_DUE", "PROJECT_IDLE", "PROJECT_STOP_DUE")
+PROJECT_STATES = frozenset(
+    {
+        "PROJECT_HELD",
+        "PROJECT_ACTIVE",
+        "PROJECT_FOCUS",
+        "PROJECT_CLOSING",
+        "PROJECT_CLOSED",
+        "PROJECT_STOPPED",
+        *PROJECT_ACTION,
+    }
+)
+PROJECT_HOLDERS = frozenset({"start", "agents", "maintainer", "checker", "agent"})  # or null, a closed head's
+# GOAL_PROPOSAL_DUE opens the goal proposal, NEEDS_GOAL's session asks once which goal it serves
+OPPORTUNITY_ACTION = ("GOAL_PROPOSAL_DUE", "NEEDS_GOAL")
+OPPORTUNITY_GOAL_STATES = frozenset({*OPPORTUNITY_ACTION, "ACCEPTED_INTO", "GOAL_PROPOSED"})
+# every state the PLANS row lists, in its order
+PLANS_ACTION = (*PLAN_ACTION, *GOAL_ACTION, *OPPORTUNITY_ACTION, *PROJECT_ACTION)
+# a goal's horizon, a date or a release version, as the direction writes it
+HORIZON = re.compile(r"[\w.+-]+")
+# in an --item read only (S-106-25): each goal's, plan's, and project head's state, read by
+# `shipmill status --item` (its item_status.py), from the same intake_state.py run
+GOAL_STATE = "GOAL_STATE"
+PLAN_STATE = "PLAN_STATE"
+PROJECT_STATE = "PROJECT_STATE"
+# intake_state.py's PLAN_WAITS note while a plan of the product is overdue (S-106-9)
+OVERDUE_NOTE = re.compile(r"^plan ([\w.-]+/[\w.-]+#[1-9]\d*) overdue$")
+OVERDUE_REF = re.compile(r"[\w.-]+/[\w.-]+#[1-9]\d*")
+NOTE_NUMBER = re.compile(r"(?<![\w/#])#([1-9]\d*)\b")
 # spec 074: intake_state.py's feedback lines the watch places, the kinds they come in, its intake
 # levels, the wait after triage's hand-off before an intake pass is due, and the trusted openers
 FEEDBACK_STATES = frozenset({"NEW_FEEDBACK", "ACCEPTED"})
@@ -4242,12 +4290,13 @@ def intake_run(
 ) -> str:
     """intake_state.py --json's lines, run once per repo in the checkout, where it reads the
     config (spec 074). With plans (a checkout with docs/product.md, spec 028) it runs with
-    --plans and reads the direction with `shipmill product show` (the plugin's pinned version,
+    --plans, --goals, and --projects (spec 106: each goal's state and the project heads, whose
+    actions are the PLANS row's too) and reads the direction with `shipmill product show` (the plugin's pinned version,
     or --tool's when a person passed one), with wip as --wip and each of roles as a --role, so
     a relayed answer naming a maintainer counts (D-68); without, none of those flags. A failure
     (exit 2) stops the watch, save the pinned shipmill's "no version" error, which it has
     retried already: that raises PypiWait (#597)"""
-    cmd = [sys.executable, str(INTAKE_STATE), repo, *(["--plans"] if plans else []), "--json"]
+    cmd = [sys.executable, str(INTAKE_STATE), repo, *(["--plans", "--goals", "--projects"] if plans else []), "--json"]
     if plans:
         cmd += ["--tool", tool] if tool is not None else []
         cmd += ["--wip", str(wip)] if wip is not None else []
@@ -4283,17 +4332,108 @@ def plan_line(line: str) -> dict[str, Any] | None:
     return row
 
 
+def a_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def a_number(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def goal_line(line: str) -> dict[str, Any] | None:
+    """Spec 106: one of intake_state.py's --json lines when it is a goal's state (kind
+    "goal-state", from --goals), a project head's (kind "project", from --projects), or an
+    accepted opportunity's that names its goal (ACCEPTED_INTO, GOAL_PROPOSAL_DUE, GOAL_PROPOSED,
+    NEEDS_GOAL), checked; None for any other line. A state, holder, or field intake_state.py
+    could not have printed is refused, so no issue's text reaches a row"""
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: intake_state.py printed {line[:200]!r}, not JSON: {exc}") from None
+    if not isinstance(row, dict):
+        return None
+    kind, state, number = row.get("kind"), row.get("state"), row.get("number")
+    if kind == "goal-state":
+        goal, holder, by = row.get("goal"), row.get("holder"), row.get("by")
+        well_formed = state in GOAL_STATES and isinstance(row.get("note"), str)
+        well_formed &= holder is None or holder in GOAL_HOLDERS
+        well_formed &= by is None or (isinstance(by, str) and HORIZON.fullmatch(by) is not None)
+        if state == "GOAL_PROPOSED":  # a goal-proposal issue, not yet in the direction
+            well_formed &= goal is None and a_number(number)
+        else:
+            well_formed &= isinstance(goal, str) and GOAL_ID.fullmatch(goal) is not None
+        what = "goal"
+    elif kind == "project":
+        holder, check, parts = row.get("holder"), row.get("check"), row.get("parts")
+        well_formed = state in PROJECT_STATES and a_number(number) and isinstance(row.get("note"), str)
+        well_formed &= holder is None or holder in PROJECT_HOLDERS
+        well_formed &= check is None or a_number(check)
+        well_formed &= isinstance(parts, dict) and set(parts) == {"open", "closed"}
+        well_formed &= isinstance(parts, dict) and all(a_count(v) for v in parts.values())
+        what = "project"
+    elif kind == "opportunity" and state in OPPORTUNITY_GOAL_STATES:
+        author, association = row.get("author"), row.get("association")
+        well_formed, what = a_number(number) and {"author", "association"} <= set(row), "opportunity"
+        well_formed &= author is None or (isinstance(author, str) and bool(author))
+        well_formed &= association is None or (isinstance(association, str) and association.isupper())
+    else:
+        return None
+    if not well_formed:
+        raise Refused(f"error: intake_state.py printed a malformed {what} row: {line[:200]!r}")
+    return row
+
+
+def trusted_plans(text: str, bot_login: str | None, trusted_only: bool) -> frozenset[int]:
+    """The plan issues trusted as PLAN_OPEN's are (D-16): the --bot-login's, or with
+    trusted_only off an OWNER's, MEMBER's, or COLLABORATOR's"""
+    found = set()
+    for line in text.splitlines():
+        row = plan_line(line) if goal_line(line) is None else None
+        if row is None or row["kind"] != "plan":
+            continue
+        ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+        if ours or (not trusted_only and row.get("association") in TRUSTED_ASSOCIATIONS):
+            found.add(int(row["number"]))
+    return frozenset(found)
+
+
+def replaced_by(line: str, row: dict[str, Any]) -> int:
+    """A PLAN_REPLACED row's newer plan, from its note `by #<new>` (S-106-10)"""
+    by = re.fullmatch(r"by #([1-9]\d*)", str(row.get("note") or ""))
+    if by is None:
+        raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+    return int(by.group(1))
+
+
 def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> Plans:
     """PLANS from intake_state.py --plans --json's lines: each plan state that needs a session
-    (PLAN_DUE, PLAN_MALFORMED, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, PLAN_HOLD_MET) with its goals (G-n) and plan
-    issues (#N). With trusted_only, an open plan issue the --bot-login didn't open is in none
-    and in untrusted instead (D-16): an unattended session never starts for it. A goal's row
-    (no-work, or a request intake_state.py read from a trusted author only) is the direction's.
-    Goal ids and numbers only, never an issue's text (D-16)"""
+    (PLAN_DUE, PLAN_MALFORMED, PLAN_ANSWERED, PLAN_ACCEPTED, PLAN_DONE, PLAN_HOLD_MET,
+    PLAN_REPLACED) with its goals (G-n) and plan issues (#N), then spec 106's (S-106-26):
+    GOAL_OVERDUE with its goals, GOAL_PROPOSAL_DUE and NEEDS_GOAL with their opportunities, and
+    PROJECT_START_DUE, PROJECT_IDLE, and PROJECT_STOP_DUE with their heads. With trusted_only,
+    an open plan issue the --bot-login didn't open is in none and in untrusted instead (D-16):
+    an unattended session never starts for it. A goal's row (no-work, or a request
+    intake_state.py read from a trusted author only) is the direction's, as a goal's state is;
+    an opportunity carries the maintainer's accept label, and a head intake_state.py reads
+    only when a trusted author opened or labelled it. Goal ids and numbers only, never an
+    issue's text (D-16)"""
     listed: dict[str, list[str]] = {}
     untrusted: set[int] = set()
+    trusted = trusted_plans(text, bot_login, trusted_only)
     for line in text.splitlines():
-        row = plan_line(line)
+        found = goal_line(line)
+        if (
+            found is not None
+            and found["kind"] == "opportunity"
+            and trusted_only
+            and not opener_trusted(found, bot_login)
+        ):
+            untrusted.add(found["number"])  # D-16: an outsider's accepted opportunity starts no session
+            continue
+        if found is not None and found["state"] in PLANS_ACTION:
+            token = found["goal"] if found["kind"] == "goal-state" else f"#{found['number']}"
+            listed.setdefault(found["state"], []).append(token)
+        row = plan_line(line) if found is None else None
         if row is None:
             continue
         if row["kind"] == "plan" and trusted_only and row["state"] != "PLAN_DECLINED":
@@ -4301,10 +4441,12 @@ def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only:
             if not ours:
                 untrusted.add(row["number"])
                 continue
+        if row["state"] == "PLAN_REPLACED" and replaced_by(line, row) not in trusted:
+            continue  # D-16: only a trusted plan replaces one, so an outsider's never closes the App's
         if row["state"] in PLAN_ACTION:
             token = row["goal"] if row["kind"] == "goal" else f"#{row['number']}"
             listed.setdefault(row["state"], []).append(token)
-    detail = "; ".join(f"{s} {' '.join(listed[s])}" for s in PLAN_ACTION if s in listed)
+    detail = "; ".join(f"{s} {' '.join(listed[s])}" for s in PLANS_ACTION if s in listed)
     rows = [Row("PLANS", repo, detail, skill_fix("product-intake", repo))] if detail else []
     return Plans(rows, frozenset(untrusted))
 
@@ -4359,6 +4501,73 @@ def plans_held(text: str, repo: str, bot_login: str | None = None, trusted_only:
     return [Row(PLAN_HELD, repo, "; ".join(held))] if held else []
 
 
+def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> list[Row]:
+    """S-106-25: in an --item read only, from intake_state.py --plans --goals --projects --json's
+    lines, the rows `shipmill status --item` reads a goal's, a plan's, and a project head's
+    condition from, each part a fixed form of ids, numbers, states, and dates (D-16):
+      GOAL_STATE     `G-<n> <STATE> holder=<h>[ by=<horizon>][ on=#P]` per goal of kind goal, on
+                     the plan or project its note names; `#N GOAL_PROPOSED holder=maintainer` per
+                     goal proposal
+      PLAN_STATE     `#N PLAN_OPEN answer_by=<date>`, `#N PLAN_OVERDUE answer_by=<date>`, and
+                     `#N PLAN_REPLACED replaced_by=#M`, per plan trusted as PLAN_OPEN's
+      PROJECT_STATE  `#N <STATE> holder=<h>[ check=#C][ held=label|check]` per head, then
+                     `active K of N` under [agents] projects and `overdue <owner/repo>#P` per
+                     overdue plan of the product it read (its own, and those PLAN_WAITS names)"""
+    goals: list[str] = []
+    plans: list[str] = []
+    heads: list[str] = []
+    overdue: list[str] = []
+    for line in text.splitlines():
+        found = goal_line(line)
+        if found is not None and found["kind"] == "goal-state":
+            holder = found["holder"] or "none"
+            if found["state"] == "GOAL_PROPOSED":
+                goals.append(f"#{found['number']} GOAL_PROPOSED holder={holder}")
+                continue
+            part = f"{found['goal']} {found['state']} holder={holder}"
+            part += "" if found["by"] is None else f" by={found['by']}"
+            on = NOTE_NUMBER.search(found["note"])
+            goals.append(part + ("" if on is None else f" on=#{on.group(1)}"))
+        elif found is not None and found["kind"] == "project":
+            part = f"#{found['number']} {found['state']} holder={found['holder'] or 'none'}"
+            part += "" if found["check"] is None else f" check=#{found['check']}"
+            if found["state"] == "PROJECT_HELD":
+                part += " held=label" if found["note"] == "labelled held" else " held=check"
+            heads.append(part)
+        row = plan_line(line) if found is None else None
+        if row is None:
+            continue
+        note = str(row.get("note") or "")
+        if row["kind"] == "goal":
+            waits = OVERDUE_NOTE.fullmatch(note) if row["state"] == "PLAN_WAITS" else None
+            overdue += [] if waits is None else [waits.group(1)]
+            continue
+        association = row.get("association")
+        ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+        if not (ours or (not trusted_only and association in TRUSTED_ASSOCIATIONS)):
+            continue
+        answer_by = row.get("answer_by")
+        dated = row["state"] == PLAN_OVERDUE or (row["state"] == PLAN_OPEN and answer_by is not None)
+        if dated:  # an overdue plan always carries its date (S-106-8)
+            if not isinstance(answer_by, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", answer_by) is None:
+                raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+            plans.append(f"#{row['number']} {row['state']} answer_by={answer_by}")
+            overdue += [f"{repo}#{row['number']}"] if row["state"] == PLAN_OVERDUE else []
+        elif row["state"] == "PLAN_REPLACED":
+            plans.append(f"#{row['number']} PLAN_REPLACED replaced_by=#{replaced_by(line, row)}")
+    first = intake_first(text) if text else {}
+    projects = first.get("projects")
+    if projects is not None:
+        heads.append(f"active {projects['active']} of {projects['limit']}")
+    overdue += list(first.get("overdue") or ())  # the product's, other repos' among them (S-106-25)
+    once: dict[str, str] = {}
+    for ref in sorted(overdue):  # one plan once, whatever its case: the spelling read first
+        once.setdefault(ref.lower(), ref)
+    heads += [f"overdue {ref}" for ref in sorted(once.values(), key=str.lower)]
+    found_rows = [(GOAL_STATE, goals), (PLAN_STATE, plans), (PROJECT_STATE, heads)]
+    return [Row(state, repo, "; ".join(parts)) for state, parts in found_rows if parts]
+
+
 # -- handed-over requests and accepted opportunities (spec 074) ------------------------------
 
 
@@ -4380,16 +4589,43 @@ def intake_outcomes(value: object) -> bool:
     return bool(value["limit"] >= 1 and value["room"] == max(value["limit"] - value["in_flight"], 0))
 
 
+def intake_projects(value: object) -> bool:
+    """Whether the autonomy line's projects (S-106-28) is well formed: a limit of at least 1,
+    the active count, and the room, N - K never below 0"""
+    if not isinstance(value, dict) or set(value) != {"limit", "active", "room"}:
+        return False
+    if not all(a_count(v) for v in value.values()):
+        return False
+    return bool(value["limit"] >= 1 and value["room"] == max(value["limit"] - value["active"], 0))
+
+
+def intake_overdue(value: object) -> bool:
+    """Whether the autonomy line's overdue (S-106-25) is well formed: one or more owner/repo#P"""
+    refs = value if isinstance(value, list) else []
+    return bool(refs) and all(isinstance(r, str) and OVERDUE_REF.fullmatch(r) is not None for r in refs)
+
+
+def intake_first(text: str) -> dict[str, Any]:
+    """The first line intake_state.py --json prints, as intake_level checked it"""
+    intake_level(text)
+    found: dict[str, Any] = json.loads(text.splitlines()[0])
+    return found
+
+
 def intake_level(text: str) -> str:
     """The [autonomy] intake level from the autonomy line intake_state.py --json prints first,
-    with the product's outcomes in flight when [agents] outcomes is set (spec 101)"""
+    with the product's outcomes in flight when [agents] outcomes is set (spec 101) and its
+    active projects when [agents] projects is (spec 106)"""
     first = text.splitlines()[0] if text else ""
     try:
         line = json.loads(first)
     except json.JSONDecodeError:
         line = None
     keys = set(line) if isinstance(line, dict) else set()
-    well_formed = keys == {"autonomy"} or (keys == {"autonomy", "outcomes"} and intake_outcomes(line["outcomes"]))
+    well_formed = {"autonomy"} <= keys <= {"autonomy", "outcomes", "projects", "overdue"}
+    well_formed &= "overdue" not in keys or intake_overdue(line["overdue"])
+    well_formed &= "outcomes" not in keys or intake_outcomes(line["outcomes"])
+    well_formed &= "projects" not in keys or intake_projects(line["projects"])
     level = line.get("autonomy") if isinstance(line, dict) and well_formed else None
     if level not in INTAKE_LEVELS:
         raise Refused(f"error: intake_state.py printed {first[:200]!r} first, not its autonomy line")
@@ -7137,10 +7373,10 @@ def arguments() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--item",
-        type=int,
+        type=item_arg,
         metavar="N",
         help="print only the full report's rows `shipmill status --item N` reads, skipping the reads that"
-        " can't give one (#1469)",
+        " can't give one (#1469); N is an issue or pull request number, or a goal id, G-3 (spec 106)",
     )
     return parser
 
@@ -7326,12 +7562,29 @@ def names_item(row: Row, number: int) -> bool:
 GATE_WAITS = frozenset({"GATE_IDLE", "GATE_RETRY"})  # an item the gate holds, named in the row
 
 
-def item_row(row: Row, number: int) -> bool:
+def item_arg(text: str) -> int | str:
+    """--item's value: an issue or pull request number, 1 or more, or a goal id (S-106-25)"""
+    if GOAL_ID.fullmatch(text):
+        return text
+    if re.fullmatch(r"[1-9]\d*", text):
+        return int(text)
+    raise argparse.ArgumentTypeError(
+        f"{text!r} is neither an issue or pull request number, 1 or more, nor a goal id, G-3"
+    )
+
+
+def item_row(row: Row, number: int | str) -> bool:
     """Whether `shipmill status --item <number>` reads the row: one of ITEM_WHOLE, or a row
-    naming #number that is an agent's (its --json `agent`) or GATE_IDLE"""
-    if row.state in ITEM_WHOLE:
-        return True
+    naming #number that is an agent's (its --json `agent`) or GATE_IDLE. For a goal id, the
+    hold, the gate's pause, the goals' states, and the PLANS row naming the goal (S-106-25)"""
     if row.state == "GATE_PAUSED":  # spec 089: the whole gate waits, this item too
+        return True
+    if row.state in (GOAL_STATE, PLAN_STATE, PROJECT_STATE):  # S-106-25: read whole, in an --item read only
+        return True
+    if isinstance(number, str):
+        named = row.state == "PLANS" and number in GOAL_ID.findall(row.detail)
+        return row.state == "HOLD" or named
+    if row.state in ITEM_WHOLE:
         return True
     if row.state == PLAN_HELD:  # S-098-13: names a held plan, read for its condition
         return any(part.startswith(f"#{number} ") for part in row.detail.split("; "))
@@ -7439,6 +7692,7 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         rows += plans.rows + feedback.rows
         if planned and not isinstance(lines, PypiWait):  # S-098-13: a held plan's condition
             rows += plans_held(lines, args.repo, args.bot_login, args.trusted_only)
+            rows += item_states(lines, args.repo, args.bot_login, args.trusted_only)  # S-106-25
         if not (isinstance(lines, PypiWait) and args.trusted_only):
             code, triaged = triage_read.result() if triage_read is not None else triage()
             directions = triage_directions(triaged) if table is not None else frozenset()
@@ -7486,8 +7740,6 @@ def main() -> int:
         parser.error("--no-trends goes with the full report: --tier, --sweep, and --host make no trends read")
     if args.item is not None and (args.tier is not None or args.sweep or args.host is not None):
         parser.error("--item reads the full report's rows: it goes without --tier, --sweep, and --host")
-    if args.item is not None and args.item < 1:
-        parser.error("--item must be an issue or pull request number, 1 or more")
     if "/" not in args.repo:
         parser.error("repo must be owner/name")
     if not 1 <= args.releases <= 20:

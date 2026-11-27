@@ -81,6 +81,53 @@ the maintainer ──lists───► milestone "1.5.0" ◄── feature issue
 - **Above all three sits the product's direction**, `docs/product.md`: its goals (`G-n`) decide whether new behaviour is built at all, and its non-goals what is declined. [direction.md](direction.md) explains it for the maintainer who writes it
 - **A goal ends; a measure is held** (spec 105). A goal is written `<outcome>. Check: <check>. By: <date or release>` and ends when its check passes; a standing measure is written `Held: <statement>. Threshold: <threshold>. Source: <source>` and is held for good. Product intake proposes a goal plan for a goal nothing serves (`no-work`), with `Check:` and `By:` in its Goal section; a measure is planned only on request (a `goal-plan` issue you open naming it), with `Threshold:`, `Source:`, and `Measure:`. A goal written in neither form plans as before, with `Measure:` alone
 
+## Goals, plans, and projects
+
+A goal, its plan, and the projects the plan files each have a state (spec 106), read by product intake's `intake_state.py` (`--goals`, `--plans`, `--projects`) from the direction and the repository's issues. The watch lists each state that needs a session on its PLANS row, so the gate starts one; `shipmill status --item G-3`, or `--item N` on a plan issue or a project's head, names the state, who holds it, and what moves it.
+
+**A goal** (only a goal of kind goal; a standing measure and a goal of kind none have no state):
+
+| State | Read when | Holder | Moved by |
+|---|---|---|---|
+| proposed | an open issue labelled `goal-proposal` by a trusted author or the App | the maintainer | writing it into the direction and closing the issue, or closing it as not planned |
+| written | in the direction, with no `Met:` or `Dropped:` sentence, and not planned | an agent (a plan is due), or the maintainer (a plan waits for the answer) | an accepted plan |
+| planned | an accepted plan of the goal is open, or a project head of one of its plans | its projects | its last project closing, when its check is read again |
+| met | its text ends `. Met: <YYYY-MM-DD>` | nobody | nothing |
+| dropped | its text ends `. Dropped: <YYYY-MM-DD>: <reason>` | nobody | nothing |
+
+A written or planned goal past its horizon (its date has ended, or its release is tagged) reads GOAL_OVERDUE until the App's `goal-review` issue for that goal and horizon exists; its session asks you to extend, rewrite, or drop it, and opens the direction edit as a pull request only you merge (D-34).
+
+**A plan** waits for your answer until a date: seven days after its newest revision, or the date a trusted `answer by YYYY-MM-DD` reply sets. Past that date it reads PLAN_OVERDUE, your overdue decision, and while any plan of the product is overdue no `no-work` plan is proposed and no held project starts; work already started goes on. A goal has one open plan: a newer plan of the same goal (proposed for a `requested in #N` request or an accepted opportunity) replaces the older, which reads PLAN_REPLACED until its session closes it. A held plan (spec 098) has no answer date until it reads PLAN_OPEN again.
+
+**A project** is a head issue labelled `project`, its check issue the head's sub-issue titled `Check: ` with a `## Check`, and its parts the other sub-issues, two levels deep. `[agents] projects = N`, set in the product's home, limits how many of the product's projects are active at once:
+
+| State | Read when | Holder |
+|---|---|---|
+| held | the head is open and has no check issue, or is labelled `held` | its start: a free slot, its turn, no overdue plan |
+| active | the head and its check issue are open, and a part is open or none is filed yet | agents and your steps |
+| in focus | active and labelled `focus` | your steps first |
+| closing | the check issue is open and every part is closed | someone other than the builder, who runs the check |
+| closed | the head closed as completed | nobody |
+| stopped | the head closed as not planned with the App's stop record | nobody |
+
+A held project's turn reads PROJECT_START_DUE (its session files the check issue first), a project whose tree had no update for 14 days PROJECT_IDLE (its session asks you to continue, hold, or stop), and a trusted `stop: <reason>` PROJECT_STOP_DUE (its session closes the parts, records the stop, and sets its spec to `stopped`). A held project's `status --item` names what it waits for: `plan #P overdue`, `a free slot: K of N active`, or `held by the maintainer`.
+
+**An accepted opportunity** names the goal it serves (`accept G-<n>`, or the one goal its `Serves:` line names): it reads ACCEPTED_INTO that goal, whose next plan takes it; `accept new goal` reads GOAL_PROPOSAL_DUE until the App's `goal-proposal` issue holds it; one that names no open goal reads NEEDS_GOAL, whose session asks you once which goal it serves. `fleet.py queue` lists a PLAN_OVERDUE plan as an overdue `PLAN` row and a NEEDS_GOAL opportunity as an `OPPORTUNITY` row.
+
+| Label | On | Means |
+|---|---|---|
+| `project` | an issue | it is a project's head |
+| `held` | a project's head | held: it starts only in its turn |
+| `focus` | an active project's head | your steps on it come first |
+| `goal-proposal` | an issue | a proposed goal, not yet in the direction |
+| `goal-review` | the App's issue | a goal past its horizon, waiting for your extend, rewrite, or drop |
+
+| Marker (a comment's or issue's first line, by the App) | Records |
+|---|---|
+| `<!-- shipmill:goal-overdue G-<n> by=<horizon> -->` | the goal-review issue of a goal past that horizon |
+| `<!-- shipmill:plan-replaced #<new> -->` | a plan closed for the newer plan of its goal |
+| `<!-- shipmill:project-stopped -->` | a stopped project, its reason in the body |
+
 ## Who decides
 
 Every decision an agent meets falls in a **zone**, and each zone has one **level** (spec 030, D-48): `act` (the agent decides and goes on), `notify` (it decides, posts a decided comment and the `decided` label, and goes on; you may veto with a comment starting `veto`), `ask` (it asks through the needs-decision protocol and waits), or `never` (it may prepare the change but never takes the decision, even after your yes in chat). shipmill ships the zones and their defaults; you change a level in `[decisions]` of `.github/shipmill.toml`, never below its floor:

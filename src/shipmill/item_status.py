@@ -109,6 +109,23 @@ class Ref:
     kind: Kind | None
 
 
+@dataclass(frozen=True, slots=True)
+class GoalRef:
+    """S-106-25: the goal --item names, by its id in the direction"""
+
+    given: str
+    goal: str
+
+
+GOAL = re.compile(r"G-[1-9]\d*")
+
+
+def parse_item(text: str, repo: str) -> Ref | GoalRef:
+    """S-106-25: a goal id, G-3, or what parse_ref reads"""
+    given = text.strip()
+    return GoalRef(given, given) if GOAL.fullmatch(given) else parse_ref(text, repo)
+
+
 def parse_ref(text: str, repo: str) -> Ref:
     """S-088-2: a number, or a GitHub issue or pull request URL of repo (case-blind)"""
     given = text.strip()
@@ -117,8 +134,8 @@ def parse_ref(text: str, repo: str) -> Ref:
     found = URL.fullmatch(given)
     if found is None:
         raise ReleaseError(
-            f"--item {text!r} is neither a number nor a GitHub issue or pull request URL,"
-            f" such as 12 or {github(repo)}/issues/12"
+            f"--item {text!r} is neither a number, a goal id, nor a GitHub issue or pull request URL,"
+            f" such as 12, G-3, or {github(repo)}/issues/12"
         )
     if found["repo"].casefold() != repo.casefold():
         raise ReleaseError(f"--item {text!r} is an item of {found['repo']}, not of {repo}; name {repo}'s own item")
@@ -351,6 +368,310 @@ def held_waits(until: str) -> Condition:
     )
 
 
+# S-106-25: the watch's --item rows of spec 106's states, each part a fixed form (watch_state.py's
+# item_states): a goal's, a plan's, and a project head's, and the product's active projects
+GOAL_STATE = "GOAL_STATE"
+PLAN_STATE = "PLAN_STATE"
+PROJECT_STATE = "PROJECT_STATE"
+GOAL_PART = re.compile(
+    r"(?P<goal>G-[1-9]\d*) (?P<state>GOAL_[A-Z]+) holder=(?P<holder>[a-z]+)"
+    r"(?: by=(?P<by>[\w.+-]+))?(?: on=#(?P<on>[1-9]\d*))?"
+)
+PROPOSAL_PART = re.compile(r"#(?P<number>[1-9]\d*) GOAL_PROPOSED holder=(?P<holder>[a-z]+)")
+PLAN_PART = re.compile(
+    r"#(?P<number>[1-9]\d*) (?:(?P<state>PLAN_OPEN|PLAN_OVERDUE) answer_by=(?P<date>\d{4}-\d{2}-\d{2})"
+    r"|PLAN_REPLACED replaced_by=#(?P<by>[1-9]\d*))"
+)
+HEAD_PART = re.compile(
+    r"#(?P<number>[1-9]\d*) (?P<state>PROJECT_[A-Z_]+) holder=(?P<holder>[a-z]+)"
+    r"(?: check=#(?P<check>[1-9]\d*))?(?: held=(?P<held>label|check))?"
+)
+ACTIVE_PART = re.compile(r"active (?P<active>\d+) of (?P<limit>[1-9]\d*)")
+OVERDUE_PART = re.compile(r"overdue (?P<ref>[\w.-]+/[\w.-]+#[1-9]\d*)")
+
+
+@dataclass(frozen=True, slots=True)
+class GoalState:
+    """S-106-25: one goal's state as intake_state.py --goals reads it, or a goal proposal's"""
+
+    state: str
+    holder: str
+    goal: str | None = None
+    number: int | None = None  # a goal proposal's issue
+    by: str | None = None  # its horizon
+    on: int | None = None  # the plan or project its state names
+
+
+@dataclass(frozen=True, slots=True)
+class HeadState:
+    """S-106-25: one project head's state as intake_state.py --projects reads it"""
+
+    number: int
+    state: str
+    check: int | None
+    held: str | None  # a held head's reason: "label" (labelled held) or "check" (no check issue)
+
+
+@dataclass(frozen=True, slots=True)
+class Projects:
+    """S-106-25: the project heads, the product's active count under [agents] projects, and
+    the product's overdue plans, as owner/repo#P"""
+
+    heads: dict[int, HeadState]
+    active: tuple[int, int] | None  # (K, N): K of N active; None without the limit
+    overdue: tuple[str, ...]
+
+
+def parts_of(facts: Facts, state: str) -> list[str]:
+    return [part for r in facts.rows if r.state == state for part in r.detail.split("; ") if part]
+
+
+def unreadable(state: str, part: str) -> ReleaseError:
+    return ReleaseError(f"watch_state.py's {state} row is unreadable: {part!r}")
+
+
+def goal_states(facts: Facts) -> tuple[dict[str, GoalState], dict[int, GoalState]]:
+    """S-106-25: each goal's state by its id and each goal proposal's by its number, from the
+    watch's GOAL_STATE row; no read of its own"""
+    goals: dict[str, GoalState] = {}
+    proposals: dict[int, GoalState] = {}
+    for part in parts_of(facts, GOAL_STATE):
+        if (found := GOAL_PART.fullmatch(part)) is not None:
+            on = int(found["on"]) if found["on"] else None
+            goals[found["goal"]] = GoalState(found["state"], found["holder"], found["goal"], None, found["by"], on)
+        elif (proposal := PROPOSAL_PART.fullmatch(part)) is not None:
+            number = int(proposal["number"])
+            proposals[number] = GoalState("GOAL_PROPOSED", proposal["holder"], number=number)
+        else:
+            raise unreadable(GOAL_STATE, part)
+    return goals, proposals
+
+
+def plan_states(facts: Facts) -> dict[int, re.Match[str]]:
+    """S-106-25: each open plan's answer date, or the plan that replaced it, from the watch's
+    PLAN_STATE row"""
+    found: dict[int, re.Match[str]] = {}
+    for part in parts_of(facts, PLAN_STATE):
+        plan = PLAN_PART.fullmatch(part)
+        if plan is None:
+            raise unreadable(PLAN_STATE, part)
+        found[int(plan["number"])] = plan
+    return found
+
+
+def projects(facts: Facts) -> Projects:
+    """S-106-25: the project heads, their product's active count, and its overdue plans, from
+    the watch's PROJECT_STATE row"""
+    heads: dict[int, HeadState] = {}
+    active: tuple[int, int] | None = None
+    overdue: list[str] = []
+    for part in parts_of(facts, PROJECT_STATE):
+        if (head := HEAD_PART.fullmatch(part)) is not None:
+            check = int(head["check"]) if head["check"] else None
+            heads[int(head["number"])] = HeadState(int(head["number"]), head["state"], check, head["held"])
+        elif (count := ACTIVE_PART.fullmatch(part)) is not None:
+            active = (int(count["active"]), int(count["limit"]))
+        elif (late := OVERDUE_PART.fullmatch(part)) is not None:
+            overdue.append(late["ref"])
+        else:
+            raise unreadable(PROJECT_STATE, part)
+    return Projects(heads, active, tuple(overdue))
+
+
+GOAL_BUCKETS = {
+    "GOAL_PROPOSED": "proposed",
+    "GOAL_WRITTEN": "written",
+    "GOAL_PLANNED": "planned",
+    "GOAL_MET": "met",
+    "GOAL_DROPPED": "dropped",
+    "GOAL_OVERDUE": "overdue",
+}
+
+
+def goal_condition(facts: Facts, goal: GoalState) -> Condition:
+    """S-106-25: a goal's state, who holds it, and what moves it, as one condition"""
+    status = f"{facts.command} status --item"
+    if goal.state == "GOAL_PROPOSED":
+        return Condition(
+            "a goal proposal: waits on your answer",
+            Who.MAINTAINER,
+            "write the goal into the direction and close the proposal, or close it as not planned",
+        )
+    if goal.state == "GOAL_OVERDUE":
+        return Condition(
+            f"past its horizon {goal.by}: waits on a session to ask you to extend, rewrite, or drop it",
+            Who.AGENT,
+            "a gate session opens its goal-review question, then you extend, rewrite, or drop the goal",
+        )
+    if goal.state in ("GOAL_MET", "GOAL_DROPPED"):
+        said = GOAL_BUCKETS[goal.state]
+        return Condition(f"{said}: the direction records it {said}", Who.EVENT, "nothing", where=Holder.NOBODY)
+    if goal.state == "GOAL_WRITTEN" and goal.holder == "maintainer" and goal.on is not None:
+        return Condition(
+            f"written: its plan #{goal.on} waits on your answer",
+            Who.MAINTAINER,
+            f"answer plan #{goal.on}; {status} {goal.on} says what holds it",
+        )
+    if goal.state == "GOAL_WRITTEN":
+        return Condition("written: a plan is due", Who.AGENT, "a product intake pass proposes its plan")
+    if goal.holder == "maintainer":  # planned, its check holds: the Met edit is the maintainer's to merge
+        return Condition(
+            "planned: its check holds, and the goal met waits on your merge",
+            Who.MAINTAINER,
+            "merge the pull request that adds `. Met: <date>` to the goal",
+        )
+    through = "" if goal.on is None else f" (#{goal.on})"
+    return Condition(
+        f"planned: its projects run{through}",
+        Who.AGENT,
+        "its last project closing, when its check is read again",
+    )
+
+
+def plan_condition(plan: re.Match[str]) -> Condition:
+    """S-106-25: an open plan's answer date, overdue past it, or the plan that replaced it"""
+    if plan["by"] is not None:
+        return Condition(
+            f"triaged as plan: replaced by #{plan['by']}, waits on product intake to close it",
+            Who.AGENT,
+            f"a product intake pass closes it as not planned for #{plan['by']}",
+        )
+    if plan["state"] == "PLAN_OVERDUE":
+        return Condition(
+            f"triaged as plan: answer due {plan['date']}, overdue",
+            Who.MAINTAINER,
+            "accept, change, decline, or hold the plan; while it is overdue no held project of the product starts",
+        )
+    return Condition(
+        f"triaged as plan: waits on the maintainer's answer to the plan, answer by {plan['date']}",
+        Who.MAINTAINER,
+        "accept or change the plan",
+    )
+
+
+def held_for(facts: Facts, head: HeadState, product: Projects) -> Condition:
+    """S-106-25: what a held project waits for: no overdue plan of the product, a free slot
+    under [agents] projects, the maintainer's held label, or its turn after older held heads"""
+    if product.overdue:
+        ref = product.overdue[0]
+        own = ref.rpartition("#")[0].casefold() == facts.repo.casefold()
+        shown = f"#{ref.rpartition('#')[2]}" if own else ref
+        return Condition(f"held: plan {shown} overdue", Who.MAINTAINER, f"answer plan {shown}, then its turn to start")
+    if product.active is not None and product.active[0] >= product.active[1]:
+        active, limit = product.active
+        return Condition(
+            f"held: a free slot: {active} of {limit} active",
+            Who.EVENT,
+            "an active project of the product closing, then its turn to start",
+            where=Holder.POSTPONED,
+        )
+    if head.held == "label":
+        return Condition(
+            "held: held by the maintainer",
+            Who.MAINTAINER,
+            f"remove the held label from #{head.number}, or its session does when its turn comes",
+        )
+    return Condition(
+        "held: its turn comes after the older held projects of the product",
+        Who.EVENT,
+        "the held projects ahead of it starting",
+        where=Holder.POSTPONED,
+    )
+
+
+def head_condition(facts: Facts, head: HeadState, product: Projects) -> Condition | None:
+    """S-106-25: an open project head's state, who holds it, and what moves it; None for a
+    closed or stopped one"""
+    check = "its check" if head.check is None else f"check #{head.check}"
+    if head.state == "PROJECT_HELD":
+        return held_for(facts, head, product)
+    if head.state == "PROJECT_START_DUE":
+        return Condition(
+            "held, and its turn to start: waits on a session to file its check issue",
+            Who.AGENT,
+            "a gate session files its `Check:` issue as its sub-issue, or removes the held label",
+        )
+    if head.state == "PROJECT_ACTIVE":
+        return Condition(
+            "an active project: its parts are being built",
+            Who.AGENT,
+            f"its parts closing, then someone other than the builder runs {check}",
+        )
+    if head.state == "PROJECT_FOCUS":
+        return Condition(
+            "a project in focus: your steps on it come first",
+            Who.MAINTAINER,
+            f"your steps on its parts, then someone other than the builder runs {check}",
+        )
+    if head.state == "PROJECT_CLOSING":
+        return Condition(
+            f"closing: every part is closed, and {check} waits to be run",
+            Who.PERSON,
+            f"someone other than the builder runs {check} and closes it",
+        )
+    if head.state == "PROJECT_IDLE":
+        return Condition(
+            "no change for 14 days: waits on a session to ask you to continue, hold, or stop it",
+            Who.AGENT,
+            "a gate session asks on it, then you answer continue, hold, or stop",
+        )
+    if head.state == "PROJECT_STOP_DUE":
+        return Condition(
+            "a stop was asked: waits on a session to stop the project",
+            Who.AGENT,
+            "a gate session closes its parts and check issue and records the stop",
+        )
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class GoalExplanation:
+    """S-106-25: one goal's state, its holder, and what moves it, as a spec 094 condition"""
+
+    repo: str
+    goal: str
+    bucket: str
+    conditions: tuple[Condition, ...]
+
+    @property
+    def url(self) -> str:
+        return f"{github(self.repo)}/blob/HEAD/docs/product.md"
+
+    def text(self) -> str:
+        lines = [f"{self.repo} {self.goal} ({self.url}): {self.bucket}"]
+        for c in self.conditions:
+            lines += [f"  why:  {c.reason}", f"        clears: {c.who.text} ({c.clears})"]
+        return "\n".join(lines) + "\n"
+
+    def record(self) -> dict[str, object]:
+        return {
+            "repo": self.repo,
+            "goal": self.goal,
+            "kind": "goal",
+            "url": self.url,
+            "bucket": self.bucket,
+            "conditions": [c.record() for c in self.conditions],
+        }
+
+
+def explain_goal(facts: Facts, ref: GoalRef) -> GoalExplanation:
+    """S-106-25: the goal's condition, then a hold's and the gate's when the PLANS row names it"""
+    goal = goal_states(facts)[0].get(ref.goal)
+    if goal is None:
+        raise ReleaseError(
+            f"--item {ref.given!r}: {ref.goal} is no goal of kind goal in {facts.repo}'s direction"
+            f" (a standing measure and a goal of kind none have no state); {facts.command} product show lists them"
+        )
+    conditions = [goal_condition(facts, goal), *repo_conditions(facts, None)]
+    if goal.state == "GOAL_OVERDUE":
+        work = [r for r in facts.rows if r.state == PLANS and ref.goal in GOAL.findall(r.detail)]
+        if work and facts.gate.agents is not None and not any(r.state == "HOLD" for r in facts.rows):
+            conditions.append(
+                Condition("the gate takes it up on a coming tick, in its tier order", Who.AGENT, "the next gate tick")
+            )
+    return GoalExplanation(facts.repo, ref.goal, GOAL_BUCKETS[goal.state], tuple(dict.fromkeys(conditions)))
+
+
 def not_open(ref: Ref, repo: str) -> ReleaseError:
     return ReleaseError(f"--item {ref.given!r}: #{ref.number} is no open issue or pull request of {repo}")
 
@@ -516,7 +837,25 @@ def assigned_to_maintainer(facts: Facts, issue: Issue) -> bool:
     return any(who.lower() in mine for who in (*issue.assignees, *issue.teams))
 
 
+HELD_PROJECT = re.compile(r"project #(?P<head>[1-9]\d*) held")
+
+
 def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
+    """S-088-6, S-088-8: the issue's triage_state.py state and its note; S-106-25: a project
+    head's state first, and a goal proposal's"""
+    product = projects(facts)
+    head = product.heads.get(issue.number)
+    found = None if head is None else head_condition(facts, head, product)
+    if found is not None:
+        held = issue.state == "BLOCKED" and HELD_PROJECT.fullmatch(issue.note) is not None
+        return [found, *([] if held else state_conditions(facts, issue))]
+    proposal = goal_states(facts)[1].get(issue.number)
+    if proposal is not None:
+        return [goal_condition(facts, proposal)]
+    return state_conditions(facts, issue)
+
+
+def state_conditions(facts: Facts, issue: Issue) -> list[Condition]:
     """S-088-6, S-088-8: the issue's triage_state.py state and its note"""
     state, note = issue.state, issue.note
     if state == "NEEDS_DECISION":
@@ -544,6 +883,17 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
                     Who.EVENT,
                     f"the window passing at {window['until']}",
                     where=own,
+                )
+            )
+        part_of = HELD_PROJECT.fullmatch(note)
+        if part_of is not None:  # S-106-16: a part of a held project waits for its project's start
+            head = part_of["head"]
+            found.append(
+                Condition(
+                    f"its project #{head} is held",
+                    Who.EVENT,
+                    f"project #{head} starting; {facts.command} status --item {head} says what it waits for",
+                    where=Holder.POSTPONED,
                 )
             )
         if note == "labelled blocked":
@@ -614,6 +964,9 @@ def issue_conditions(facts: Facts, issue: Issue) -> list[Condition]:
         held = plans_held(facts).get(issue.number) if issue.verdict == "plan" else None
         if held is not None:
             return [held_waits(held)]
+        dated = plan_states(facts).get(issue.number) if issue.verdict == "plan" else None
+        if dated is not None:  # S-106-25: its answer date, overdue past it, or the plan replacing it
+            return [plan_condition(dated)]
         if issue.verdict == "opportunity" and not issue.proposal:  # #1643: a request handed to intake
             return grouped_waits(facts, issue) or [INTAKE_WAITS]
         reason, who, clears = VERDICT_WAITS[issue.verdict]

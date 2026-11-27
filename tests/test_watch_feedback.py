@@ -98,7 +98,7 @@ def test_s074_3_intake_state_runs_without_plans_and_with_them(ws: ModuleType, tm
     ws.intake_run("o/r", tmp_path, False, "shipmill==1.2.3", BOT, 3, execute, roles=["maintainer=amy"])
     assert asked[-1][1:] == [str(ws.INTAKE_STATE), "o/r", "--json", "--bot-login", BOT]
     ws.intake_run("o/r", tmp_path, True, None, BOT, 3, execute, roles=["maintainer=amy"])
-    want = [str(ws.INTAKE_STATE), "o/r", "--plans", "--json", "--wip", "3", "--bot-login", BOT]
+    want = [str(ws.INTAKE_STATE), "o/r", "--plans", "--goals", "--projects", "--json", "--wip", "3", "--bot-login", BOT]
     assert asked[-1][1:] == [*want, "--role", "maintainer=amy"]
     # a run that exits 2 stops the watch
     for plans in (False, True):

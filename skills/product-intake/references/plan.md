@@ -107,6 +107,26 @@ The `project` label makes the filed item a project's head (spec 106): `intake_st
 
 Then make it a sub-issue of the plan with github-issue-triage's `chains.py link {owner/repo}#{plan} --child {owner/repo}#{item} --no-text`: `--no-text` writes GitHub's relation alone, with no `Depends on` line in the plan's body, which stays as accepted
 
+## Spec 106's states, labels, and markers
+
+A goal reads proposed, written, planned, met, or dropped; a plan PLAN_OPEN with its answer date, PLAN_OVERDUE past it, or PLAN_REPLACED once a newer plan of its goal is open; a project held, active, in focus, closing, closed, or stopped (docs/flow.md's "Goals, plans, and projects" has the tables). The labels and markers they are read from:
+
+| Label | On | Means |
+|---|---|---|
+| `project` | an issue, by a trusted author or the App | a project's head; a filed `feature` or `fix` item carries it |
+| `held` | a project's head | held, until its turn starts it (PROJECT_START_DUE removes it once the check issue exists) |
+| `focus` | an active head, by the maintainer | in focus: the maintainer's steps on it come first |
+| `goal-proposal` | an issue | a goal not yet in the direction; GOAL_PROPOSAL_DUE opens one with the opportunity as its sub-issue |
+| `goal-review` | the App's issue | GOAL_OVERDUE's question: extend, rewrite, or drop the goal |
+
+| Marker | Where | Written on |
+|---|---|---|
+| `<!-- shipmill:goal-overdue G-<n> by=<horizon> -->` | the first line of the `goal-review` issue, by the App | GOAL_OVERDUE |
+| `<!-- shipmill:plan-replaced #<new> -->` | the first line of the comment closing the older plan as not planned | PLAN_REPLACED |
+| `<!-- shipmill:project-stopped -->` | the first line of the comment closing the head as not planned, the reason in its body | PROJECT_STOP_DUE |
+
+A marker counts only from the App (D-29): the same line by anyone else records nothing.
+
 ## Intake's line on the plan once filed
 
 ```markdown

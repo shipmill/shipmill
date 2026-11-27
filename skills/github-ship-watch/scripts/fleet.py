@@ -81,8 +81,11 @@ login:
               its opening. triage_state.py runs with the --home the watch passes (the
               clone's [product] home, or the repo itself in the home repo, whose config has
               [product] repos), so in a product the coordinator's report is none
-  OPPORTUNITY an open opportunity intake_state.py reads OPPORTUNITY_OPEN; since its opening
-  PLAN        an open plan issue intake_state.py reads PLAN_OPEN; since its newest revision:
+  OPPORTUNITY an open opportunity intake_state.py reads OPPORTUNITY_OPEN, or NEEDS_GOAL (spec
+              106: accepted naming no goal still open), whose phrase adds "name the goal it
+              serves: accept G-<n> or accept new goal"; since its opening
+  PLAN        an open plan issue intake_state.py reads PLAN_OPEN, or PLAN_OVERDUE (spec 106),
+              whose phrase adds "answer due <date>, overdue", its answer_by; since its newest revision:
               the newest <!-- shipmill:plan-revised rev=k --> comment by the --bot-login
               whose rev is higher than the one before it, else its opening. A plan re-checked
               after its hold was met (its line's hold has a met_at, spec 098) waits since the
@@ -567,7 +570,11 @@ INTAKE_KINDS = {
     ("opportunity", "NO_REASON"): NO_REASON,
     ("plan", "PLAN_OPEN"): PLAN,
     ("plan", "PLAN_OVERDUE"): PLAN,  # spec 106: past its answer date, it still waits on your answer
+    ("opportunity", "NEEDS_GOAL"): OPPORTUNITY,  # spec 106: accepted, it waits on you to name its goal
 }
+# S-106-26: what a row adds to its fixed phrase, for an overdue plan and an opportunity that needs a goal
+NEEDS_GOAL_NOTE = "name the goal it serves: accept G-<n> or accept new goal"
+ANSWER_BY = re.compile(r"\d{4}-\d{2}-\d{2}")
 WITH_PERSON_SINCE = re.compile(r"\bsince (\S+)")  # triage_state.py's WITH_PERSON note: "... since <time> ..."
 # intake_state.py's REVISED (tests/test_fleet_queue.py keeps the two equal): a plan's revision comment
 REVISED = re.compile(r"^<!-- shipmill:plan-revised rev=([1-9][0-9]*) -->$")
@@ -595,6 +602,11 @@ class Item:
     title: str
     since: dt.datetime
     holds: int | None = None  # --order impact's count of open issues waiting on it (spec 086); None without
+    note: str | None = None  # S-106-26: an overdue plan's `answer due <date>, overdue`, or a goal to name
+
+    @property
+    def asked(self) -> str:
+        return ASKED[self.kind] if self.note is None else f"{ASKED[self.kind]}, {self.note}"
 
     def waited(self, now: dt.datetime) -> int:
         return max(0, int((now - self.since).total_seconds() // 60))
@@ -605,7 +617,7 @@ class Item:
             "kind": self.kind,
             "number": self.number,
             "url": self.url,
-            "asked": ASKED[self.kind],
+            "asked": self.asked,
             "title": self.title,
             "since": self.since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),  # noqa: UP017 (3.10)
             "waited_minutes": self.waited(now),
@@ -744,6 +756,24 @@ def intake_items(text: str, repo: str) -> dict[int, str]:
         kind = INTAKE_KINDS.get((str(line.get("kind")), str(line.get("state"))))
         if kind is not None:
             found[number_of(line, what)] = kind
+    return found
+
+
+def intake_notes(text: str, repo: str) -> dict[int, str]:
+    """S-106-26: what intake_state.py --plans --json's rows add to their row's phrase: a
+    PLAN_OVERDUE plan's `answer due <date>, overdue` (its answer_by), and a NEEDS_GOAL
+    opportunity's goal to name; an overdue plan without its date is refused"""
+    what = f"intake_state.py for {repo}"
+    found: dict[int, str] = {}
+    for line in json_lines(text, what):
+        kind, state = str(line.get("kind")), str(line.get("state"))
+        if (kind, state) == ("plan", "PLAN_OVERDUE"):
+            answer_by = line.get("answer_by")
+            if not isinstance(answer_by, str) or ANSWER_BY.fullmatch(answer_by) is None:
+                raise Refused(f"error: {what} printed an overdue plan without its answer_by: {line!r}")
+            found[number_of(line, what)] = f"answer due {answer_by}, overdue"
+        elif (kind, state) == ("opportunity", "NEEDS_GOAL"):
+            found[number_of(line, what)] = NEEDS_GOAL_NOTE
     return found
 
 
@@ -1089,6 +1119,12 @@ def queue_clone(e: Entry, runner: Runner, checkout: Path, bot_login: str | None,
     found = read_items(e.repo, kinds, runner, bot_login, given) if kinds else []
     if isinstance(found, RepoError):
         return found
+    notes = intake_notes(intake.stdout, e.repo)  # S-106-26: on its intake row only, never a QUESTION's
+    intake_kinds = intake_items(intake.stdout, e.repo)
+    found = [
+        replace(i, note=notes[i.number]) if intake_kinds.get(i.number) == i.kind and i.number in notes else i
+        for i in found
+    ]
     listed = [i.number for i in found]  # a spec pull request another row lists, QUESTION's first, is in that row only
     specs = spec_items(e.repo, runner, bot_login, PG.retro().maintainer_logins(roles), listed)
     return specs if isinstance(specs, RepoError) else found + specs
@@ -1118,7 +1154,7 @@ def queue_lines(items: list[Item], errors: list[RepoError], now: dt.datetime) ->
     """One line per row, oldest first, then one REPO_ERROR line per repo whose read failed"""
     width = max([len(i.repo) for i in items] + [len(e.repo) for e in errors], default=0)
     lines = [
-        f"{i.repo:<{width}} {i.kind:<{KIND_WIDTH}} {'#' + str(i.number):<6} {ASKED[i.kind]}: {i.title}"
+        f"{i.repo:<{width}} {i.kind:<{KIND_WIDTH}} {'#' + str(i.number):<6} {i.asked}: {i.title}"
         f"{'' if i.holds is None else f' holds {i.holds}'} ({waited_text(i.waited(now))})"
         for i in items
     ]
