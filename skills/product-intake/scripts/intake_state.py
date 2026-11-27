@@ -2914,9 +2914,14 @@ def tree_updated(head: dict[str, Any], bot_login: str | None) -> dt.datetime:
         return [timestamp(p["updatedAt"]) for p in refs]
 
     times += linked(head)
-    for node in (head.get("prs") or {}).get("nodes") or []:  # the pull requests linked to the head
+    nodes = (head.get("prs") or {}).get("nodes") or []
+    # the pull requests linked to the head as triage_state.py's linked_prs reads them; one that
+    # only mentions it, or one of another repo, is no work of the head's
+    view = {"number": head["number"], "timelineItems": {"nodes": nodes}}
+    own = {n for n, _, _ in triage_module().linked_prs(view)} if nodes else set()
+    for node in nodes:
         pr = node.get("subject", node.get("source")) or {}
-        if pr.get("updatedAt"):
+        if pr.get("number") in own and pr.get("updatedAt"):
             times.append(timestamp(pr["updatedAt"]))
     for sub in (head.get("subIssues") or {}).get("nodes") or []:
         times += [timestamp(sub["updatedAt"]), *linked(sub)]

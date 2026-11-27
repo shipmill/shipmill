@@ -122,6 +122,11 @@ def test_s106_30_a_pr_linked_to_the_head_moves_its_tree(ist: ModuleType) -> None
     later = "2026-12-20T10:00:00Z"
     node = started(linked(80, "OPEN", updated=later))
     assert ist.tree_updated(node, BOT) == dt.datetime(2026, 12, 20, 10, tzinfo=dt.UTC)
+    # a pull request that only mentions the head, or one of another repo, is no work of its
+    mention = started(linked(81, "OPEN", body="See #7", updated=later))
+    assert ist.tree_updated(mention, BOT) < dt.datetime(2026, 12, 20, 10, tzinfo=dt.UTC)
+    foreign = linked(82, "OPEN", updated=later) | {"isCrossRepository": True}
+    assert ist.tree_updated(started(foreign), BOT) < dt.datetime(2026, 12, 20, 10, tzinfo=dt.UTC)
 
 
 # -- chains.py show ---------------------------------------------------------------------------
