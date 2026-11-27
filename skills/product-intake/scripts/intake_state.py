@@ -2635,8 +2635,8 @@ UNCHECKED = re.compile(r"^[ \t]*[-*][ \t]+\[ \][ \t]+(.+?)[ \t]*$", re.MULTILINE
 # with their sub-issues and those sub-issues' own is small; tests/test_intake_projects.py pins them
 PROJECT_PAGE = 10  # heads per page of the checkout's own read
 PRODUCT_HEADS = 25  # open heads per repo in a product count, refused past it
-# sub-issues of a head, and of each of its sub-issues (the check issue's parts); a head with
-# more is refused, never read short
+# sub-issues of a head, and of each of its sub-issues (the check issue's parts); the checkout's
+# own read pages a head or check issue with more (#1827, read_in_full), a product count refuses it
 PROJECT_SUBS = 20
 PROJECT_PARTS = 10
 # the states a head reads, and who holds each (spec 106's table): its start, agents and the
@@ -2677,15 +2677,32 @@ WORK = (
 )
 
 
+PART_FIELDS = "number state updatedAt"  # a check issue's part's fields
+# #1827: a connection with more than its first read is read again in full by a follow-up query
+# on its one issue, in pages of PROJECT_SUBS sub-issues of a head, PARTS_PAGE parts of a check
+PARTS_PAGE = 100
+ISSUE_SUBS = (
+    "query($owner: String!, $name: String!, $number: Int!, $first: Int!, $cursor: String) {"
+    " repository(owner: $owner, name: $name) { issue(number: $number) {"
+    " subIssues(first: $first, after: $cursor) { totalCount pageInfo { hasNextPage endCursor }"
+    " nodes { FIELDS } } } } }"
+)
+
+
+def sub_fields(linked: str, summary: bool) -> str:
+    """A head's sub-issue's fields, as GraphQL text (head_fields' linked and summary)"""
+    parts = (
+        "subIssuesSummary { total completed }"
+        if summary
+        else f"subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ {PART_FIELDS} }} }}"
+    )
+    return f"number title body state updatedAt {linked}\n    {parts}"
+
+
 def head_fields(linked: str, summary: bool = False, work: bool = True) -> str:
     """A head's fields, as GraphQL text; linked adds the head's and its sub-issues' pull requests;
     work the head's linked ones (WORK); summary reads each sub-issue's own sub-issues as counts
     (subIssuesSummary), no connection"""
-    parts = (
-        "subIssuesSummary { total completed }"
-        if summary
-        else f"subIssues(first: {PROJECT_PARTS}) {{ totalCount nodes {{ number state updatedAt }} }}"
-    )
     work_fields = WORK if work else ""
     return f"""
 number title body state stateReason createdAt closedAt author {{ __typename login }} authorAssociation {linked}
@@ -2699,8 +2716,7 @@ comments(last: 30) {{ nodes {{ author {{ __typename login }} authorAssociation b
 subIssues(first: {PROJECT_SUBS}) {{
   totalCount
   nodes {{
-    number title body state updatedAt {linked}
-    {parts}
+    {sub_fields(linked, summary)}
   }}
 }}
 """
@@ -2808,6 +2824,59 @@ def complete(connection: dict[str, Any], what: str) -> list[dict[str, Any]]:
     if int(connection.get("totalCount") or 0) > len(nodes):
         fail(f"{what} has {connection['totalCount']} sub-issues, more than intake_state.py reads ({len(nodes)})")
     return nodes
+
+
+def is_short(connection: dict[str, Any]) -> bool:
+    """A sub-issue connection GitHub has more of than its nodes read"""
+    return int(connection.get("totalCount") or 0) > len(connection.get("nodes") or [])
+
+
+def issue_subs(
+    run: Runner, owner: str, name: str, number: int, fields: str, first: int, counted: int
+) -> dict[str, Any]:
+    """#1827: every sub-issue of issue #number, with fields, in pages of first, as one
+    connection (its totalCount, its nodes); complete() refuses it still short. A first page
+    counting other than the head query's read (counted) is refused: the sub-issue's number may
+    name another issue in owner/name, a check issue of another repo's (chains.py's own_check)"""
+    query = ISSUE_SUBS.replace("FIELDS", fields)
+    nodes: list[dict[str, Any]] = []
+    cursor: str | None = None
+    seen: set[str] = set()
+    while True:
+        variables: Variables = {"owner": owner, "name": name, "number": number, "first": first}
+        issue = repository(run, query, {**variables, **({"cursor": cursor} if cursor else {})}).get("issue")
+        if issue is None:
+            fail(f"no issue #{number} in {owner}/{name} in the GraphQL response")
+        connection = issue["subIssues"]
+        if not nodes and int(connection["totalCount"]) != counted:
+            fail(
+                f"#{number} has {connection['totalCount']} sub-issues in {owner}/{name}, where the first read"
+                f" counted {counted}: another repo's issue, or one changed between the reads"
+            )
+        nodes += connection["nodes"]
+        info = connection["pageInfo"]
+        if not info["hasNextPage"]:
+            return {"totalCount": connection["totalCount"], "nodes": nodes}
+        cursor = info["endCursor"]
+        if not cursor or cursor in seen:
+            fail(f"GitHub reported more sub-issues of #{number}, but the page cursor did not advance ({cursor!r})")
+        seen.add(cursor)
+
+
+def read_in_full(run: Runner, owner: str, name: str, head: dict[str, Any], linked: str, summary: bool) -> None:
+    """#1827: a head's sub-issues and its check issues' parts read in full, in place, each with
+    more than the head query read paged by a follow-up query on its issue; the sub-issues with
+    the fields the head query read them with (sub_fields' linked and summary)"""
+    subs = head.get("subIssues") or {}
+    if is_short(subs):
+        fields = sub_fields(linked, summary)
+        counted = int(subs["totalCount"])
+        head["subIssues"] = issue_subs(run, owner, name, int(head["number"]), fields, PROJECT_SUBS, counted)
+    for sub in (head.get("subIssues") or {}).get("nodes") or []:
+        parts = sub.get("subIssues")
+        if parts is not None and is_check(sub) and is_short(parts):
+            counted = int(parts["totalCount"])
+            sub["subIssues"] = issue_subs(run, owner, name, int(sub["number"]), PART_FIELDS, PARTS_PAGE, counted)
 
 
 def is_check(sub: dict[str, Any]) -> bool:
@@ -3051,7 +3120,8 @@ def fetch_projects(
     maintainers: frozenset[str] = frozenset(),
 ) -> list[ProjectRow]:
     """S-106-12: a row per open head and per head closed within PROJECT_DAYS days, oldest first,
-    an open head's action over its state (project_action)"""
+    an open head's action over its state (project_action); a head's sub-issues and its check
+    issue's parts read in full (#1827, read_in_full)"""
     owner, name = split_repo(repo)
     since = (now - dt.timedelta(days=PROJECT_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     found: list[ProjectRow] = []
@@ -3062,6 +3132,9 @@ def fetch_projects(
         for head in heads:
             if states == "CLOSED" and timestamp(str(head.get("closedAt"))) < now - dt.timedelta(days=PROJECT_DAYS):
                 continue
+            if is_head(head, bot_login):  # an issue that is no head costs no follow-up query
+                linked, summary = (LINKED, False) if states == "OPEN" else ("", True)
+                read_in_full(run, owner, name, head, linked, summary)
             read = project_row(head, bot_login)
             if read is not None:
                 found.append(project_action(head, read, bot_login, now, marker, maintainers))
