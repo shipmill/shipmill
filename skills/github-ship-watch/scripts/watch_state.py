@@ -4560,7 +4560,10 @@ def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only
     if projects is not None:
         heads.append(f"active {projects['active']} of {projects['limit']}")
     overdue += list(first.get("overdue") or ())  # the product's, other repos' among them (S-106-25)
-    heads += [f"overdue {ref}" for ref in dict.fromkeys(sorted(overdue))]
+    once: dict[str, str] = {}
+    for ref in sorted(overdue):  # one plan once, whatever its case: the spelling read first
+        once.setdefault(ref.lower(), ref)
+    heads += [f"overdue {ref}" for ref in sorted(once.values(), key=str.lower)]
     found_rows = [(GOAL_STATE, goals), (PLAN_STATE, plans), (PROJECT_STATE, heads)]
     return [Row(state, repo, "; ".join(parts)) for state, parts in found_rows if parts]
 

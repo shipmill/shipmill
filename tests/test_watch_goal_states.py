@@ -202,6 +202,10 @@ def test_s106_25_the_products_overdue_plans_reach_the_heads(ws: ModuleType, ist:
     text = "\n".join([line, head(ist, 53, "PROJECT_HELD", "no check issue")]) + "\n"
     (row,) = ws.item_states(text, REPO, BOT)
     assert row.detail == "#53 PROJECT_HELD holder=start held=check; overdue o/other#8"
+    # the same plan in another case is named once
+    twice = json.dumps(ist.first_line("propose", None, None, ("O/Other#8", "o/other#8")))
+    (row,) = ws.item_states("\n".join([twice, head(ist, 53, "PROJECT_HELD", "no check issue")]) + "\n", REPO, BOT)
+    assert [p for p in row.detail.split("; ") if p.startswith("overdue ")] == ["overdue O/Other#8"]
     assert ws.intake_level(text) == "propose"
     for bad in ([], ["o/other"], "o/other#8"):
         with pytest.raises(ws.Refused, match="not its autonomy line"):
