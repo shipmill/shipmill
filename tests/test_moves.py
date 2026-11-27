@@ -59,6 +59,10 @@ class FakeHub:
         return self.login
 
     def item(self, number: int) -> Item:
+        if number == 51:  # a closed check issue
+            return Item(51, False, False, frozenset(), "", at(0), ())
+        if number == 50:  # an open check issue
+            return Item(50, False, True, frozenset(), "", at(0), ())
         assert number == self.found.number
         return self.found
 
@@ -188,7 +192,8 @@ def test_s108_3_a_move_on_the_wrong_item_is_refused(found: Item, read: Projects,
         (("project",), heads(), Verb.UNFOCUS, "no focus to take off"),
         (("project", "held"), heads("PROJECT_HELD"), Verb.HOLD, "labelled `held` already"),
         (("project",), heads(), Verb.RESUME, "no hold to lift"),
-        (("project", "held"), heads("PROJECT_HELD", None), Verb.RESUME, "has no check issue"),
+        (("project", "held"), heads("PROJECT_HELD", None), Verb.RESUME, "has no open check issue"),
+        (("project", "held"), heads("PROJECT_HELD", 51), Verb.RESUME, "has no open check issue"),
         (("project", "held"), heads("PROJECT_HELD", limit=2, active=2, room=0), Verb.RESUME, r"\(2 of 2 active\)"),
     ],
 )
@@ -315,10 +320,28 @@ def test_through_the_cli_focus_posts_the_relay_then_the_label(
 
 
 # proves: S-108-12
-def test_s108_12_dry_run_prints_every_step_and_writes_nothing() -> None:
-    hub = FakeHub(issue(labels=("project", "held")))
-    said = run(hub, Verb.RESUME, note="seen", dry_run=True)
-    assert said == [relay("resume") + "\n\nNote: seen", "label: remove `held`"]
+@pytest.mark.parametrize(
+    ("verb", "labels", "step"),
+    [
+        (Verb.ADD, (), "label: add `project`"),
+        (Verb.FOCUS, ("project",), "label: add `focus`"),
+        (Verb.UNFOCUS, ("project", "focus"), "label: remove `focus`"),
+        (Verb.HOLD, ("project",), "label: add `held`"),
+        (Verb.RESUME, ("project", "held"), "label: remove `held`"),
+    ],
+)
+def test_s108_12_dry_run_prints_every_step_and_writes_nothing(verb: Verb, labels: tuple[str, ...], step: str) -> None:
+    hub = FakeHub(issue(labels=labels))
+    said = run(hub, verb, note="seen", dry_run=True)
+    assert said == [relay(verb.value if verb is not Verb.ADD else "project") + "\n\nNote: seen", step]
+    assert hub.written == []
+
+
+def test_s108_12_hold_dry_run_says_the_idle_questions_label_comes_off() -> None:
+    idle = Comment(BOT, "NONE", f"{QUESTION}\n<!-- shipmill:agent -->", at(1))
+    hub = FakeHub(issue(labels=("project", "needs-decision"), comments=(idle,)))
+    said = run(hub, Verb.HOLD, dry_run=True)
+    assert said[1:] == ["needs-decision: comes off", "label: add `held`"]
     assert hub.written == []
 
 

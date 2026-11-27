@@ -172,8 +172,10 @@ def compose(
     bot_login: str,
     maintainers: frozenset[str],
     projects: Callable[[], Projects],
+    is_open: Callable[[int], bool],
 ) -> Step:
-    """The move's writes, refused (ReleaseError) for one its reader wouldn't count"""
+    """The move's writes, refused (ReleaseError) for one its reader wouldn't count; is_open
+    reads whether an issue is open (the head's check issue, which intake names closed too)"""
     verb = request.verb
     _maintainer(request.by, maintainers)
     where = f"project {verb}"
@@ -203,9 +205,9 @@ def compose(
             raise ReleaseError(f"project #{item.number} has a stop pending, which a newer relay would lift")
         _labels(item, verb)
         if verb is Verb.RESUME:
-            if head.check is None:
+            if head.check is None or not is_open(head.check):
                 raise ReleaseError(
-                    f"project #{item.number} has no check issue, so it would read held still: file it with "
+                    f"project #{item.number} has no open check issue, so it would not read active: file it with "
                     f"`{cli_command()} project check {item.number}` first"
                 )
             if found.room == 0:
@@ -250,7 +252,9 @@ def run(request: Request, hub: Hub, maintainers: frozenset[str], say: Callable[[
     """Read the item, compose the move, post the relay, then move its label; print the URL"""
     bot_login = hub.viewer()
     item = hub.item(request.number)
-    step = compose(item, request, bot_login, maintainers, lambda: hub.projects(bot_login))
+    step = compose(
+        item, request, bot_login, maintainers, lambda: hub.projects(bot_login), lambda number: hub.item(number).open
+    )
     if request.dry_run:
         say(step.body)
         if step.unlabel:
