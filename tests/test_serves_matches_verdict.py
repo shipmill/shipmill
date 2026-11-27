@@ -79,6 +79,17 @@ def test_a_verdict_naming_no_goal_accepts_the_quality_bar(tmp_path: Path, first:
     ready(gated(tmp_path, plan("quality bar"), {12: thread(triaged(first))}))
 
 
+def test_a_verdict_goal_the_direction_no_longer_lists_counts_for_nothing(tmp_path: Path) -> None:
+    """a goal met and dropped from the direction since the verdict (G-2 here) can't be named by a
+    plan, which the direction check refuses for an unlisted id, so it can't be asked for either"""
+    issue = thread(triaged("Triage: **implement**. Serves: G-2."))
+    ready(gated(tmp_path, plan("quality bar"), {12: issue}))
+    both = thread(triaged("Triage: **implement**. Serves: G-2, G-3."))
+    assert refused(gated(tmp_path, plan("quality bar"), {12: both})) == [
+        "  refused: `Serves:` names quality bar, but the triage verdict on #12 serves G-3: name one of its goals"
+    ]
+
+
 def test_a_goal_on_a_later_line_of_the_verdict_names_none(tmp_path: Path) -> None:
     """only the verdict line counts: a plan's `- Serves: G-1` under it is the implementer's draft"""
     issue = thread(allowing("Triage: **implement**. The fix is small.\n\n- Serves: G-1\n"))
