@@ -174,6 +174,18 @@ null), and `parts` (open and closed counts). A closing row's note lists the unch
   be true>` with a `## Check` a person other than the builder can run, and for a head
   labelled `held` removes the label instead when the check issue exists already. Only then
   does triage split or dispatch it
+- **A started project's check waits on its work.** Once its check issue exists, the head is
+  built like any issue or split into parts, and never held on its own check issue as on a
+  child. A head with no parts is built by pull requests saying `Part of #<head>`, so it stays
+  open. The project's work is done once every part is closed, no pull request linked to the
+  head is open, and, with no part filed, one of them merged. Until then `triage_state.py`
+  reads the check issue BLOCKED `project #<head>: check waits on its work`; after it, the
+  check issue reads by its `## Check` as a parent's does (spec 042: VERIFY_DUE, CHECK_FAILED,
+  or WITH_PERSON) once its own holds closed, and the head reads BLOCKED `project #<head>:
+  check #<check> due`. Its session runs the check, then closes the check issue and the head.
+  Triage never reads that check issue as new work, and product intake reads no sub-issue
+  titled `Check: ` with a `## Check` section as feedback to group. A head and its check issue
+  in different repos read as before
 - **A held project is not split into issues.** `triage_state.py` reads a head in held, and
   each open sub-issue under it, as BLOCKED with the note `project #<head> held`, so no spec,
   build issue, or implementer starts for it
@@ -253,7 +265,7 @@ idle questions reach it as any needs-decision item does.
 - S-106-13: a config with `[agents] projects` set to 0, a negative number, a number above `[agents] wip`'s ceiling, or a non-integer is refused naming the key; with 2 it loads as `projects == 2`, and without it is None
 - S-106-14: with `[agents] projects = 2`, one active and one in-focus head (in any repos of the product), and held and closing heads, no head reads PROJECT_START_DUE; with one slot free, the held head of the oldest accepted plan, first in its Work order, reads PROJECT_START_DUE, an action, and no other does; without the key every held head reads PROJECT_START_DUE
 - S-106-15: product-intake's SKILL.md gives PROJECT_START_DUE's step: file the check issue as the head's sub-issue before any part, titled `Check: ` with a `## Check` someone other than the builder runs, or remove the `held` label when the check issue exists already
-- S-106-16: `triage_state.py` reads a held head and each of its open sub-issues as BLOCKED with the note `project #<head> held`, and a head in any other state as it reads any parent
+- S-106-16: `triage_state.py` reads a held head and each of its open sub-issues as BLOCKED with the note `project #<head> held`, and a head in any other state as it reads any parent, its check issue aside (S-106-29)
 - S-106-17: a head in active, in focus, or closing whose tree has had no update for 14 days reads PROJECT_IDLE, an action, until a needs-decision question by the `--bot-login` is on the head newer than the tree's last update; a tree updated 13 days ago reads its state
 - S-106-18: a trusted reply on a head whose first line is `stop: <reason>`, or the answer `stop` to the idle question, reads PROJECT_STOP_DUE, an action; the same reply by an untrusted author changes nothing
 - S-106-19: product-intake's SKILL.md gives PROJECT_STOP_DUE's step: close the open parts and the check issue as not planned with `Project stopped: <reason>`, close their open pull requests unmerged, open a revert with `shipmill revert open` only for each pull request a `Revert on stop:` line of the check issue names, open the pull request setting the project's spec to `stopped`, and close the head as not planned with the `<!-- shipmill:project-stopped -->` record
@@ -266,6 +278,7 @@ idle questions reach it as any needs-decision item does.
 - S-106-26: `watch_state.py` lists GOAL_OVERDUE, PLAN_REPLACED, PROJECT_START_DUE, PROJECT_IDLE, PROJECT_STOP_DUE, GOAL_PROPOSAL_DUE, and NEEDS_GOAL as actions of the PLANS row and `shipmill gate` starts a session for each; `fleet.py queue` shows a PLAN_OVERDUE plan as an overdue `PLAN` row and a NEEDS_GOAL opportunity as an `OPPORTUNITY` row
 - S-106-27: `docs/flow.md` and the skills' references give the states, the labels (`project`, `held`, `focus`, `goal-proposal`, `goal-review`), and the markers this spec adds
 - S-106-28: a config with `[product] home` that sets `[agents] projects` is refused with a message naming the home; in a home `intake_state.py --projects` counts the active and in-focus heads of the home and of every repo its `[product] repos` lists, reading other repos through `shipmill gh --product`, one call per owner, and in a component it reads the limit from the home's config on its default branch and counts the same set; a read that fails exits 2 naming the repo; the second line reads `projects active: K of N (product <owner/home>)` and `--json`'s first line carries `projects` with `limit`, `active`, and `room`
+- S-106-29: on a started project whose head has no parts, `triage_state.py` reads the head NEEDS_PR once it has an implement verdict, never held on its check issue, and the check issue BLOCKED `project #<head>: check waits on its work`, never NEW; once a `Part of #<head>` pull request merged and none is open (or, with parts, every part closed) the check issue reads VERIFY_DUE and the head BLOCKED `project #<head>: check #<check> due`; `intake_state.py` reads no sub-issue titled `Check: ` with a `## Check` section as NEW_FEEDBACK
 
 ## Out of scope
 
@@ -304,6 +317,7 @@ idle questions reach it as any needs-decision item does.
 - shipmill/shipmill#1741: S-106-16, S-106-17, S-106-18, S-106-19, S-106-21
 - shipmill/shipmill#1742: S-106-10, S-106-22, S-106-23, S-106-24
 - shipmill/shipmill#1743: S-106-25, S-106-26, S-106-27
+- shipmill/shipmill#1802: S-106-29
 
 ## Verification
 
@@ -340,3 +354,4 @@ running the tests named below, every one whose name carries its criterion's id
 - S-106-26: `watch_state.py` runs intake with `--goals --projects`, checks every goal, project, and opportunity row and the first line's `projects` and `overdue`, and lists GOAL_OVERDUE, PLAN_REPLACED, PROJECT_START_DUE, PROJECT_IDLE, PROJECT_STOP_DUE, GOAL_PROPOSAL_DUE, and NEEDS_GOAL on the PLANS row, on which the gate launches, an accepted opportunity trusted by its opener and a replaced plan listed only for a trusted newer plan (D-16); `fleet.py queue` lists a PLAN_OVERDUE plan as a PLAN row adding `answer due <date>, overdue` and a NEEDS_GOAL opportunity as an OPPORTUNITY row (`test_s106_26_an_overdue_plan_and_an_opportunity_needing_a_goal_are_rows`, `test_s106_26_a_question_on_the_plan_keeps_its_own_phrase`, `test_s106_26_an_overdue_plan_without_its_date_is_refused`, `test_s106_26_the_gate_starts_a_session_for_each_spec_106_action`, `test_s106_26_a_row_intake_could_not_print_is_refused`, `test_s106_26_a_malformed_projects_count_is_refused`, `test_s106_26_an_outsiders_opportunity_or_plan_starts_no_session`, `test_s106_26_an_opportunity_row_without_its_opener_is_refused`, `test_s106_26_the_plans_row_lists_every_spec_106_action`, `test_s106_26_the_watch_knows_every_state_intake_prints`); holds
 - S-106-27: docs/flow.md's "Goals, plans, and projects" and product-intake's plan.md give the states, the five labels, and the three markers, the names intake_state.py reads (`test_s106_27_the_labels_and_markers_are_documented`, `test_s106_27_flow_gives_each_state`, `test_s106_27_the_documented_names_are_the_ones_intake_reads`); holds
 - S-106-28: a component setting `[agents] projects` is refused naming its home; the home counts its own and its repos' active and in-focus heads, one call per owner, a component reads the limit from its home, a failed read exits 2 naming the repo, and the text and `--json` carry the count (`test_s106_28_the_product_counts_active_and_focus_heads_one_call_per_owner`, `test_s106_28_a_product_count_reads_a_check_issues_parts_as_counts`, `test_s106_28_a_failed_read_exits_2_naming_the_repo`, `test_s106_28_without_the_key_nothing_is_read`, `test_s106_28_a_component_reads_the_limit_from_its_home`, `test_s106_28_a_component_that_sets_projects_is_refused_naming_the_home`, `test_s106_28_the_run_counts_the_homes_product`, `test_s106_28_a_component_that_sets_the_projects_limit_is_refused_naming_the_home`, `test_s106_28_the_home_and_a_lone_repo_keep_their_projects_limit`); holds
+- S-106-29: a started project's head is built like any issue, its check issue waits on its work and then reads by its `## Check`, and no check issue is feedback (`test_s106_29_a_head_with_no_parts_is_built_like_any_issue_not_held_on_its_check`, `test_s106_29_the_check_is_due_once_the_heads_part_of_prs_merged`, `test_s106_29_a_head_with_parts_waits_on_them_and_then_on_its_check`, `test_s106_29_a_due_check_still_waits_on_its_own_holds`, `test_s106_29_the_run_reads_a_started_project`, `test_s106_29_a_reverted_part_of_pr_is_no_done_work`, `test_s106_29_a_project_check_issue_is_no_feedback`); holds

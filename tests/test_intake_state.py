@@ -614,3 +614,16 @@ def test_a_request_triage_hands_over_is_feedback_until_an_opportunity_lists_it(i
     assert found[10][0] == "OPPORTUNITY_OPEN"
     assert 2 not in found  # grouped: a member of #10, no row of its own
     assert 3 not in found  # not feedback: triage builds it under the accepted opportunity
+
+
+def test_s106_29_a_project_check_issue_is_no_feedback(ist: ModuleType) -> None:
+    """#1802: a sub-issue titled `Check: ` with a `## Check` section is its parent's closing
+    check (spec 042, spec 106), never a request to group; without a parent it still is one"""
+    check = {**issue(1, body="## Check\n\nRun it.\n"), "title": "Check: it works", "parent": {"number": 7}}
+    orphan = {**issue(2, body="## Check\n\nRun it.\n"), "title": "Check: it works", "parent": None}
+    untitled = {**issue(3, body="## Check\n\nRun it.\n"), "parent": {"number": 7}}
+    found = states(ist, Fake([check, orphan, untitled], []))
+    assert 1 not in found
+    assert found[2][0] == "NEW_FEEDBACK"
+    assert found[3][0] == "NEW_FEEDBACK"
+    assert "parent { number }" in ist.ISSUE_FIELDS
