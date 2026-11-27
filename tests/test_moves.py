@@ -265,6 +265,7 @@ class FakeGh:
     calls: list[list[str]] = field(default_factory=list)
     repo_labels: tuple[str, ...] = ("project", "focus", "held", "planned")
     create: tuple[int, str] = (0, "")
+    raced: bool = False  # a concurrent run creates the label just before this one's create
 
     def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
         args = list(argv[1:])
@@ -274,6 +275,8 @@ class FakeGh:
         if args[:2] == ["api", "--paginate"] and args[2].endswith("/labels"):
             return 0, "".join(f"{name}\n" for name in self.repo_labels)
         if args[:2] == ["label", "create"]:
+            if self.raced:
+                self.repo_labels = (*self.repo_labels, args[2])
             return self.create
         if args[:2] == ["api", "--paginate"]:
             return 0, ""
@@ -448,12 +451,20 @@ def test_dry_run_names_the_label_it_would_create_as_its_own_step() -> None:
     assert hub.written == []
 
 
-@pytest.mark.parametrize("create", [(0, "https://github.com/o/r/labels/held\n"), (1, "HTTP 422: already exists\n")])
+def test_a_label_the_repo_has_in_another_case_is_not_created() -> None:
+    hub = FakeHub(issue(), labels=frozenset({"project", "Held"}))  # GitHub's label names ignore case
+    run(hub, Verb.HOLD)
+    assert hub.written == [("comment", relay("hold")), ("add", "held")]
+
+
+# gh prints a 422 "already exists" on stderr, which `shipmill gh`'s capture doesn't read: the
+# concurrent run's label is found by reading the labels again
+@pytest.mark.parametrize(("create", "raced"), [((0, "https://github.com/o/r/labels/held\n"), False), ((1, ""), True)])
 def test_through_the_cli_hold_creates_the_missing_label_then_relays_once(
-    tmp_path: Path, host: Host, create: tuple[int, str]
+    tmp_path: Path, host: Host, create: tuple[int, str], raced: bool
 ) -> None:
     root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')
-    gh = FakeGh(repo_labels=("project",), create=create)  # a concurrent run's 422 means it is there
+    gh = FakeGh(repo_labels=("project",), create=create, raced=raced)
     assert cli(root, host, gh, "hold") == 0
     writes = [call[:2] for call in gh.calls if call[0] in ("issue", "label")]
     assert writes == [["label", "create"], ["issue", "comment"], ["issue", "edit"]]
