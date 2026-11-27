@@ -15,9 +15,10 @@ Feedback is an open issue, or an open discussion when the repo enables Discussio
   - is not a filed plan item: its body's first line the plan-item marker
     (<!-- shipmill:plan-item #P W-n -->) by an OWNER, MEMBER, or COLLABORATOR or the
     --bot-login (D-16; an outsider's copy of the marker changes nothing)
-  - is not triage's by its labels, whatever its comments say: not labelled postponed (it
-    reads POSTPONED there), human, or role:<name> (a person's item; these two compared
-    case-insensitively), as triage_state.py reads them
+  - is not triage's by its labels, as triage_state.py reads them: not labelled human or
+    role:<name> (a person's item; compared case-insensitively), whatever its comments say,
+    nor postponed with a triage comment by an OWNER, MEMBER, or COLLABORATOR or the
+    --bot-login (it reads POSTPONED there; with none it reads NEW, #1766)
   - has no triage verdict of implement, feature, duplicate, won't fix, or postponed: the
     verdict is the first bold word of the newest comment starting with --marker
     ("Triage: **implement**") by an OWNER, MEMBER, or COLLABORATOR or the --bot-login (D-16;
@@ -287,8 +288,8 @@ SKIP_LABELS = (
     "goal-plan",  # a goal's plan, or the maintainer's request for one (spec 028): never a request for a feature
     "project",  # a project head or a filed plan item: the maintainer's accepted work (spec 106, #1774)
 )
-# Triage's own, whatever its comments say (#1628), as triage_state.py reads them: an issue
-# labelled postponed (its --postponed-label default) reads POSTPONED, and one labelled human
+# Triage's own (#1628), as triage_state.py reads them: an issue labelled postponed (its
+# --postponed-label default) with a trusted triage comment reads POSTPONED (#1766), and one labelled human
 # or role:<name>, compared case-insensitively, is a person's item (spec 017, spec 036)
 POSTPONED_LABEL = "postponed"
 HUMAN_LABEL = "human"
@@ -802,10 +803,13 @@ def skip_labels(extra: list[str]) -> set[str]:
     return {*SKIP_LABELS, *extra}
 
 
-def triage_owns(names: set[str]) -> bool:
-    """Labelled postponed, or a person's item (human or role:<name>, any case) (#1628)"""
-    folded = {n.lower() for n in names}
-    return POSTPONED_LABEL in names or HUMAN_LABEL in folded or any(n.startswith(ROLE_PREFIX) for n in folded)
+def triage_owns(issue: dict[str, Any], marker: str, bot_login: str | None) -> bool:
+    """Labelled postponed with a trusted triage comment (#1766: without one, triage reads it
+    NEW), or a person's item (human or role:<name>, any case) (#1628)"""
+    folded = {n.lower() for n in labels(issue)}
+    if HUMAN_LABEL in folded or any(n.startswith(ROLE_PREFIX) for n in folded):
+        return True
+    return POSTPONED_LABEL in labels(issue) and trusted_triage(issue, marker, bot_login) is not None
 
 
 def plan_item(issue: dict[str, Any], bot_login: str | None) -> bool:
@@ -816,7 +820,7 @@ def plan_item(issue: dict[str, Any], bot_login: str | None) -> bool:
 
 def is_feedback(issue: dict[str, Any], skip: set[str], marker: str, bot_login: str | None = None) -> bool:
     names = labels(issue)
-    if names & skip or triage_owns(names) or plan_item(issue, bot_login):
+    if names & skip or triage_owns(issue, marker, bot_login) or plan_item(issue, bot_login):
         return False
     found = trusted_verdict(issue, marker, bot_login)
     return found is None or not found.startswith(CLOSING_VERDICTS)

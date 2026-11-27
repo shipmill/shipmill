@@ -8,7 +8,10 @@ Usage: triage_state.py <owner/repo> [--marker "Triage:"] [--postponed-label post
                        [--role NAME=FILLER[,FILLER...] ...] [--label LABEL ...]
 
 For each open issue:
-  NEW              no comment starts with the triage marker
+  NEW              no comment starts with the triage marker; or it has the postponed
+                   label and no triage comment by an OWNER, MEMBER, or COLLABORATOR or
+                   the --bot-login (D-16), its note "postponed label without a triage
+                   comment" (#1766)
   NEEDS_PR         triaged "implement", no linked PR
   IN_PROGRESS      a linked PR is open
   AGENT_DRAFT      with --bot-login, every linked open PR is a draft the --bot-login
@@ -123,7 +126,9 @@ For each open issue:
                    sub-issue, a hold whose close time is unknown, one the newest
                    triage comment names, and a person's item's holds count
                    whenever they closed. A goal's plan never reads UNBLOCKED (below)
-  POSTPONED        has the postponed label. When its newest triage comment has a line
+  POSTPONED        has the postponed label and a triage comment by an OWNER, MEMBER, or
+                   COLLABORATOR or the --bot-login (D-16), or is a person's item (#1766);
+                   with none it reads NEW. When its newest triage comment has a line
                    "Revisit on: `<path>`, `<path>`" (spec 061), its note is "waits on
                    <paths>"
   REVISIT          postponed before the newest stable tag: decide again. Stable means
@@ -286,8 +291,9 @@ UNBLOCKED, one of these. So does an issue with the section and no sub-issue, not
 person's item, once its own work merged (#1671): a merged PR links it (a closer or "Part
 of #N", not reverted), where it would read UNBLOCKED, DONE_NOT_CLOSED, NEEDS_PR, TRIAGED,
 or NEW, its closed holds' closes and those PRs' merges dating its comments; labelled
-postponed, it reads POSTPONED. With no such PR, its holds all closed (merged PRs among
-them, as a feature issue's spec PR), it reads UNBLOCKED, work to build or split (#1027).
+postponed with a trusted triage comment (#1766), it reads POSTPONED. With no such PR,
+its holds all closed (merged PRs among them, as a feature issue's spec PR), it reads
+UNBLOCKED, work to build or split (#1027).
 Without the section it reads as before:
   VERIFY_DUE       no check-failed comment came after the newest close among its holds:
                    run its ## Check. Its note is the children's progress and its holds
@@ -882,6 +888,8 @@ PLAN_LABEL = "goal-plan"
 PLAN_VERDICT = "**plan**"
 # Spec 097: a plan whose holds have all closed reads TRIAGED with this note, never UNBLOCKED
 PLAN_WORK_CLOSED = "work closed; product intake reports the outcome"
+# #1766: the note of a NEW issue labelled postponed that no trusted triage comment gave a reason
+POSTPONED_UNTRIAGED = "postponed label without a triage comment"
 # A person's item (spec 017): its assignees do it, a hand-off comment tells them it is
 # their turn, and a verified comment records that a session checked a close by hand
 HUMAN_LABEL = "human"
@@ -2511,6 +2519,10 @@ def classify_open(
     human = bool(own_roles)
     triaged = [c for c in issue["comments"]["nodes"] if c["body"].lstrip().startswith(marker)]
     triage = [c["body"] for c in triaged]
+    # #1766: the postponed label holds the issue only once a trusted triage comment gives its
+    # reason (D-16), a person's item from the start; labelled without one, it reads NEW below
+    labelled = postponed in labels
+    reasoned = labelled and (human or any(by_trusted(c, bot_login) for c in triaged))
     # Spec 079: a merged #N whose revert #R the --bot-login reopened the issue over closes it
     # no more while #R stands (open or merged); once #R closed unmerged, #N counts again
     standing = {
@@ -2618,7 +2630,7 @@ def classify_open(
         if children and checked:
             return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
         if own_work:
-            if postponed in labels:
+            if reasoned:
                 return postponed_state(triaged, stable, note, revisits)
             return parent_check(comments, bot_login, own_ends, told)
         return "DONE_NOT_CLOSED", note
@@ -2662,12 +2674,12 @@ def classify_open(
         if not human and children and checked:
             return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
         if own_work:
-            if postponed in labels:
+            if reasoned:
                 return postponed_state(triaged, stable, note, revisits)
             return parent_check(comments, bot_login, own_ends, told)
         if not human:
             return "UNBLOCKED", shown
-    if postponed in labels:
+    if reasoned:
         return postponed_state(triaged, stable, note, revisits)
     if human:
         # Every hold has closed: the person's turn starts at the newest close
@@ -2687,6 +2699,9 @@ def classify_open(
         # #1671: nothing holds it and no PR is open, and a "Part of #N" PR merged: its ## Check
         # is due, its comments dated against those merges
         return parent_check(comments, bot_login, own_ends, told)
+    if labelled:
+        # #1766: nobody trusted said why it waits, so a session triages it
+        return "NEW", f"{POSTPONED_UNTRIAGED} {note}" if note else POSTPONED_UNTRIAGED
     if not triage:
         return "NEW", note
     if PLAN_LABEL in labels and triage[-1].lstrip()[len(marker) :].lstrip().lower().startswith(PLAN_VERDICT):

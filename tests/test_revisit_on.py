@@ -14,6 +14,8 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-issue-triage" / "scripts" / "triage_state.py"
 REPO = ("o", "r")
 POSTPONE = "Triage: postpone, no goal it serves yet.\n\nRevisit on: `src/a/**`"
+# #1766: a postpone counts only from a trusted author (D-16)
+MAINTAINER = {"author": {"__typename": "User", "login": "ana"}, "authorAssociation": "MEMBER"}
 TAGS = [
     ("v1.1.0", "2026-08-01T10:00:00Z"),
     ("v1.2.0", "2026-09-01T10:00:00Z"),
@@ -47,7 +49,7 @@ def postponed(body: str = POSTPONE, at: str = "2026-09-10T10:00:00Z", number: in
         "title": f"issue {number}",
         "body": "",
         "labels": {"nodes": [{"name": "postponed"}]},
-        "comments": {"nodes": [{"createdAt": at, "body": body}]},
+        "comments": {"nodes": [{"createdAt": at, "body": body, **MAINTAINER}]},
         "timelineItems": {"nodes": []},
     }
 
