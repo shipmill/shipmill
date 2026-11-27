@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.193.0] - 2026-11-27
+
+### Added
+
+- `shipmill project check <head> --title "<what will be true>" --check-file <path>` files a project's check issue (`Check: <title>` with its `## Check`, and `## Cleanup` from `--cleanup-file`) and links it as the head's sub-issue; it refuses a head that has an open check issue already (spec 108, #1811)
+- `shipmill opportunity decline <n> --by <login> --reason "<why>"` records the maintainer's decline as a relay, then closes the opportunity as not planned, and `shipmill opportunity accept <n> G-<n>|new --by <login>` on an opportunity not yet `planned` adds `planned` after its relay (D-115); product intake reads a relayed decline's reason from its line, and the credit names the maintainer a relayed accept names (spec 108, #1812)
+- Each lifecycle command (`shipmill project`, `opportunity`, `goal-plan answer`, `decision answer`) prints the item's state after the move's URL, as `shipmill status --item` reads it, and product intake, the needs-decision protocol, and the flow name spec 108's commands as the way a session makes each move (spec 108, #1813)
+
 ## [0.192.0] - 2026-11-27
 
 ### Fixed
@@ -3331,7 +3339,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.192.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.0...HEAD
+[0.193.0]: https://github.com/shipmill/shipmill/compare/v0.192.0...v0.193.0
 [0.192.0]: https://github.com/shipmill/shipmill/compare/v0.191.0...v0.192.0
 [0.191.0]: https://github.com/shipmill/shipmill/compare/v0.190.1...v0.191.0
 [0.190.1]: https://github.com/shipmill/shipmill/compare/v0.190.0...v0.190.1
