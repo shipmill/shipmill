@@ -1,6 +1,6 @@
 # S-108: One command per lifecycle move a person makes: a project's head, focus, hold, and check issue, and an opportunity's accept and decline
 
-status: approved
+status: built
 serves: G-6
 
 ## Problem
@@ -197,4 +197,23 @@ counted; spec 107's commands print the same line after their comment's URL.
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+Checked on the build branch for shipmill/shipmill#1813, on main at 92d0854, by `tests/test_moves.py` and
+`tests/test_credit.py` (every test named for its criterion), `specs.py coverage --spec 108` (exit 0), and each
+command with `--dry-run` against open items of this repository: `project focus` and `project hold` on head #1771,
+`project add` on #1789, `opportunity accept 1780 G-6` and `opportunity decline 1780` on opportunity #1780, and
+`project check 1771`, refused since #1771 has an open check issue (#1801).
+
+- S-108-1: add posts the relay with `project`, then the label, and the head reads PROJECT_HELD `no check issue` (`test_s108_1_add_posts_the_relay_then_labels_the_issue_project`); holds
+- S-108-2: focus, unfocus, hold, and resume post their relay and move their label, read as PROJECT_FOCUS, PROJECT_ACTIVE, PROJECT_HELD `labelled held`, PROJECT_ACTIVE (`test_s108_2_each_move_posts_its_relay_and_moves_its_label`); holds
+- S-108-3: a pull request, a closed issue, an open question, add on a plan, a check issue, or a head, and a move on no head or a stop pending are refused with nothing written (`test_s108_3_a_move_on_the_wrong_item_is_refused`); holds
+- S-108-4: a label already moved, resume with no open check issue, and resume with no free slot naming `2 of 2 active` are refused (`test_s108_4_a_move_its_head_already_made_or_cant_take_is_refused`); holds
+- S-108-5: check files `Check: <title>` with its `## Check` and `## Cleanup`, links it, writes no relay, and the head reads PROJECT_ACTIVE `no part filed` (`test_s108_5_check_files_the_check_issue_and_links_it_to_the_head`); holds
+- S-108-6: an open check issue, an empty or multi-line title, and a missing or empty check file are refused (`test_s108_6_a_check_its_head_already_has_or_a_bad_title_or_file_is_refused`, `test_s108_6_a_missing_check_file_exits_2_before_any_read`); holds
+- S-108-7: accept on an unplanned opportunity posts the relay, then `planned`, read ACCEPTED with its goal, and on a planned one the relay alone (`test_s108_7_accept_posts_the_relay_then_labels_it_planned`, `test_s108_7_accept_on_an_opportunity_planned_already_is_spec_107s_relay_alone`); holds
+- S-108-8: no `opportunity` label, a closed issue, an open question, a goal the direction lacks, and no goal are refused (`test_s108_8_an_accept_its_reader_wouldnt_count_is_refused`, `test_s108_8_an_accept_with_no_goal_is_refused`); holds
+- S-108-9: decline posts the relay, closes the issue, and a plain intake run reads DECLINED with the reason; a hand-written decline reads as before; a planned opportunity and a missing or multi-line reason are refused (`test_s108_9_decline_posts_the_relay_then_closes_it_and_intake_reads_its_reason`, `test_s108_9_a_decline_written_by_hand_reads_as_before`, `test_s108_9_a_decline_its_reader_wouldnt_count_is_refused`); holds
+- S-108-10: the credit names the maintainer a relayed accept names when the App added `planned`, trusted by their write permission, and a hand-labelled accept as before (`test_s108_10_a_relayed_accept_the_app_labelled_credits_the_maintainer_it_names`, `test_s108_10_a_hand_labelled_accept_is_credited_as_before`); holds
+- S-108-11: a `--by` that isn't the maintainer is refused for every move, and the CLI exits 2 with no App key and with `identity = "none"` (`test_s108_11_a_by_that_isnt_the_maintainer_is_refused`, `test_s108_11_without_the_apps_key_it_exits_2_and_writes_nothing`, `test_s108_11_with_identity_none_it_exits_2_with_the_owners_choice`); holds
+- S-108-12: `--dry-run` prints every step and writes nothing, and a failed label, close, or link exits with its code naming the step and the first URL (`test_s108_12_dry_run_prints_every_step_and_writes_nothing`, `test_s108_12_a_failed_label_step_names_it_and_the_relays_url`, `test_s108_12_a_failed_link_names_the_check_issues_url`, `test_s108_12_a_failed_close_names_it_and_the_relays_url`); holds
+- S-108-13: each move and spec 107's commands print `state: <bucket>; <why>` from `status --item` after the URL, a decline `state: closed as not planned`, and a failed read exits with its code (`test_s108_13_an_opportunity_move_prints_the_items_state_after_its_url`, `test_s108_13_spec_107s_answer_prints_the_state_too`, `test_s108_13_dry_run_reads_no_state_and_a_failed_read_exits_with_its_code`); holds
+- S-108-14: the four documents name the commands (`test_s108_14_the_skills_and_the_flow_name_the_moves`); holds

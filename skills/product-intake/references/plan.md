@@ -113,11 +113,13 @@ A goal reads proposed, written, planned, met, or dropped; a plan PLAN_OPEN with 
 
 | Label | On | Means |
 |---|---|---|
-| `project` | an issue, by a trusted author or the App | a project's head; a filed `feature` or `fix` item carries it |
-| `held` | a project's head | held, until its turn starts it (PROJECT_START_DUE removes it once the check issue exists) |
-| `focus` | an active head, by the maintainer | in focus: the maintainer's steps on it come first |
+| `project` | an issue, by a trusted author or the App | a project's head; a filed `feature` or `fix` item carries it; `shipmill project add <n> --by <login>` adds it for the maintainer (spec 108) |
+| `held` | a project's head | held, until its turn starts it (PROJECT_START_DUE removes it once the check issue exists); `shipmill project hold` adds it, `project resume` takes it off while a slot is free (spec 108) |
+| `focus` | an active head, by the maintainer | in focus: the maintainer's steps on it come first; `shipmill project focus` and `unfocus` move it (spec 108) |
 | `goal-proposal` | an issue | a goal not yet in the direction; GOAL_PROPOSAL_DUE opens one with the opportunity as its sub-issue |
 | `goal-review` | the App's issue | GOAL_OVERDUE's question: extend, rewrite, or drop the goal |
+
+A head's check issue is filed and linked with `shipmill project check <head> --title "<what will be true>" --check-file <file>`, and an opportunity the maintainer turns down is closed with `shipmill opportunity decline <n> --by <login> --reason "<why>"`, the relay first (spec 108, D-115).
 
 | Marker | Where | Written on |
 |---|---|---|
