@@ -166,7 +166,41 @@ PLACED = {
     # #1787: silent here, never on the goal plan line: such a plan waits on its open items with
     # another parent, not on you, and `status --item` says so (#1724)
     "PLAN_FILED",
+    # #1824: the App's held drafts, report-only: the drafts line lists each, and a question-held
+    # one is in NEEDS_DECISION too
+    "AGENT_DRAFT_HELD",
+    # #1824: in a watch_state.py --item read only, never in the full report status reads
+    "PLAN_HELD",
+    "GOAL_STATE",
+    "PLAN_STATE",
+    "PROJECT_STATE",
 }
+# #1824: watch_state.py's rows shown on the "other" line on purpose, in their own words with
+# their fix, since no other line of the summary says them; tests/test_status_placed.py fails
+# on a state the watch prints that is in neither this nor PLACED
+OTHER_ROWS = frozenset(
+    {
+        "PLANS",  # an action: a goal's plan needs a product-intake session
+        "AGENT_DRAFT",  # an action: a session marks the App's drafts ready and lands them
+        "BASE_RED",  # an action: the default branch reads red, with its repair or question
+        "DIRECTION_MISSING",  # an action: the direction's answer is the maintainer's (D-34)
+        "DIRECTION_PENDING",  # an action: a session asks for the direction or takes up its answer
+        "LAND_DUE",  # an action: the land window is open for a queued pull request
+        "UPSTREAM_DUE",  # an action: the coordinator routes, closes, or checks upstream reports
+        "UPSTREAM_ASKED",  # an action: an upstream report's question waits on the maintainer
+        "UPSTREAM_UNREADABLE",  # an action: the upstream reports weren't read
+        "VETOED",  # an action: a veto to take up, a pull request's on no other line
+        "PYPI_WAIT",  # report-only: names the reads this report lacks, with the publish fix
+        "DEPLOYMENTS_FORBIDDEN",  # report-only: environments not read, with the App's grant as fix
+        "DRIFT",  # report-only: a trend past its baseline, with the trends.py report as fix
+        "GATE_IDLE",  # report-only: an item the gate hands no session until it changes
+        "GATE_PAUSED",  # report-only: no session starts on the paused credential or host (S-089-13)
+        "GATE_RETRY",  # report-only: an item in the gate's backoff, its time and count (S-089-13)
+        "LAND_QUEUED",  # report-only: a pull request queued for the land window, and why it waits
+        "REQUESTER_REPORT",  # report-only: a requester's reply to a notice, a possible regression
+        "UPSTREAM_UNTRUSTED",  # report-only: an outsider's upstream report, an interactive review's
+    }
+)
 # the release rows the repo line names in place of "release ok" (S-009-17)
 RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED")
 
