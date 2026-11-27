@@ -290,7 +290,8 @@ def write(step: Step, item: answer.Item, hub: Hub, dry_run: bool, say: Callable[
     """Create the label the move adds when the repository lacks it (#1828), then post the relay,
     then take needs-decision off when it answered a question, then the label or the close; with
     dry_run print each step and write nothing"""
-    missing = step.add if step.add is not None and step.add not in hub.repo_labels() else None
+    names = {name.lower() for name in hub.repo_labels()} if step.add is not None else set()
+    missing = step.add if step.add is not None and step.add.lower() not in names else None  # GitHub ignores case
     if dry_run:
         if missing is not None:
             say(f"label: create `{missing}`")

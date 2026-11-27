@@ -3742,7 +3742,9 @@ class _MoveHub(_AnswerHub):
     def create_label(self, name: str, color: str, description: str) -> None:
         argv = ["label", "create", name, "-R", self._repo, "--color", color, "--description", description]
         code, out = _through_gh(self._top, self._path, argv)
-        if code != 0 and "already exists" not in out:  # a concurrent run's 422: the label is there
+        # gh prints a concurrent run's 422 "already exists" on stderr, which the capture doesn't
+        # read, so a failed create reads the labels again: one there now counts as made
+        if code != 0 and name.lower() not in {label.lower() for label in self.repo_labels()}:
             raise ReleaseError(f"gh label create {name} exited {code}: {out.strip()[:200]}; nothing was written")
 
     def projects(self, bot_login: str) -> moves.Projects:
