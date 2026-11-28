@@ -47,7 +47,12 @@ For each open issue:
                    line is context). A sentence ends at ".", "!", or "?" followed
                    by a space and a capital letter (not after "e.g.", "i.e.",
                    "cf.", or "vs."), so a hold word in one sentence of a
-                   paragraph doesn't hold on a link in another (#309). A status
+                   paragraph doesn't hold on a link in another (#309). The
+                   sentence must say this issue is held (#1868): a hold phrase in
+                   quotes or a code span quotes words and holds nothing, and a
+                   sentence naming an issue or pull request before its first hold
+                   phrase reports on that item's hold ("o/r#618 is on hold while
+                   ...") and holds nothing. A status
                    comment (its first line <!-- shipmill:status -->, spec 090)
                    holds nothing. Or,
                    once triaged, its body has a "Depends on owner/repo#N" line (or
@@ -1006,6 +1011,9 @@ KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 LINE_CLOSER = re.compile(rf"^\s*(?:[-*]\s*)?{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
 TITLE_CLOSER = re.compile(rf"\b{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`+[^`]*`+")
+# Quoted text and code spans of a sentence: a hold phrase in one quotes words ("put on hold",
+# a label's description) and holds nothing (#1868)
+QUOTED = re.compile(r"`+[^`]*`+|\"[^\"]*\"|“[^”]*”")
 FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 # A PR's "Part of #N" (#1678): at the start of a body line or sentence, or in the title, outside code;
 # a mid-sentence, backticked, or fenced one links nothing
@@ -1670,6 +1678,15 @@ def upstream_refs(issue: dict[str, Any], repo: tuple[str, str]) -> list[tuple[st
     return sorted(hold_refs(issue, repo))
 
 
+def holds_this_issue(sentence: str) -> bool:
+    """Whether a sentence of a comment says the issue carrying it is held (#1868): it has a
+    hold phrase outside quotes and code spans, which quote words rather than say them, and
+    names no issue or pull request before its first one, which would make that item the
+    sentence's subject ("o/r#618 is on hold while ..." reports another item's hold)"""
+    found = HOLD.search(QUOTED.sub(lambda m: "_" * len(m[0]), sentence))
+    return found is not None and DEPENDENCY.search(sentence, 0, found.start()) is None
+
+
 def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, str, int], int]:
     """Each issue or pull request a hold comment names, with the index of the newest
     comment naming it: an owner/repo#N or URL in a sentence with a hold phrase, or a plain
@@ -1683,7 +1700,7 @@ def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, s
             continue
         for line in c["body"].splitlines():
             for sentence in SENTENCE.split(line):
-                if HOLD.search(sentence):
+                if holds_this_issue(sentence):
                     refs.update(((m["owner"], m["name"], int(m["num"])), i) for m in UPSTREAM.finditer(sentence))
                     refs.update(((*repo, int(m["num"])), i) for m in SAME_REPO.finditer(sentence))
     own = fold((*repo, int(issue["number"])))
