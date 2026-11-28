@@ -4557,8 +4557,8 @@ def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only
                      goal proposal
       PLAN_STATE     `#N PLAN_OPEN answer_by=<date>`, `#N PLAN_OVERDUE answer_by=<date>`, and
                      `#N PLAN_REPLACED replaced_by=#M`, per plan trusted as PLAN_OPEN's
-      PROJECT_STATE  `#N <STATE> holder=<h>[ check=#C][ held=label|check][ checked]` per head,
-                     ` checked` on a closing head whose check issue is closed, then
+      PROJECT_STATE  `#N <STATE> holder=<h>[ check=#C][ held=label|check][ checked]` per head
+                     (` checked` marks a closing head whose check issue is closed), then
                      `active K of N` under [agents] projects and `overdue <owner/repo>#P` per
                      overdue plan of the product it read (its own, and those PLAN_WAITS names)"""
     goals: list[str] = []

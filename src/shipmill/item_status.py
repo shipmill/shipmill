@@ -662,7 +662,8 @@ def head_condition(facts: Facts, head: HeadState, product: Projects) -> Conditio
         return Condition(
             f"closing: {check} ran and is closed, and the head waits on a session to close it",
             Who.AGENT,
-            f"a gate session closes the head with a comment linking {check}, or you close it",
+            f"triage reads the head UNBLOCKED and a gate session closes it with a comment listing its"
+            f" children, {check} among them, or you close it",
         )
     if head.state == "PROJECT_CLOSING":
         return Condition(

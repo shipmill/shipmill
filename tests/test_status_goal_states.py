@@ -168,7 +168,8 @@ def test_s106_25_a_head_whose_check_closed_waits_on_a_session(ws: ModuleType, is
     assert conditions(found, 57)[0] == (
         "closing: check #74 ran and is closed, and the head waits on a session to close it",
         Who.AGENT,
-        "a gate session closes the head with a comment linking check #74, or you close it",
+        "triage reads the head UNBLOCKED and a gate session closes it with a comment listing its children,"
+        " check #74 among them, or you close it",
     )
 
 
