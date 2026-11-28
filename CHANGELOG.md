@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.196.1] - 2026-11-28
+
+### Fixed
+
+- A comment that reports on another item's hold no longer holds the issue carrying it: `triage_state.py` reads a hold phrase in quotes or a code span as quoted words, and a sentence that names an item before its hold phrase as that item's hold, so a check result quoting a label's "put on hold" beside another item's link reads as no hold (#1868)
+
 ## [0.196.0] - 2026-11-28
 
 ### Changed
@@ -3421,7 +3427,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.1...HEAD
+[0.196.1]: https://github.com/shipmill/shipmill/compare/v0.196.0...v0.196.1
 [0.196.0]: https://github.com/shipmill/shipmill/compare/v0.195.0...v0.196.0
 [0.195.0]: https://github.com/shipmill/shipmill/compare/v0.194.1...v0.195.0
 [0.194.1]: https://github.com/shipmill/shipmill/compare/v0.194.0...v0.194.1
