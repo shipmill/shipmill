@@ -26,7 +26,15 @@ def ist() -> ModuleType:
 
 def goal_entry(goal: str, status: str = "no measure", *, stalled: bool = False) -> dict[str, Any]:
     """One goal of `retro.py gather --goals --json`'s report, the keys intake reads and some it doesn't"""
-    return {"id": goal, "text": "t", "status": status, "stalled": stalled, "weeks_unserved": 3 if stalled else 0}
+    return {
+        "id": goal,
+        "text": "t",
+        "status": status,
+        "value_text": None,
+        "met_weeks": 0,
+        "stalled": stalled,
+        "weeks_unserved": 3 if stalled else 0,
+    }
 
 
 def gathered(*entries: dict[str, Any]) -> dict[str, Any]:

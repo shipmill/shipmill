@@ -157,6 +157,13 @@ Spec 027's report is `retro.py gather <repo> --goals --checkout <the current dir
 reaches the stalled and no-work triggers; a gather that fails (a checkout not at
 origin/HEAD among its causes), a report without the direction, a goal it leaves out, or one
 it lists malformed exits 2, never read as not stalled (#1764).
+With --plans and --goals together (spec 110), that report is read on every run whose direction
+lists a goal, still once, and --json prints after every other line one line per goal of the
+direction, in its order, with kind "goal-report": goal, goal_kind (its kind, or null), status
+(met, not met, no data, or no measure), value_text (metrics.py's text for the value, null for
+no measure), met_weeks, stalled, weeks_unserved, and ended (its state: met, dropped, or null).
+A report that can't be read exits 2 as above, never a line reading no data; the text output
+prints none of these lines.
 A goal the direction records as met or dropped (its `state`, spec 106) reads no trigger, not
 even a request's. A goal whose `kind` is measure (spec 105, a standing measure) is planned only on request:
 it reads `requested in #N` alone, never a no-work or stalled PLAN_DUE or PLAN_WAITS. A goal
@@ -1111,14 +1118,36 @@ RoomReader = Callable[[int], int]
 
 @dataclass(frozen=True)
 class GoalReport:
-    """What spec 027's report says of one goal: its measure met this week, and stalled"""
+    """What spec 027's report says of one goal: its measure's status this week and metrics.py's
+    text for its value (None for no measure), the weeks in a row it was met, whether it is
+    stalled, and the weeks in a row nothing served it"""
 
-    met: bool
+    status: str
     stalled: bool
+    value_text: str | None = None
+    met_weeks: int = 0
+    weeks_unserved: int = 0
+
+    @property
+    def met(self) -> bool:
+        return self.status == "met"
 
 
 # Reads spec 027's report per goal, by goal id
 ReportReader = Callable[[], dict[str, GoalReport]]
+
+
+def once(read: ReportReader) -> ReportReader:
+    """The reader that runs read the first time it is called and returns that report after, so
+    the plan triggers and the goal-report lines read one report per run (S-110-1)"""
+    cache: list[dict[str, GoalReport]] = []
+
+    def cached() -> dict[str, GoalReport]:
+        if not cache:
+            cache.append(read())
+        return cache[0]
+
+    return cached
 
 
 def parse_goals(text: str) -> list[Goal]:
@@ -1232,8 +1261,9 @@ def triage_room(repo: str, bot_login: str | None, script: Path = TRIAGE_STATE) -
 
 def parse_goal_report(text: str) -> dict[str, GoalReport]:
     """`retro.py gather --goals --json`'s report per goal (spec 027), strictly: each goal's id,
-    its measure's status, and whether it is stalled. A report that can't be read exits 2 naming
-    why, never read as "not stalled" (#1764)"""
+    its measure's status and value text, the weeks met in a row, whether it is stalled, and the
+    weeks unserved. A report that can't be read exits 2 naming why, never read as "not stalled"
+    (#1764) nor as "no data" (S-110-2)"""
     try:
         record = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -1251,11 +1281,29 @@ def parse_goal_report(text: str) -> dict[str, GoalReport]:
         ident = entry.get("id") if isinstance(entry, dict) else None
         status = entry.get("status") if isinstance(entry, dict) else None
         stalled = entry.get("stalled") if isinstance(entry, dict) else None
-        well_formed = isinstance(ident, str) and GOAL_ID.fullmatch(ident) is not None and ident not in found
-        if not well_formed or status not in REPORT_STATUSES or not isinstance(stalled, bool):
+        keys = ("value_text", "met_weeks", "weeks_unserved")  # spec 110's, beside the two #1764 reads
+        text, met_weeks, unserved = (entry.get(k) for k in keys) if isinstance(entry, dict) else (None, None, None)
+        well_formed = isinstance(entry, dict) and set(keys) <= set(entry) and status in REPORT_STATUSES
+        well_formed &= text is None or (isinstance(text, str) and status != "no measure")
+        if (
+            not well_formed
+            or not isinstance(ident, str)
+            or GOAL_ID.fullmatch(ident) is None
+            or ident in found
+            or not isinstance(stalled, bool)
+            or not isinstance(met_weeks, int)
+            or not isinstance(unserved, int)
+            or not a_count(met_weeks)
+            or not a_count(unserved)
+        ):
             fail(f"retro.py gather --goals --json listed a goal it doesn't report as spec 027 says: {entry!r}")
-        found[ident] = GoalReport(status == "met", stalled)
+        found[ident] = GoalReport(str(status), stalled, text, met_weeks, unserved)
     return found
+
+
+def a_count(value: object) -> bool:
+    """A non-negative int, a bool not among them"""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def retro_report(repo: str, bot_login: str | None, checkout: Path, script: Path = RETRO) -> ReportReader:
@@ -1438,7 +1486,7 @@ def plan_rows(
             continue
         if goal.kind == "measure":  # spec 105: a standing measure is planned only on request
             continue
-        reading = GoalReport(met=False, stalled=False)
+        reading = GoalReport("no measure", stalled=False)
         if report is not None:  # spec 027's report (#1764): a goal it leaves out can't be read
             reports = report() if reports is None else reports
             if goal.id not in reports:
@@ -2264,12 +2312,15 @@ def fetch_plans(
     into: dict[str, tuple[int, dt.datetime]] | None = None,
     opportunities: dict[int, set[str]] | None = None,
     report: ReportReader | None = None,
+    readings: list[tuple[Goal, GoalReport]] | None = None,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
     than PAGE, for each accepted plan its items' issues, and for each held plan its item, or
     the tags once (spec 098); triage_state.py only when a goal waits on --wip, and spec 027's
-    report only when a goal reaches the `stalled` and `no-work` triggers (#1764)"""
+    report only when a goal reaches the `stalled` and `no-work` triggers (#1764) or readings is
+    given. Given readings (spec 110), it gains each goal of the direction, in its order, with
+    what that same report, read once, says of it"""
     owner, name = split_repo(repo)
     if holds is None:
         holds = gh_holds(repo, run, now or dt.datetime.now(UTC), stable)
@@ -2277,6 +2328,9 @@ def fetch_plans(
     direction = goals()
     if not direction:
         return []
+    if readings is not None and report is None:
+        fail("the goal-report lines read spec 027's report, and none was given")
+    report = once(report) if report is not None else None
     pulls, first = paged(run, PULLS, base, "pullRequests")
     plan_issues, _ = paged(run, PLAN_ISSUES, {**base, "label": PLAN_LABEL}, "issues")
     for issue in plan_issues:
@@ -2310,6 +2364,12 @@ def fetch_plans(
         into=into,
         report=report,
     )
+    if readings is not None and report is not None:  # S-110-1: the report the triggers read
+        reports = report()
+        left_out = [g.id for g in direction if g.id not in reports]
+        if left_out:
+            fail(f"retro.py gather --goals reported no {', '.join(left_out)}, a goal the direction lists")
+        readings.extend((goal, reports[goal.id]) for goal in direction)
     found = by_goal + by_issue
     found.sort(key=lambda r: PLAN_ORDER.index(r.state))
     return found
@@ -3495,6 +3555,22 @@ def goal_json(row: GoalRow) -> dict[str, Any]:
     }
 
 
+def goal_report_json(goal: Goal, reading: GoalReport) -> dict[str, Any]:
+    """S-110-1: a goal's --json line from spec 027's report: its kind (spec 105) and state
+    (spec 106) from the direction, beside its measure's reading"""
+    return {
+        "kind": "goal-report",
+        "goal": goal.id,
+        "goal_kind": goal.kind,
+        "status": reading.status,
+        "value_text": reading.value_text,
+        "met_weeks": reading.met_weeks,
+        "stalled": reading.stalled,
+        "weeks_unserved": reading.weeks_unserved,
+        "ended": goal.state,
+    }
+
+
 # -- spec 106: an accepted opportunity names the goal it serves
 
 # Opportunities accepted (labelled) from this time on name their goal; one accepted before
@@ -3657,6 +3733,44 @@ def plan_json(row: PlanRow) -> dict[str, Any]:
     return found
 
 
+@dataclass(frozen=True)
+class Shown:
+    """What one run prints, in the order it prints it"""
+
+    autonomy: str
+    outcomes: Outcomes | None
+    projects: Projects | None
+    overdue: tuple[str, ...]
+    found: list[Item]
+    planned: list[PlanRow]
+    heads: list[ProjectRow]
+    goal_states: list[GoalRow]
+    readings: list[tuple[Goal, GoalReport]]
+
+
+def output(shown: Shown, as_json: bool) -> list[str]:
+    """The run's lines: with --json one JSON line per row, the goal-report lines last
+    (S-110-1); the text output prints a table, and no goal-report line"""
+    if as_json:
+        lines = [json.dumps(first_line(shown.autonomy, shown.outcomes, shown.projects, shown.overdue))]
+        lines += [json.dumps(json_row(r), sort_keys=True) for r in shown.found]
+        lines += [json.dumps(plan_json(p), sort_keys=True) for p in shown.planned]
+        lines += [json.dumps(project_json(h), sort_keys=True) for h in shown.heads]
+        lines += [json.dumps(goal_json(g), sort_keys=True) for g in shown.goal_states]
+        lines += [json.dumps(goal_report_json(g, r), sort_keys=True) for g, r in shown.readings]
+        return lines
+    lines = [f"intake autonomy: {shown.autonomy}"]
+    if shown.outcomes is not None:
+        lines.append(shown.outcomes.line())
+    if shown.projects is not None:
+        lines.append(shown.projects.line())
+    lines += [show(r) for r in shown.found]
+    lines += [show_plan(p) for p in shown.planned]
+    lines += [show_project(h) for h in shown.heads]
+    lines += [show_goal(g) for g in shown.goal_states]
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("repo", help="owner/name")
@@ -3735,6 +3849,7 @@ def main() -> int:
     planned: list[PlanRow] = []
     direction: list[Goal] = []
     checked: set[str] = set()  # spec 106: goals whose finished plan's check holds
+    readings: list[tuple[Goal, GoalReport]] = []  # spec 110: each goal's reading in spec 027's report
     if args.plans or args.goals:  # the goals are read once; --goals reads the plans to place each goal
         direction = uvx_goals(args.tool)()
         # spec 106: an accepted opportunity names its goal, and its goal's plan takes it
@@ -3759,6 +3874,7 @@ def main() -> int:
             wip=args.wip,
             room=triage_room(args.repo, args.bot_login),
             report=retro_report(args.repo, args.bot_login, Path.cwd().resolve()),
+            readings=readings if args.plans and args.goals else None,  # spec 110: the goal-report lines
             maintainers=maintainers,
             holds=gh_holds(args.repo, gh_graphql_unreadable, dt.datetime.now(UTC), stable),
         )
@@ -3792,30 +3908,9 @@ def main() -> int:
         )
     planned = planned if args.plans else []
     heads = heads if args.projects else []
-    if args.json:
-        print(json.dumps(first_line(autonomy, outcomes, projects, overdue)))
-        for r in found:
-            print(json.dumps(json_row(r), sort_keys=True))
-        for p in planned:
-            print(json.dumps(plan_json(p), sort_keys=True))
-        for h in heads:
-            print(json.dumps(project_json(h), sort_keys=True))
-        for g in goal_states:
-            print(json.dumps(goal_json(g), sort_keys=True))
-    else:
-        print(f"intake autonomy: {autonomy}")
-        if outcomes is not None:
-            print(outcomes.line())
-        if projects is not None:
-            print(projects.line())
-        for r in found:
-            print(show(r))
-        for p in planned:
-            print(show_plan(p))
-        for h in heads:
-            print(show_project(h))
-        for g in goal_states:
-            print(show_goal(g))
+    shown = Shown(autonomy, outcomes, projects, overdue, found, planned, heads, goal_states, readings)
+    for line in output(shown, args.json):
+        print(line)
     actions = any(r.state in ACTION for r in found) or any(p.state in PLAN_ACTION for p in planned)
     actions = (
         actions or any(h.state in PROJECT_ACTION for h in heads) or any(g.state in GOAL_ACTION for g in goal_states)
