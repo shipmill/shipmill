@@ -155,7 +155,7 @@ def test_s106_25_a_closing_head_whose_check_closed_reads_checked(ws: ModuleType,
     )
     (row,) = ws.item_states(text, REPO, BOT)
     assert row.detail == (
-        "#57 PROJECT_CLOSING holder=checker check=#74 checked; #58 PROJECT_CLOSING holder=checker check=#75"
+        "#57 PROJECT_CLOSING holder=agent check=#74 checked; #58 PROJECT_CLOSING holder=checker check=#75"
     )
 
 

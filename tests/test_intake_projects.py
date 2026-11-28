@@ -141,6 +141,19 @@ def test_s106_12_every_part_closed_reads_closing_with_its_cleanup(ist: ModuleTyp
     assert read(ist, head(subs=(check(body=ticked), *done))) == ("PROJECT_CLOSING", "no cleanup listed")
 
 
+def test_s106_31_a_closing_head_whose_check_closed_is_an_agents(ist: ModuleType) -> None:
+    done = (sub(8, "CLOSED"), sub(9, "CLOSED"))
+    checked = ist.project_row(head(subs=(check(state="CLOSED"), *done)), BOT)
+    assert (checked.state, checked.note, checked.holder) == (
+        "PROJECT_CLOSING",
+        "check #50 closed; the head is open",
+        "agent",
+    )
+    assert ist.project_json(checked)["holder"] == "agent"
+    # with the check issue open, the check is still someone else's to run
+    assert ist.project_row(head(subs=(check(), *done)), BOT).holder == "checker"
+
+
 def test_s106_12_a_closed_head_reads_closed_or_stopped_by_the_bots_record(ist: ModuleType) -> None:
     at = "2026-11-20T10:00:00Z"
     assert read(ist, head(state="CLOSED", reason="COMPLETED", closed_at=at)) == (
