@@ -262,7 +262,16 @@ it reads:
                    first line is <!-- shipmill:still-waits -->, by the --bot-login or an
                    OWNER, MEMBER, or COLLABORATOR without the agent marker (D-62), ends it;
                    a reopen and a new close of the parent re-arm it. Read before
-                   OFF_MILESTONE and every state below, and an action
+                   OFF_MILESTONE and every state below, and an action. It reads so too
+                   where it would read WITH_PERSON (below), after every hold, when a pull
+                   request linking it (a closing keyword or "Part of #N", by the #416 and
+                   #1678 rules, not reverted per spec 079) merged after its newest
+                   hand-off (#1871): the handed steps may be done on main, so read those
+                   pull requests against them and post a done report naming them, or the
+                   still-waits comment naming the steps left. Its note is "#M #N merged
+                   after the hand-off", each such pull request. A still-waits comment, as
+                   above, created after the newest such merge ends it, until a newer one
+                   merges; with --json its line has no "assignees" or "teams"
 After that and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
 UNFILLED, MALFORMED_DEPENDS, HOLD_UNLINKED, CYCLE, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue
 would, else, with every hold closed, one of:
@@ -280,7 +289,9 @@ would, else, with every hold closed, one of:
                    <!-- shipmill:handoff -->, by an OWNER, MEMBER, or COLLABORATOR or
                    the --bot-login; a marker comment by anyone else never counts
   WITH_PERSON      a hand-off came after its newest hold closed and no done report
-                   followed it: it waits on the person, however long (not an action).
+                   followed it, and no pull request linking it merged after it unless a
+                   still-waits comment followed the newest such merge (else STALE_HANDOFF,
+                   #1871): it waits on the person, however long (not an action).
                    With --json, its line has an "assignees" list of the logins it waits
                    on too, and without --role flags no other state's line has one. With
                    them, its line and HANDOFF_DUE's carry "assignees" (empty for a
@@ -415,7 +426,7 @@ newest stable one, with one query when nothing is capped. A page GitHub rejects 
 resource limits is asked again at half the size, down to 10 items; one rejected at 10
 fails with one error line. When GitHub's schema has no blockedBy, subIssues, or parent (an
 undefinedField error naming one, such as a GitHub Enterprise Server without issue
-dependencies), it classifies on the text holds alone, with no OFF_MILESTONE or STALE_HANDOFF,
+dependencies), it classifies on the text holds alone, with no OFF_MILESTONE or parent-closed STALE_HANDOFF,
 and prints one "note: native relations unavailable: <first error line>" line to stderr; any other gh error, an error
 on one issue's relations too, still exits 2. Needs the gh
 CLI, authenticated. Python 3.10+, standard library only.
@@ -2712,7 +2723,9 @@ def classify_open(
         # Every hold has closed: the person's turn starts at the newest close
         ends = [timestamp(closes[r]) for r in waits if r in closes and states.get(r) in CLOSED_STATES]
         since = max(ends, default=None)
-        return person_state(issue["comments"]["nodes"], people, bot_login, since, shown, teams)
+        # #1871: its own merged PRs (a closer or "Part of #N", not reverted), each with its merge
+        merges = [(n, at) for n in built for at in merge_times(issue, [n])[-1:]]
+        return person_state(issue["comments"]["nodes"], people, bot_login, since, shown, teams, merges)
     # An answer relayed from a session after the label came off, no triage comment after it: it
     # still waits to be taken up, as a reply does while the label is on; one out of the relay
     # grammar is not counted (D-93), and with the label off nobody else asks again (#1302)
@@ -3076,11 +3089,15 @@ def person_state(
     since: dt.datetime | None,
     shown: str,
     teams: tuple[str, ...] = (),
+    merges: Sequence[tuple[int, str]] = (),
 ) -> tuple[str, str]:
     """A person's item with nothing holding it: HANDOFF_DUE until a trusted hand-off comes
     after its newest hold closed (``since``, None when it never had one), then WITH_PERSON
     until a done report follows the newest such hand-off, then VERIFY_DUE. ``teams``, its
-    roles' teams (spec 036), are named with its assignees"""
+    roles' teams (spec 036), are named with its assignees. ``merges``, each merged pull
+    request linking it (not reverted) with its mergedAt: one merged after the newest hand-off
+    reads STALE_HANDOFF where it would read WITH_PERSON (#1871), until a still-waits comment
+    after the newest such merge"""
     who = " ".join([*(f"@{p}" for p in people), *teams])
     handoffs = [
         i
@@ -3095,6 +3112,11 @@ def person_state(
     for c in reversed(comments[newest + 1 :]):
         if done_report(c, people, bot_login):
             return "VERIFY_DUE", f"done reported by @{login(c.get('author'))}"
+    handed = timestamp(comments[newest]["createdAt"])
+    after = {n: timestamp(at) for n, at in merges if timestamp(at) > handed}
+    if after and not still_waits(comments, bot_login, max(after.values())):
+        # #1871: the handed work may be done on main: a session reads those PRs against its steps
+        return "STALE_HANDOFF", " ".join(f"#{n}" for n in sorted(after)) + " merged after the hand-off"
     return "WITH_PERSON", f"with {who} since {comments[newest]['createdAt']}"
 
 
@@ -3262,17 +3284,24 @@ def stale_handoff(issue: dict[str, Any], bot_login: str | None) -> tuple[str, st
     if not parent or parent.get("state") != "CLOSED" or not person_item(issue):
         return None
     closed = parent.get("closedAt")
-    if closed:
-        since = timestamp(closed)
-        for c in issue["comments"]["nodes"]:
-            if timestamp(c["createdAt"]) <= since or not marked(c["body"], STILL_WAITS_MARKER):
-                continue
-            author, association = login(c.get("author")), str(c.get("authorAssociation") or "NONE")
-            if (bot_login is not None and same_login(author, bot_login)) or by_person(
-                author, association, c["body"], bot_login
-            ):
-                return None
+    if closed and still_waits(issue["comments"]["nodes"], bot_login, timestamp(closed)):
+        return None
     return "STALE_HANDOFF", f"parent {parent['repository']['nameWithOwner']}#{parent['number']} closed"
+
+
+def still_waits(comments: list[dict[str, Any]], bot_login: str | None, since: dt.datetime) -> bool:
+    """Whether a comment created after ``since`` has <!-- shipmill:still-waits --> as its first
+    line, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR without the agent marker
+    (D-62): it ends STALE_HANDOFF (#1313, #1871)"""
+    for c in comments:
+        if timestamp(c["createdAt"]) <= since or not marked(c["body"], STILL_WAITS_MARKER):
+            continue
+        author, association = login(c.get("author")), str(c.get("authorAssociation") or "NONE")
+        if (bot_login is not None and same_login(author, bot_login)) or by_person(
+            author, association, c["body"], bot_login
+        ):
+            return True
+    return False
 
 
 def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: list[str], shown: str) -> tuple[str, str]:
@@ -3694,7 +3723,8 @@ def main() -> int:
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED RELAY_REFUSED VETOED UNTRUSTED UPSTREAM "
             "UPSTREAM_UNOWNED OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
-            "(a person's item) STALE_HANDOFF NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; "
+            "(a person's item) STALE_HANDOFF (its parent closed, or a linked PR merged after its hand-off) "
+            "NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; "
             "for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED VETOED; for a parent with a ## Check VERIFY_DUE CHECK_FAILED "
             "WITH_PERSON, closed VERIFY_CLOSED. The module docstring defines each."
@@ -3907,6 +3937,7 @@ def main() -> int:
         "CHECK_FAILED",
         "ASSIGN_DUE",
         "HANDOFF_DUE",
+        "STALE_HANDOFF",  # #1871: it had no place here, so a line of it failed the sort
         "NO_ASSIGNEE",
         "UNBLOCKED",
         "UNFILLED",
