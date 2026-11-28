@@ -1421,3 +1421,109 @@ def test_1487_the_help_and_docstring_name_the_state(ts: ModuleType) -> None:
     assert "UPSTREAM_UNOWNED" in str(ts.__doc__)
     proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=True)
     assert "UPSTREAM_UNOWNED" in proc.stdout
+
+
+# -- #1871: a person's hand-off whose steps merged pull requests did -------------------------
+
+APP = {"author": {"__typename": "Bot", "login": "shipmill-app"}, "authorAssociation": "NONE"}
+HANDED = "2026-11-28T10:20:00Z"
+STEPS = "<!-- shipmill:handoff -->\n@ana it's your turn: the deck, the mockups, the canvas."
+STILL = "<!-- shipmill:still-waits -->\nStill waits on `@ana`: the README links."
+MERGED_AFTER = ("STALE_HANDOFF", "#60 #63 #65 merged after the hand-off")
+
+
+def said_by(body: str, at: str, who: dict[str, Any] = APP) -> dict[str, Any]:
+    return {"body": body, "createdAt": at, **who}
+
+
+def part_pr(number: int, merged: str | None, body: str = "Part of #47") -> dict[str, Any]:
+    """A same-repo pull request cross-referencing #47, merged at ``merged`` (open when None)"""
+    state = "MERGED" if merged else "OPEN"
+    pr = {"number": number, "state": state, "title": f"Step of #47 ({number})", "body": body, "mergedAt": merged}
+    return {"willCloseTarget": False, "isCrossRepository": False, "source": pr}
+
+
+def handed_off(*comments: dict[str, Any], prs: tuple[dict[str, Any], ...] | None = None) -> dict[str, Any]:
+    """#47, labelled role:design and assigned, handed off at 10:20, then the reported shape:
+    three `Part of #47` pull requests merged between 11:29 and 11:33"""
+    item = open_issue(47, [said_by(STEPS, HANDED), *comments], labels=("role:design",))
+    item["body"] = "## Check\n\nSomeone other than the author finds the deck."
+    item["assignees"] = {"nodes": [{"login": "ana"}]}
+    item["blockedBy"] = forward([])
+    item["subIssues"] = forward([])
+    if prs is None:
+        prs = (
+            part_pr(60, "2026-11-28T11:29:00Z"),
+            part_pr(63, "2026-11-28T11:31:00Z"),
+            part_pr(65, "2026-11-28T11:33:00Z"),
+        )
+    item["timelineItems"] = forward(list(prs))
+    return item
+
+
+def read_person(ts: ModuleType, item: dict[str, Any], states: dict[Any, str] | None = None) -> tuple[str, str]:
+    found: tuple[str, str] = ts.classify_open(item, "Triage:", "postponed", states or {}, None, REPO, BOT)
+    return found
+
+
+def test_1871_merged_part_of_prs_after_the_hand_off_read_stale_handoff(ts: ModuleType) -> None:
+    assert read_person(ts, handed_off()) == MERGED_AFTER
+    assert "STALE_HANDOFF" in ts.ACTION
+    # a closing keyword links it as well (#416), and an open pull request is no done work
+    closer = handed_off(prs=(part_pr(70, "2026-11-28T12:00:00Z", "Fixes #47"), part_pr(71, None)))
+    assert read_person(ts, closer) == ("STALE_HANDOFF", "#70 merged after the hand-off")
+
+
+def test_1871_a_done_report_after_the_merges_reads_verify_due(ts: ModuleType) -> None:
+    done = said_by("Done: #60, #63 and #65 did every step.", "2026-11-28T11:40:00Z")
+    assert read_person(ts, handed_off(done)) == ("VERIFY_DUE", "done reported by @shipmill-app[bot]")
+
+
+@pytest.mark.parametrize("who", [APP, MAINTAINER, {**MAINTAINER, "authorAssociation": "COLLABORATOR"}])
+def test_1871_a_trusted_still_waits_after_the_newest_merge_reads_with_person(
+    ts: ModuleType, who: dict[str, Any]
+) -> None:
+    item = handed_off(said_by(STILL, "2026-11-28T11:40:00Z", who))
+    assert read_person(ts, item) == ("WITH_PERSON", f"with @ana since {HANDED}")
+
+
+@pytest.mark.parametrize(
+    "still",
+    [
+        said_by(STILL, "2026-11-28T11:30:00Z"),  # before the newest merge
+        said_by(STILL, "2026-11-28T11:40:00Z", {**MAINTAINER, "authorAssociation": "NONE"}),  # an outsider
+        said_by(STILL + "\n<!-- shipmill:agent -->", "2026-11-28T11:40:00Z", MAINTAINER),  # an agent's (D-62)
+    ],
+)
+def test_1871_an_earlier_or_untrusted_still_waits_keeps_it(ts: ModuleType, still: dict[str, Any]) -> None:
+    assert read_person(ts, handed_off(still)) == MERGED_AFTER
+
+
+def test_1871_a_merge_after_the_still_waits_re_arms_it(ts: ModuleType) -> None:
+    newer = part_pr(66, "2026-11-28T12:00:00Z")
+    item = handed_off(said_by(STILL, "2026-11-28T11:40:00Z"))
+    item["timelineItems"]["nodes"].append(newer)
+    assert read_person(ts, item) == ("STALE_HANDOFF", "#60 #63 #65 #66 merged after the hand-off")
+
+
+def test_1871_a_merge_before_the_hand_off_changes_nothing(ts: ModuleType) -> None:
+    item = handed_off(prs=(part_pr(50, "2026-11-28T09:00:00Z"),))
+    assert read_person(ts, item) == ("WITH_PERSON", f"with @ana since {HANDED}")
+
+
+def test_1871_a_reverted_pr_changes_nothing(ts: ModuleType) -> None:
+    marker = "<!-- shipmill:reverted #60 by #80 -->\nReopened: #60 is being reverted in #80."
+    reverted = said_by(marker, "2026-11-28T11:35:00Z")
+    item = handed_off(reverted, prs=(part_pr(60, "2026-11-28T11:29:00Z"),))
+    assert read_person(ts, item, {("o", "r", 80): "MERGED"}) == ("WITH_PERSON", f"with @ana since {HANDED}")
+    # the same marker by anyone else counts for nothing (spec 079)
+    item = handed_off(said_by(marker, "2026-11-28T11:35:00Z", MAINTAINER), prs=(part_pr(60, "2026-11-28T11:29:00Z"),))
+    assert read_person(ts, item) == ("STALE_HANDOFF", "#60 merged after the hand-off")
+
+
+def test_1871_the_json_line_carries_no_assignees_and_exits_1(tmp_path: Path) -> None:
+    proc = run_script(tmp_path, [handed_off()], "--bot-login", BOT)
+    assert proc.returncode == 1, proc.stderr  # an action
+    rows = [json.loads(r) for r in proc.stdout.splitlines()]
+    assert [(r["number"], r["state"], r["note"]) for r in rows] == [(47, *MERGED_AFTER)]
+    assert "assignees" not in rows[0]

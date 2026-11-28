@@ -1,0 +1,3 @@
+### Fixed
+
+- A person's item whose steps merged pull requests already did no longer waits on its people: `triage_state.py` reads it STALE_HANDOFF, an action, where it would read WITH_PERSON, once a pull request linking it (a closing keyword or `Part of #N`, not reverted per spec 079) merged after its newest hand-off, its note `#M merged after the hand-off`; a session posts the done report naming those pull requests, so it reads VERIFY_DUE and its `## Check` runs, or the still-waits comment naming the steps left, which ends the state until a newer such merge. A STALE_HANDOFF line no longer fails the script's sort, which lacked the state (#1871)
