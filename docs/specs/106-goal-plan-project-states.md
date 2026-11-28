@@ -1,6 +1,6 @@
 # S-106: States of a goal, a plan, and a project, with a plan's answer date and a goal on every accepted opportunity
 
-status: built
+status: approved
 serves: G-6
 
 ## Problem
@@ -140,6 +140,7 @@ other sub-issues and the check issue's sub-issues, two levels deep. Issues not l
 | active | the head is open, its check issue open, and a part open or none filed yet | agents and the maintainer's steps |
 | in focus | active and labelled `focus` | the maintainer's steps first |
 | closing | the check issue is open and the project's work is done (S-106-29): every part is closed, no pull request linked to the head is open, and with no part filed one merged | someone other than the builder, who runs the check |
+| closing, checked | the head is open and its check issue closed (S-106-31) | an agent: triage reads the head as a parent whose holds all closed, and a gate session closes it |
 | closed | the head is closed as completed | none |
 | stopped | the head is closed as not planned with a trusted stop record (below) | none |
 
@@ -148,6 +149,16 @@ PROJECT_HELD, PROJECT_ACTIVE, PROJECT_FOCUS, PROJECT_CLOSING, PROJECT_CLOSED, PR
 and the actions below, with `--json` carrying `state`, `holder`, `check` (the check issue or
 null), and `parts` (open and closed counts). A closing row's note lists the unchecked
 `- [ ]` lines of the check issue's `## Cleanup` section, or `no cleanup listed`.
+
+Closing has two cases, one state. While the check issue is open, someone other than the
+builder runs the check; once it is closed with the head still open, the check ran, and the
+row reads PROJECT_CLOSING noted `check #N closed; the head is open` with the holder `agent`.
+Triage reads no started project there (its check issue is closed), so the head reads as a
+parent whose holds are its children: UNBLOCKED once they all closed, and a gate session
+closes it with the parent's close comment. A project head's check lives in its check issue,
+not in the head's body; a head whose body has its own `## Check` reads as any parent with a
+check, VERIFY_DUE. No state of its own: a head stays in this case only until the next triage
+pass closes it.
 
 - **The limit is the product's.** `.github/shipmill.toml` gains `[agents] projects = N`, an
   integer from 1 up to `[agents] wip`'s ceiling, read by `AgentsConfig` as
@@ -289,6 +300,7 @@ idle questions reach it as any needs-decision item does.
 - S-106-28: a config with `[product] home` that sets `[agents] projects` is refused with a message naming the home; in a home `intake_state.py --projects` counts the active and in-focus heads of the home and of every repo its `[product] repos` lists, reading other repos through `shipmill gh --product`, one call per owner, and in a component it reads the limit from the home's config on its default branch and counts the same set; a read that fails exits 2 naming the repo; the second line reads `projects active: K of N (product <owner/home>)` and `--json`'s first line carries `projects` with `limit`, `active`, and `room`
 - S-106-29: on a started project whose head has no parts, `triage_state.py` reads the head NEEDS_PR once it has an implement verdict, never held on its check issue, and the check issue BLOCKED `project #<head>: check waits on its work`, never NEW; once a `Part of #<head>` pull request merged and none is open (or, with parts, every part closed) the check issue reads VERIFY_DUE and the head BLOCKED `project #<head>: check #<check> due`; `intake_state.py` reads no sub-issue titled `Check: ` with a `## Check` section as NEW_FEEDBACK
 - S-106-30: `intake_state.py --projects` reads a started head with no parts PROJECT_ACTIVE until a pull request linked to it merged with none open, then PROJECT_CLOSING, and a head whose parts are closed but whose own pull request is open PROJECT_ACTIVE with `, a PR open` in its note, a merged pull request reverted by the `--bot-login`'s record counting for nothing, in the checkout's read and the product count; `chains.py show` lists no started head as held on its own check issue in its repo, a held head's and another repo's reading as before; and `shipmill status --item` on the check issue prints no `blocks:` naming the head while the work runs, and on the head names the check issue as waiting on it
+- S-106-31: `intake_state.py --projects` reads an open head whose check issue is closed as PROJECT_CLOSING noted `check #N closed; the head is open` with the holder `agent`, and `shipmill status --item` on it names the check as run and a gate session, an agent, as what closes the head; docs/flow.md's closing row names both cases
 
 ## Out of scope
 
@@ -329,6 +341,7 @@ idle questions reach it as any needs-decision item does.
 - shipmill/shipmill#1743: S-106-25, S-106-26, S-106-27
 - shipmill/shipmill#1802: S-106-29
 - shipmill/shipmill#1823: S-106-30
+- shipmill/shipmill#1851: S-106-31
 
 ## Verification
 
