@@ -236,7 +236,7 @@ A report with a `## Check` reads VERIFY_DUE in place of CLOSE_DUE `completed`: t
 
 ## Hold (blocked on something outside the repo)
 
-Keep "On hold" and the upstream link in one sentence of one line, because `triage_state.py` reads that sentence to report BLOCKED and later UNBLOCKED. A sentence ends at ".", "!", or "?" before a capital letter (not after "e.g.", "i.e.", "cf.", or "vs."), so a hold word elsewhere in a paragraph doesn't hold on the links it names:
+Keep "On hold" and the upstream link in one sentence of one line, because `triage_state.py` reads that sentence to report BLOCKED and later UNBLOCKED. A sentence ends at ".", "!", or "?" before a capital letter (not after "e.g.", "i.e.", "cf.", or "vs."), so a hold word elsewhere in a paragraph doesn't hold on the links it names. Start the sentence with the hold phrase ("On hold:", "Waits on", "Blocked by"), before any reference: a sentence that names an item before its hold phrase reports on that item's hold, and a hold phrase in quotes or a code span quotes words, so neither holds the issue (#1868):
 
 ```markdown
 On hold: {why, e.g. #PR goes below the spec's default of 5 rotated files}, decided in {owner/repo#N}. {What stays ready meanwhile, e.g. "#59 stays open, rebased onto main".}

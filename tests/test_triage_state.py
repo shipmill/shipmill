@@ -1093,6 +1093,41 @@ def test_309_the_documented_hold_lines_still_hold(ts: ModuleType, line: str, hel
     assert ts.upstream_refs(issue(("2026-10-08T10:00:00Z", line)), REPO) == [held]
 
 
+# #1868: a check-result comment on #1828 quoted a label's description ("... put on hold") in
+# the sentence that linked another item's relay comment, and #1828 read as waiting on that item
+REPORTED_HOLD = (
+    "- `shipmill project hold 618 --by romamo` exited 0. After it: the `held` label exists"
+    ' ("A project head the maintainer put on hold (spec 108)"), #618 carries `project` and `held`,'
+    " and the head has exactly one relay comment"
+    " (https://github.com/cloudfall-dev/cloudfall/issues/618#issuecomment-7237629974)"
+)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        REPORTED_HOLD,
+        # a hold phrase in quotes or in a code span is quoted text, not this issue's hold
+        'The label reads "blocked by upstream", see o/up#5.',
+        "The label reads “on hold”, see o/up#5.",
+        "Its `waits on` line names o/up#5.",
+        # a reference before the hold phrase is what the sentence reports on, not what it waits on
+        "Head: cloudfall-dev/cloudfall#618, a project already on hold while its plan #187 is overdue.",
+        "o/up#5 waits on o/up#4, so nothing here changes.",
+    ],
+)
+def test_1868_a_report_on_another_items_hold_holds_nothing(ts: ModuleType, line: str) -> None:
+    item = issue(("2026-11-28T10:00:00Z", line))
+    assert ts.upstream_refs(item, REPO) == []
+    states = {("cloudfall-dev", "cloudfall", 618): "OPEN", ("o", "up", 5): "OPEN", ("o", "up", 4): "OPEN"}
+    assert ts.classify_open(item, "Triage:", "postponed", states, None, REPO)[0] != "BLOCKED"
+
+
+def test_1868_a_hold_sentence_holds_on_what_follows_its_hold_phrase(ts: ModuleType) -> None:
+    line = "On hold: o/up#3 must land first, then this waits on o/up#4 as well."
+    assert ts.upstream_refs(issue(("2026-11-28T10:00:00Z", line)), REPO) == [("o", "up", 3), ("o", "up", 4)]
+
+
 def test_309_the_feature_templates_hold_line_still_holds(ts: ModuleType) -> None:
     item = issue(("2026-09-01T10:00:00Z", template("Feature")))
     assert ts.upstream_refs(item, REPO) == [("o", "r", 41)]
