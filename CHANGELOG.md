@@ -7,6 +7,20 @@ bot.
 
 ## [Unreleased]
 
+## [0.195.0] - 2026-11-28
+
+### Added
+
+- The registry metrics `decided_credited` and `decided_written_as_decider` (unit `ratio`, target `<n>%`): a measure in `docs/product.md` can hold on the share of the decided work GitHub credits to every decider, or written as the decider with the agent as co-author; `shipmill product check` refuses an `h`, `d`, or `/week` target for them, the weekly retro reads them from metrics.py's Decided work credited and Decided work written as the decider, and shipmill-setup offers them (#1835)
+- `watch_state.py`'s full report prints a report-only `GOALS` row with each goal's measure reading (status, value, weeks met, its spec 106 state, stalled weeks), and a `DIRECTION_DUE` action for a goal met for 4 weeks or stalled whose `Direction:` proposal isn't open or declined by a trusted author; the gate hands it in tier 7 right after PLANS, from the sweep, and a malformed `goal-report` line stops the watch with exit 2 (spec 110) (#1839)
+
+### Fixed
+
+- Tests: the pinned-CLI test of `retro.py` loads `watch_state` itself, so it passes run alone and under xdist (#1844)
+- `decision answer` on a `goal-plan` issue with no open needs-decision question names `goal-plan answer <n> accept|decline|hold|send-back --by <login>` in its refusal, and the `[autonomy]` comment `init` writes says intake is observe or propose, never act, and that under propose it still groups and files, leaving only the maintainer's accept or decline to a person (#1850)
+- github-ship-watch's description names the status questions ("what's the status", "what's open", "who holds what", "why is an issue not moving") and `shipmill status` (`--summary`, `--item N`), so an agent asked for the status routes to the skill that knows the command instead of assembling it from `gh issue list` (#1854)
+- `shipmill status --summary` reads only the sections its lines come from: watch_state.py's new `--open-items` reads the sections `--item` reads, for every open item at once, and skips the releases, deployments, postmortems, chains, drift, active runs, and the host's rows, so the summary no longer waits as long as the full report; its output is unchanged (#1855)
+
 ## [0.194.1] - 2026-11-28
 
 ### Fixed
@@ -3400,7 +3414,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.194.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.195.0...HEAD
+[0.195.0]: https://github.com/shipmill/shipmill/compare/v0.194.1...v0.195.0
 [0.194.1]: https://github.com/shipmill/shipmill/compare/v0.194.0...v0.194.1
 [0.194.0]: https://github.com/shipmill/shipmill/compare/v0.193.6...v0.194.0
 [0.193.6]: https://github.com/shipmill/shipmill/compare/v0.193.5...v0.193.6
