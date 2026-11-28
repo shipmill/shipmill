@@ -1,6 +1,6 @@
 # S-110: The watch report shows each goal's measure status and a goal due for a direction proposal
 
-status: approved
+status: built
 serves: G-7
 
 ## Problem
@@ -168,5 +168,19 @@ rows.
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked on the default branch plus #1840's pull request: the code of `intake_state.py`'s
+`goal-report` lines, `watch_state.py`'s GOALS and DIRECTION_DUE rows, and `walk.py`'s tier 7
+read, the skill's and `docs/flow.md`'s text read, and the tests `specs.py coverage --spec 110`
+lists, all passing. Neither script's GitHub reads were checked against a live repository
+beyond the tests: their forge and spec 027's report are scripted there.
+
+- S-110-1: `test_s110_1_*` reads one `goal-report` line per goal in the direction's order with its eight keys, the report run once per run whether or not a trigger reads it, and no line without `docs/product.md` or in the text output, holds
+- S-110-2: `test_s110_2_*` reads exit 2 naming what failed for a report that can't be read, a line the report doesn't carry, and a goal it leaves out, with no `no data` line printed, holds
+- S-110-3: `test_s110_3_*` reads the GOALS row's entries in the direction's order, each goal of kind goal with its spec 106 state, and no row without a `goal-report` line, from intake_state.py's own lines, holds
+- S-110-4: `test_s110_4_*` reads GOALS leaving the exit code at 0, outside `AGENT`, and in no `--tier` or `--sweep` read, which prints DIRECTION_DUE alone, holds
+- S-110-5: `test_s110_5_*` reads exit 2 naming the line for a status outside the four, a missing key, a goal id that isn't `G-<n>`, and a week count that isn't a non-negative integer, and a well-formed line read, holds
+- S-110-6: `test_s110_6_*` reads `G-1 met for 4 weeks; G-6 stalled for 3 weeks` in an action and agent's row, no stalled measure and no ended goal due, and a goal met and stalled listed once as met, holds
+- S-110-7: `test_s110_7_*` reads a trusted open or declined proposal under either title leaving the row, an outsider's or a completed one leaving the goal due, one search only when a goal is due, and an unreadable search line stopping the watch, holds
+- S-110-8: `test_s110_8_*` reads DIRECTION_DUE right after PLANS in tier 7 and in both `SWEPT` sets, and a gate tick launching a session for it from the stored sweep, holds
+- S-110-9: `test_s110_9_*` reads the skill's Direction proposals step deduping both titles as `watch_state.direction_titles` spells them before opening the issue as the App, the body's reading and the three commands, the writes it never makes, the DIRECTION_DUE row pointing at the step, and the Weekly retro leaving the direction proposals to the watch while the rest stays an option the user schedules, holds
+- S-110-10: `test_s110_10_*` reads `docs/flow.md`'s Goals, plans, and projects giving the GOALS and DIRECTION_DUE rows, the titles, tier 7 after PLANS, and the change to spec 027's choice for the goal report and the direction proposals only, holds
