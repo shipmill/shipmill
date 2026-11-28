@@ -154,7 +154,7 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
                     trigger and "waits for room". A request never waits
 Spec 027's report is `retro.py gather <repo> --goals --checkout <the current directory>
 --json` (github-ship-watch's, with the --bot-login as --bot), run once, and only when a goal
-reaches the stalled and no-work triggers; a gather that fails (a checkout not at
+reaches the stalled and no-work triggers; a gather that fails (a checkout without
 origin/HEAD among its causes), a report without the direction, a goal it leaves out, or one
 it lists malformed exits 2, never read as not stalled (#1764).
 With --plans and --goals together (spec 110), that report is read on every run whose direction
@@ -1309,7 +1309,7 @@ def a_count(value: object) -> bool:
 def retro_report(repo: str, bot_login: str | None, checkout: Path, script: Path = RETRO) -> ReportReader:
     """The default report reader: `retro.py gather <repo> --goals --checkout <checkout> --json`,
     spec 027's report, with the --bot-login as --bot so the App's verdicts count (D-29); a gather
-    that fails (a checkout not at origin/HEAD, a gh failure) exits 2 naming it"""
+    that fails (a checkout without origin/HEAD, a gh failure) exits 2 naming it"""
 
     def read() -> dict[str, GoalReport]:
         cmd = [sys.executable, str(script), "gather", repo, "--goals", "--checkout", str(checkout), "--json"]
