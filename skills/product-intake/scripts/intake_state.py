@@ -2712,6 +2712,8 @@ PROJECT_HOLDERS = {
     "PROJECT_START_DUE": "agent",  # S-106-14: a session files its check issue, or removes `held`
     "PROJECT_STOP_DUE": "agent",  # S-106-18: a session stops it
 }
+# S-106-31: a closing head's note once its check issue closed with the head still open
+CHECKED_NOTE = re.compile(r"check #[1-9][0-9]* closed; the head is open")
 PROJECT_COUNTED = ("PROJECT_ACTIVE", "PROJECT_FOCUS")  # S-106-28: held and closing heads count nothing
 # each starts a session (exit 1); PROJECT_START_DUE (spec 106): a held head whose turn has come
 PROJECT_ACTION = frozenset({"PROJECT_IDLE", "PROJECT_STOP_DUE", "PROJECT_START_DUE"})
@@ -2823,6 +2825,10 @@ class ProjectRow:
 
     @property
     def holder(self) -> str | None:
+        """S-106-31: a closing head whose check issue closed is an agent's: the check ran, and
+        triage reads the head UNBLOCKED, so a gate session closes it"""
+        if self.state == "PROJECT_CLOSING" and CHECKED_NOTE.fullmatch(self.note):
+            return "agent"
         return PROJECT_HOLDERS[self.state]
 
     @property

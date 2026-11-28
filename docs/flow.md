@@ -106,7 +106,7 @@ A written or planned goal past its horizon (its date has ended, or its release i
 | held | the head is open and has no check issue, or is labelled `held` | its start: a free slot, its turn, no overdue plan |
 | active | the head and its check issue are open, and a part is open or none is filed yet | agents and your steps |
 | in focus | active and labelled `focus` | your steps first |
-| closing | the check issue is open and the project's work is done: every part closed, no pull request linked to the head open, and with no part filed one merged | someone other than the builder, who runs the check |
+| closing | the project's work is done: every part closed, no pull request linked to the head open, and with no part filed one merged; or its check issue closed with the head still open | while the check issue is open, someone other than the builder, who runs the check; once it closed, an agent: triage reads the head UNBLOCKED and a gate session closes it |
 | closed | the head closed as completed | nobody |
 | stopped | the head closed as not planned with the App's stop record | nobody |
 

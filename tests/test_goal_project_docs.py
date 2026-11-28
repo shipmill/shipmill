@@ -65,3 +65,11 @@ def test_s106_27_the_documented_names_are_the_ones_intake_reads() -> None:
     assert MARKERS[2] == ist.STOP_RECORD
     for state in ("GOAL_OVERDUE", "PLAN_REPLACED", "PROJECT_START_DUE", "PROJECT_IDLE", "PROJECT_STOP_DUE"):
         assert state in WATCH, state  # the watch's PLANS row names each action it starts a session for
+
+
+def test_s106_31_flow_names_both_closing_cases() -> None:
+    lifecycle = section(FLOW, "## Goals, plans, and projects")
+    (row,) = [line for line in lifecycle.splitlines() if line.startswith("| closing |")]
+    assert "its check issue closed with the head still open" in row
+    assert "someone other than the builder, who runs the check" in row
+    assert "an agent: triage reads the head UNBLOCKED and a gate session closes it" in row
