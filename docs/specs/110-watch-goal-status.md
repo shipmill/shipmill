@@ -162,8 +162,9 @@ rows.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1838: S-110-1, S-110-2
+- shipmill/shipmill#1839: S-110-3, S-110-4, S-110-5, S-110-6, S-110-7, S-110-8
+- shipmill/shipmill#1840: S-110-9, S-110-10
 
 ## Verification
 
