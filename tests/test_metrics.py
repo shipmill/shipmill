@@ -892,8 +892,10 @@ def filed(
     labels: tuple[str, ...] = (),
     parent: dict[str, Any] | None = None,
     repo: str = "o/r",
+    comments: tuple[dict[str, Any], ...] = (),
+    more: str | None = None,
 ) -> dict[str, Any]:
-    """An issue as DECIDED's FILED fragment reads it"""
+    """An issue as DECIDED's filed fragment reads it; more: a cursor to more comments"""
     return {
         "number": number,
         "repository": {"nameWithOwner": repo},
@@ -901,6 +903,7 @@ def filed(
         "body": body,
         "author": actor(author),
         "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
+        "comments": page(list(comments), more),
         "parent": parent,
     }
 
@@ -972,12 +975,20 @@ class DecidedForge(FakeGitHub):
         8: {"closes": (filed(23, body=MARKER, labels=("opportunity", "Planned")),)},  # erin added planned
         9: {"closes": (filed(24, body=MARKER, parent=filed(25, body=MARKER, labels=("opportunity", "planned"))),)},
         10: {"closes": (filed(26, body=MARKER, labels=("opportunity", "planned")),)},  # gina can only read
-        11: {"closes": (filed(27, body=MARKER),)},  # hank answered on the issue
-        12: {"closes": (filed(28, body=MARKER, labels=("opportunity", "planned")),)},  # the App, on ivy's accept
-    }
-    ISSUE_COMMENTS: dict[int, list[dict[str, Any]]] = {
-        27: [note(QUESTION, ("User", "olga"), "OWNER"), note("Option B", ("User", "hank"))],
-        28: [note(f"Decision by @ivy, relayed by Claude Code\n\naccept G-2\n\n{MARKER}", APP, "NONE")],
+        # hank answered on the issue, his reply on its comments' second page
+        11: {"closes": (filed(27, body=MARKER, comments=(note(QUESTION, ("User", "olga"), "OWNER"),), more="k27"),)},
+        12: {  # the App added planned, on ivy's accept
+            "closes": (
+                filed(
+                    28,
+                    body=MARKER,
+                    labels=("opportunity", "planned"),
+                    comments=(
+                        note(f"Decision by @ivy, relayed by Claude Code\n\naccept G-2\n\n{MARKER}", APP, "NONE"),
+                    ),
+                ),
+            )
+        },
     }
     LABELED: dict[int, list[tuple[str, tuple[str, str]]]] = {
         23: [("planned", ("User", "zoe")), ("planned", ("User", "erin")), ("opportunity", ("User", "zoe"))],
@@ -1000,11 +1011,15 @@ class DecidedForge(FakeGitHub):
         return ok({"pullRequests": page(nodes)})
 
     def decided(self, v: dict[str, Any]) -> dict[str, Any]:
-        source = self.SOURCES[v["number"]]
-        return ok({"pullRequest": decided_node(comments=source.get("comments", ()), closes=source.get("closes", ()))})
+        found = {}
+        for k in range(self.mx.BATCH):
+            source = self.SOURCES[v[f"n{k}"]]
+            found[f"p{k}"] = decided_node(comments=source.get("comments", ()), closes=source.get("closes", ()))
+        return ok(found)
 
     def thread_comments(self, v: dict[str, Any]) -> dict[str, Any]:
-        return ok({"thread": {"comments": page(self.ISSUE_COMMENTS.get(v["number"], []))}})
+        assert (v["number"], v["cursor"]) == (27, "k27")
+        return ok({"thread": {"comments": page([note("Option B", ("User", "hank"))])}})
 
     def labelers(self, v: dict[str, Any]) -> dict[str, Any]:
         events = [{"label": {"name": name}, "actor": actor(who)} for name, who in self.LABELED[v["number"]]]
@@ -1151,9 +1166,11 @@ def test_s109_7_the_records_are_read_only_for_prs_merged_in_the_window(mx: Modul
     def read(query: str, key: str = "number") -> list[Any]:
         return [v[key] for name, v in gh.calls if name == query]
 
-    assert read("DECIDED") == list(range(1, 13))  # not #13, merged before the window
+    batches = [[v[f"n{k}"] for k in range(mx.BATCH)] for name, v in gh.calls if name == "DECIDED"]
+    # ten PRs to a read, the last batch filled with its last PR; not #13, merged before the window
+    assert batches == [list(range(1, 11)), [11, 12, *[12] * (mx.BATCH - 2)]]
     assert read("PULL_VERDICTS") == []  # #13's further reviews aren't read
-    assert sorted(read("THREAD_COMMENTS")) == list(range(20, 29))  # each issue once; the PRs' first pages held all
+    assert read("THREAD_COMMENTS") == [27]  # only a thread with more comments than its first page
     assert read("LABELERS") == [23, 25, 26, 28]  # only the opportunities labelled planned
     assert read("PERMISSION", "login") == ["erin", "frank", "gina", "ivy"]
     # trends.py's read, which measures neither, reads none of them

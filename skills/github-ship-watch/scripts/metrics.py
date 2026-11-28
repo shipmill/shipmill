@@ -296,33 +296,33 @@ FILED = (
     " labels(first: 100) { pageInfo { hasNextPage } nodes { name } }"
 )
 COMMENT_FIELDS = " nodes { body authorAssociation author { __typename login } }"
+COMMENTS = " comments(first: $size) { " + PAGE_INFO + COMMENT_FIELDS + " }"
+# DECIDED reads BATCH PRs at once, as p0, p1, ... for the numbers $n0, $n1, ...: one read per
+# PR took a run over a busy month past ten minutes
+BATCH = 10
 DECIDED = (
-    """
-query($owner: String!, $name: String!, $size: Int!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      author { __typename login }
-      mergeCommit {
-        message
-        author { user { login } }
-        authors(first: 100) { pageInfo { hasNextPage } nodes { user { login } } }
-      }
-      comments(first: $size) { """
-    + PAGE_INFO
-    + COMMENT_FIELDS
-    + """ }
-      closingIssuesReferences(first: 100) {
-        pageInfo { hasNextPage }
-        nodes { """
-    + FILED
-    + " parent { "
-    + FILED
-    + """ } }
-      }
-    }
-  }
+    "query($owner: String!, $name: String!, $size: Int!, "
+    + ", ".join(f"$n{k}: Int!" for k in range(BATCH))
+    + ") {\n  repository(owner: $owner, name: $name) {\n"
+    + "".join(f"    p{k}: pullRequest(number: $n{k}) {{ ...decided }}\n" for k in range(BATCH))
+    + """  }
 }
-"""
+fragment decided on PullRequest {
+  author { __typename login }
+  mergeCommit {
+    message
+    author { user { login } }
+    authors(first: 100) { pageInfo { hasNextPage } nodes { user { login } } }
+  }
+ """
+    + COMMENTS
+    + """
+  closingIssuesReferences(first: 20) { pageInfo { hasNextPage } nodes { ...filed parent { ...filed } } }
+}
+fragment filed on Issue { """
+    + FILED
+    + COMMENTS
+    + " }\n"
 )
 THREAD_COMMENTS = (
     """
@@ -642,9 +642,7 @@ def fetch(
     # shipped (a merge's commit date is its merge time; a day covers clock skew)
     cutoff = oldest - dt.timedelta(days=1)
     pulls = pages(run, PULLS, base, sizes, ["pullRequests"], "merged pull requests", lambda n: _older(n, cutoff))
-    decisions: dict[int, Decision] = {}
-    threads: dict[int, Thread] = {}
-    permissions: dict[str, str] = {}
+    todo: list[Node] = []  # the PRs merged in the window, whose deciders spec 109 reads
     for pr in pulls:
         pull_commits(run, base, sizes, pr, window)
         if not merged(pr, window):
@@ -655,7 +653,8 @@ def fetch(
         if made:  # the agent quality measures read its files
             extend(run, base, sizes, pr, "files", PULL_FILES, f"the changed files of PR #{pr['number']}")
         if decided:
-            decisions[pr["number"]] = decision(run, base, sizes, pr, threads, permissions, bots)
+            todo.append(pr)
+    decisions = decisions_of(run, base, sizes, todo, bots)
 
     # Newest first, back to the window's start; with --environment, also back to a chosen
     # environment's deployment, so one deployed only before the window still counts as deployed
@@ -685,26 +684,47 @@ def fetch(
     return data
 
 
+def decisions_of(
+    run: Runner, base: Variables, sizes: Sizes, pulls: Sequence[Node], bots: frozenset[str]
+) -> dict[int, Decision]:
+    """Spec 109: each PR's records, read BATCH PRs to a DECIDED query; a batch short of BATCH
+    asks its last PR again in the free places"""
+    decisions: dict[int, Decision] = {}
+    threads: dict[int, Thread] = {}
+    permissions: dict[str, str] = {}
+    for start in range(0, len(pulls), BATCH):
+        batch = pulls[start : start + BATCH]
+        numbers = [pr["number"] for pr in batch]
+        padded = numbers + [numbers[-1]] * (BATCH - len(numbers))
+        variables: Variables = {**base, **{f"n{k}": n for k, n in enumerate(padded)}}
+        what = f"the deciders of PRs {', '.join(f'#{n}' for n in numbers)}"
+        found = sized(run, DECIDED, variables, sizes, what)
+        for k, pr in enumerate(batch):
+            node = dig(found, [f"p{k}"], f"the deciders of PR #{pr['number']}")
+            decisions[pr["number"]] = decision(run, base, sizes, pr, node, threads, permissions, bots)
+    return decisions
+
+
 def decision(
     run: Runner,
     base: Variables,
     sizes: Sizes,
     pr: Node,
+    found: Node,
     threads: dict[int, Thread],
     permissions: dict[str, str],
     bots: frozenset[str],
 ) -> Decision:
     """Spec 109: the records that name a PR's deciders (spec 049) and its merge commit's
-    credit. threads and permissions are shared across PRs, so an issue or a person is read once"""
+    credit, from its DECIDED node. threads and permissions are shared across PRs, so an issue
+    or a person is read once"""
     number = pr["number"]
-    what = f"the deciders of PR #{number}"
-    found = dig(sized(run, DECIDED, {**base, "number": number}, sizes, what), ["pullRequest"], what)
     merge = found["mergeCommit"]
     if merge is not None and merge["authors"]["pageInfo"]["hasNextPage"]:
         fail(f"the merge commit of PR #{number} has over 100 authors")
     closes = found["closingIssuesReferences"]
     if closes["pageInfo"]["hasNextPage"]:
-        fail(f"PR #{number} closes over 100 issues")
+        fail(f"PR #{number} closes over 20 issues")
     repo = f"{base['owner']}/{base['name']}".lower()
     issues: list[Thread] = []
     for node in closes["nodes"]:
@@ -735,8 +755,8 @@ def home(node: Node) -> str:
 
 
 def thread(run: Runner, base: Variables, sizes: Sizes, node: Node) -> Thread:
-    """An issue as FILED gives it, with its comments, and for an opportunity labelled planned
-    the actors of its `labeled` events adding planned"""
+    """An issue as FILED gives it, with the rest of its comments, and for an opportunity
+    labelled planned the actors of its `labeled` events adding planned"""
     number = node["number"]
     if node["labels"]["pageInfo"]["hasNextPage"]:
         fail(f"issue #{number} has over 100 labels")
@@ -746,18 +766,17 @@ def thread(run: Runner, base: Variables, sizes: Sizes, node: Node) -> Thread:
         what = f"the label events of #{number}"
         events = pages(run, LABELERS, {**base, "number": number}, sizes, ["issue", "timelineItems"], what)
         labelers = [e["actor"] for e in events if str(e["label"]["name"]).lower() == PLANNED]
-    comments = thread_comments(run, base, sizes, number)
+    comments = thread_comments(run, base, sizes, number, node["comments"])
     return Thread(
         number, node["author"], str(node["authorAssociation"]), node["body"] or "", labels, comments, labelers
     )
 
 
-def thread_comments(run: Runner, base: Variables, sizes: Sizes, number: int, first: Node | None = None) -> list[Node]:
-    """Every comment on the issue or PR number, oldest first, from its first page (read here
-    when not given) to its last"""
+def thread_comments(run: Runner, base: Variables, sizes: Sizes, number: int, first: Node) -> list[Node]:
+    """Every comment on the issue or PR number, oldest first, from its first page to its last"""
     what = f"the comments on #{number}"
     path = ["thread", "comments"]
-    connection = first or dig(sized(run, THREAD_COMMENTS, {**base, "number": number}, sizes, what), path, what)
+    connection = first
     nodes: list[Node] = list(connection["nodes"])
     seen: set[str] = set()
     while connection["pageInfo"]["hasNextPage"]:
