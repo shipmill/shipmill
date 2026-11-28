@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.196.0] - 2026-11-28
+
+### Changed
+
+- github-ship-watch's DIRECTION_DUE session opens each due goal's `Direction:` proposal as the App after `retro.py dedupe`, citing the goal's reading and the command the maintainer would run, and writes nothing else; the watch now opens the direction proposals without a scheduled weekly retro, whose other parts stay an option you schedule, and `docs/flow.md` gives the GOALS and DIRECTION_DUE rows (spec 110) (#1840)
+- A project's `## Check` is written to run by reading alone; a check whose only form is a write asks the maintainer at once, and a check that didn't run is never closed at a `decided` comment, only on the maintainer's "close it unchecked" answer (D-116) (#1852)
+
 ## [0.195.0] - 2026-11-28
 
 ### Added
@@ -3414,7 +3421,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.195.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.0...HEAD
+[0.196.0]: https://github.com/shipmill/shipmill/compare/v0.195.0...v0.196.0
 [0.195.0]: https://github.com/shipmill/shipmill/compare/v0.194.1...v0.195.0
 [0.194.1]: https://github.com/shipmill/shipmill/compare/v0.194.0...v0.194.1
 [0.194.0]: https://github.com/shipmill/shipmill/compare/v0.193.6...v0.194.0
