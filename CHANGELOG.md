@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.194.0] - 2026-11-28
+
+### Changed
+
+- Gate: with `[agents] app_id` set, a tick's own GitHub reads (the hold check, the change check, the subjects' reads, and each tier and sweep of `watch_state.py`) run as the App with the tick's read token, in each read command's environment, so they draw on the App's rate limit, not the maintainer's; `gh api user` and the sessions never get it. A failed mint reads as the host and the tick's line ends `; reads as host: <why>`; `tick.json` and `shipmill gate --json` record `reads_as` (#1654)
+
+### Added
+
+- `metrics.py` measures whether GitHub credits the work a person decided: right after Agent share, Decided work credited (the decided pull requests merged in the window whose merge commit credits every decider spec 049 names) and Decided work written as the decider (those whose merge commit's author is a decider with an App's bot as co-author), each "no data" without a decided merge, with a per-login `people` list in `--json` only (#1834)
+- `intake_state.py --plans --goals --json` prints a `goal-report` line per goal of the direction, in its order, with the goal's kind, its measure's status and value, the weeks met in a row, whether it stalled, and whether it ended, read from the one spec 027 report its plan triggers read; a report that can't be read exits 2 (spec 110) (#1838)
+
+### Fixed
+
+- `chains.py link --child` (and `shipmill link --child`) works again: a second `PARENT` constant had replaced the parent read's GraphQL query with a field list, so every sub-issue link failed with a GraphQL parse error (#1836)
+- Status: `status --item` on a project head whose check issue is closed says the check ran and a gate session closes the head, not that the check waits to be run (#1845)
+
 ## [0.193.6] - 2026-11-27
 
 ### Fixed
@@ -3378,7 +3394,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.193.6...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.194.0...HEAD
+[0.194.0]: https://github.com/shipmill/shipmill/compare/v0.193.6...v0.194.0
 [0.193.6]: https://github.com/shipmill/shipmill/compare/v0.193.5...v0.193.6
 [0.193.5]: https://github.com/shipmill/shipmill/compare/v0.193.4...v0.193.5
 [0.193.4]: https://github.com/shipmill/shipmill/compare/v0.193.3...v0.193.4
