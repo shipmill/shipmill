@@ -162,6 +162,17 @@ def test_s106_25_an_open_head_names_its_state(ws: ModuleType, ist: ModuleType) -
     assert conditions(found, 56)[0][:2] == ("a project in focus: your steps on it come first", Who.MAINTAINER)
 
 
+def test_s106_25_a_head_whose_check_closed_waits_on_a_session(ws: ModuleType, ist: ModuleType) -> None:
+    checked = intake_lines(head(ist, 57, "PROJECT_CLOSING", "check #74 closed; the head is open", check=74))
+    found = facts(*status_rows(ws, checked), issues=[Issue(57, "TRIAGED")])
+    assert conditions(found, 57)[0] == (
+        "closing: check #74 ran and is closed, and the head waits on a session to close it",
+        Who.AGENT,
+        "triage reads the head UNBLOCKED and a gate session closes it with a comment listing its children,"
+        " check #74 among them, or you close it",
+    )
+
+
 def test_s106_25_an_unreadable_state_row_is_refused(ws: ModuleType, ist: ModuleType) -> None:
     for state in ("GOAL_STATE", "PLAN_STATE", "PROJECT_STATE"):
         bad = facts(Row(state, REPO, "#1 SOMETHING", False, None), issues=[Issue(1, "TRIAGED", verdict="plan")])

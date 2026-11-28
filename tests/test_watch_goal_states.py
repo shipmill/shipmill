@@ -148,6 +148,17 @@ def test_s106_25_the_item_read_gives_each_goal_plan_and_head_its_state(ws: Modul
     assert all(s not in ws.SWEPT and all(s not in t for t in ws.TIERS.values()) for s in found)
 
 
+def test_s106_25_a_closing_head_whose_check_closed_reads_checked(ws: ModuleType, ist: ModuleType) -> None:
+    text = intake_lines(
+        head(ist, 57, "PROJECT_CLOSING", "check #74 closed; the head is open", check=74),
+        head(ist, 58, "PROJECT_CLOSING", "no cleanup listed", check=75),
+    )
+    (row,) = ws.item_states(text, REPO, BOT)
+    assert row.detail == (
+        "#57 PROJECT_CLOSING holder=checker check=#74 checked; #58 PROJECT_CLOSING holder=checker check=#75"
+    )
+
+
 def test_s106_25_an_overdue_plan_of_another_repo_reaches_the_heads(ws: ModuleType, ist: ModuleType) -> None:
     waits = ist.PlanRow("G-1", "PLAN_WAITS", "SECRET", "plan o/other#8 overdue")
     text = intake_lines(json.dumps(ist.plan_json(waits)), head(ist, 53, "PROJECT_HELD", "no check issue"))

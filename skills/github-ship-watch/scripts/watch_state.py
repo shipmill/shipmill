@@ -772,6 +772,8 @@ HORIZON = re.compile(r"[\w.+-]+")
 GOAL_STATE = "GOAL_STATE"
 PLAN_STATE = "PLAN_STATE"
 PROJECT_STATE = "PROJECT_STATE"
+# a closing head whose check issue is closed, as intake_state.py --projects notes it
+CHECKED_NOTE = re.compile(r"check #[1-9]\d* closed; the head is open")
 # intake_state.py's PLAN_WAITS note while a plan of the product is overdue (S-106-9)
 OVERDUE_NOTE = re.compile(r"^plan ([\w.-]+/[\w.-]+#[1-9]\d*) overdue$")
 OVERDUE_REF = re.compile(r"[\w.-]+/[\w.-]+#[1-9]\d*")
@@ -4555,7 +4557,8 @@ def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only
                      goal proposal
       PLAN_STATE     `#N PLAN_OPEN answer_by=<date>`, `#N PLAN_OVERDUE answer_by=<date>`, and
                      `#N PLAN_REPLACED replaced_by=#M`, per plan trusted as PLAN_OPEN's
-      PROJECT_STATE  `#N <STATE> holder=<h>[ check=#C][ held=label|check]` per head, then
+      PROJECT_STATE  `#N <STATE> holder=<h>[ check=#C][ held=label|check][ checked]` per head
+                     (` checked` marks a closing head whose check issue is closed), then
                      `active K of N` under [agents] projects and `overdue <owner/repo>#P` per
                      overdue plan of the product it read (its own, and those PLAN_WAITS names)"""
     goals: list[str] = []
@@ -4578,6 +4581,8 @@ def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only
             part += "" if found["check"] is None else f" check=#{found['check']}"
             if found["state"] == "PROJECT_HELD":
                 part += " held=label" if found["note"] == "labelled held" else " held=check"
+            if found["state"] == "PROJECT_CLOSING" and CHECKED_NOTE.fullmatch(found["note"]):
+                part += " checked"  # the check ran: the head waits on whoever closes it
             heads.append(part)
         row = plan_line(line) if found is None else None
         if row is None:
