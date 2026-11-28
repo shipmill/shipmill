@@ -472,13 +472,16 @@ def test_s004_11_a_dry_run_still_exits_2_on_a_failed_check(checkout: Git, tmp_pa
     assert not state_dir(checkout).exists()
 
 
-# S-004-12
+# S-004-12, dropped for S-093-3: the reads take the tick's read token in their own command's
+# env (tests/test_gate_reads_as.py), and the gate's own environment stays the host's
 
 
-def test_s004_12_the_gates_own_reads_keep_the_hosts_environment(checkout: Git, tmp_path: Path) -> None:
-    """The findings and the hold read run as subprocesses of the gate's own environment (watch
-    and GhCli pass no env), so they see the App's helpers or a token only if the gate put them
-    there; it never does, before or after a launch as the App"""
+def test_s093_3_the_gates_own_environment_stays_the_hosts_across_launches_as_the_app(
+    checkout: Git, tmp_path: Path
+) -> None:
+    """The findings and the hold read see the gate's own environment unchanged, with no App
+    helpers on its PATH and no token, before and after a launch as the App: a read's token goes
+    only into that read command's env (spec 093), never os.environ"""
     host = dict(os.environ)
     seen: list[dict[str, str]] = []
 
@@ -513,7 +516,7 @@ def test_s004_12_the_gates_own_reads_keep_the_hosts_environment(checkout: Git, t
     assert str(helpers_of(checkout)) not in os.environ.get("PATH", "")
 
 
-def test_s004_12_with_app_id_unset_the_reads_keep_the_hosts_environment(checkout: Git) -> None:
+def test_s093_3_with_app_id_unset_the_gates_own_environment_stays_the_hosts(checkout: Git) -> None:
     host = dict(os.environ)
     seen: list[dict[str, str]] = []
 

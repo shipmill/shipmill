@@ -109,7 +109,9 @@ host's identity (D-14). When `app_id` is unset, the gate launches as it does tod
 `--settings` env.
 
 Only sessions change identity. The gate's own reads (`watch_state.py`, the hold check,
-`claude agents`) keep the host's `gh` login.
+`claude agents`) keep the host's `gh` login. (Replaced by spec 093: with `app_id` set, the
+tick's GitHub reads go as the App with a read-only token; `claude agents` and `gh api user`
+stay the host's.)
 
 ### Tokens
 
@@ -166,7 +168,7 @@ no helpers and no token cache, and prints `would launch as <slug>[bot]`.
 - S-004-9: `shipmill app-token --git-credential get` prints `username=x-access-token` and `password=<token>`, and `store` and `erase` print nothing and exit 0
 - S-004-10: the `gh` helper runs the resolved `gh` with its arguments and `GH_TOKEN` set to the minted token, and when minting fails it exits non-zero without running `gh`; neither helper's file contains a token
 - S-004-11: a launch with `app_id` set prints ` as <slug>[bot]` on the decision line, `--json` reports `identity` as the bot login (or `null` with `app_id` unset), and `--dry-run` checks the key, installation, and permissions, writes no helpers or cache, and prints `would launch as <slug>[bot]`
-- S-004-12: the gate's own GitHub reads (the findings and the hold check) run without the App's token whether `app_id` is set or not
+- S-004-12: dropped in #1654, see S-093-1, S-093-3 (with `app_id` set, the gate's own reads run with the tick's read token, in each read command's environment)
 - S-004-13: `shipmill launchd --app-key <path>` puts `--app-key <path>` in the job's `shipmill gate` arguments
 - S-004-14: `skills/shipmill-setup/SKILL.md`, `docs/install.md`, `docs/design/agent-modes.md`, and `skills/github-ship-watch/SKILL.md` document the App's creation and permissions, `app_id`, the key path and mode, the token cache and helpers, and that the App's bot counts as a bot in the metrics
 
@@ -209,6 +211,6 @@ RSA key, `shipmill --repo` on this checkout):
 - S-004-9: ran `shipmill app-token --git-credential store` and `erase`, each printed nothing and exited 0; `get` by `test_s004_9_get_answers_x_access_token_and_the_token`, passing
 - S-004-10: checked by `test_s004_10_the_gh_helper_runs_gh_with_its_arguments_and_the_minted_token`, `test_s004_10_when_minting_fails_the_gh_helper_exits_non_zero_without_gh`, and `test_s004_10_neither_helper_file_contains_a_token`, which run the written helpers, passing
 - S-004-11: `shipmill gate --dry-run --json` without `app_id` printed `"identity": null`; the bot on the decision line, `would launch as <slug>[bot]`, and a dry run that writes nothing by `test_s004_11_a_launch_as_the_app_names_the_bot` and `test_s004_11_a_dry_run_checks_the_app_and_writes_nothing`, passing
-- S-004-12: checked by `test_s004_12_the_gates_own_reads_keep_the_hosts_environment` and `test_s004_12_with_app_id_unset_the_reads_keep_the_hosts_environment`, passing; `gate()` in `src/shipmill/gate.py` never changes its own environment
+- S-004-12: dropped in #1654, replaced by spec 093; before it, checked by its two tests (renamed to S-093-3's), passing; `gate()` in `src/shipmill/gate.py` never changes its own environment
 - S-004-13: ran `shipmill launchd shipmill/shipmill --print --app-key <relative key>`, whose plist holds `--app-key` and the key's absolute path; and `test_s004_13_launchd_puts_app_key_in_the_gates_arguments`, passing
 - S-004-14: read the four files; `test_s004_14_the_docs_document_the_app` asserts each topic, and the permission table against `PERMISSIONS` plus `OPTIONAL_PERMISSIONS` (D-77), and `test_s004_14_the_metrics_count_the_apps_bot_as_a_bot` that `metrics.py` counts a `Bot` named `<slug>[bot]` as no person, passing
