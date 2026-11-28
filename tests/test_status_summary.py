@@ -115,10 +115,42 @@ def test_s091_2_the_gate_line_names_tick_session_result_and_landed(tmp_path: Pat
     write_tick(state, "LAUNCH")
     save_launch(state / RECORD, Launch("fp", "abcdef1234", NOW, item="NEW #774"))
     assert read_gate_state(state, True, landed).text(NOW).startswith("LAUNCH 4 min ago: session abcdef12 on NEW #774;")
-    write_tick(state, "SESSION_DEAD")
-    assert read_gate_state(state, True, landed).running is not None
+    write_tick(state, "SESSION_DEAD")  # #1668: a reason that names no dead session pairs none
+    unnamed = read_gate_state(state, True, landed)
+    assert unnamed.text(NOW).startswith(f"unread {TICK}: SESSION_DEAD names no dead session")
+    assert unnamed.running is None and unnamed.dead is None
     write_tick(state, "QUIET")
     assert "QUIET 4 min ago: no session runs;" in read_gate_state(state, True, landed).text(NOW)
+
+
+DEAD_REASON = (
+    "session 4bd2a5fd-0000-4000-8000-000000000001 ended 2708 s after its launch;"
+    " its log's last line: 'crashed'; starting another for 1 finding(s); fix: tail -n 20 dead.log"
+)
+
+
+def test_s091_2_a_dead_session_is_never_paired_with_the_one_started_after_it(tmp_path: Path) -> None:
+    """#1668: a SESSION_DEAD tick names the session that died; gate.json names the one the
+    gate started after it, which the line names apart from the dead one"""
+    state = tmp_path / "state"
+    state.mkdir()
+    dead, started = "4bd2a5fd-0000-4000-8000-000000000001", "0c6e63ff-0000-4000-8000-000000000002"
+    record = TickRecord(NOW - dt.timedelta(minutes=5), "SESSION_DEAD", DEAD_REASON, None, None)
+    (state / TICK).write_text(json.dumps(record.record()), encoding="utf-8")
+    save_launch(state / RECORD, Launch("fp", started, NOW - dt.timedelta(minutes=5), item="PRS_OPEN acme/widgets"))
+    found = read_gate_state(state, True, None)
+    assert found.text(NOW).startswith(
+        "SESSION_DEAD 5 min ago: session 4bd2a5fd ended dead,"
+        " then the gate started session 0c6e63ff on PRS_OPEN acme/widgets;"
+    )
+    assert found.record()["dead"] == {"session": dead, "item": None}
+    assert found.record()["running"] == {"session": started, "item": "PRS_OPEN acme/widgets"}
+    # no session followed: the dead one is gate.json's last launch, and nothing runs
+    save_launch(state / RECORD, Launch("fp", dead, NOW - dt.timedelta(minutes=50), item="NEW #3"))
+    found = read_gate_state(state, True, None)
+    assert found.text(NOW).startswith("SESSION_DEAD 5 min ago: session 4bd2a5fd ended dead on NEW #3; no session runs;")
+    assert found.record()["dead"] == {"session": dead, "item": "NEW #3"}
+    assert found.record()["running"] is None
 
 
 def test_s091_3_an_unreadable_state_file_is_its_parts_error(tmp_path: Path) -> None:
@@ -245,6 +277,7 @@ def test_s091_8_json_is_one_object(tmp_path: Path, capsys: pytest.CaptureFixture
         "tick_error": None,
         "running": None,
         "running_error": None,
+        "dead": None,
         "result": None,
         "result_error": None,
         "landed": {"number": 8, "at": "2026-11-25T11:00:00+00:00"},

@@ -41,7 +41,12 @@ worktree of the checkout) and one GitHub read:
   recorded` without the file
 - **A session now:** when the last tick's action is `RUNNING` or `STALLED`, its `running`
   session and item, `session <id8> on <item>`; when it is `LAUNCH` or `SESSION_DEAD`, the
-  session `gate.json` recorded with its item; else `no session runs`. A session id is shown by
+  session `gate.json` recorded with its item; else `no session runs`. A `SESSION_DEAD` tick's
+  dead session is the one its reason names, never `gate.json`'s by default (#1668): when
+  `gate.json` names another, the gate started it after the death, `session <dead8> ended dead,
+  then the gate started session <id8> on <item>`; when it names the dead one, nothing followed,
+  `session <dead8> ended dead on <item>; no session runs`; `--json` carries it as `dead`. A
+  `SESSION_DEAD` reason that names no session is its part's error. A session id is shown by
   its first 8 characters on the text line and in full in `--json`
 - **The last result:** `last-result.json`'s session, item, and age, `last result <ago> ago
   (session <id8> on <item>)`; `no session has ended with a result yet` without the file

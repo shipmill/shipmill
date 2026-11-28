@@ -9,6 +9,7 @@ GATE_PAUSED, and GATE_IDLE rows, which come from the gate's hand-off record, han
 
 import datetime as dt
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -59,6 +60,8 @@ WIDTH = max(len(label) for _, label in LINES)
 RUNS = frozenset({Action.RUNNING.value, Action.STALLED.value})  # tick.json names the session it waits on
 LAUNCHES = frozenset({Action.LAUNCH.value, Action.SESSION_DEAD.value})  # gate.json names the session it started
 SESSION_SHOWN = 8  # a session id's first characters on the text line
+# #1668: a SESSION_DEAD tick's reason opens with the dead session, as gate.py's Dead.summary writes it
+DEAD_NAMED = re.compile(r"session (\S+) ended ")
 
 
 # S-094-13: the finer holders of spec 094 count on the four lines; a person, another repo, or a
@@ -133,6 +136,7 @@ class GateState:
     result: LastResult | None = None
     result_error: str | None = None
     landed: Landed | None = None
+    dead: Session | None = None  # #1668: the session a SESSION_DEAD tick names, with its item when gate.json's
 
     def text(self, now: dt.datetime) -> str:
         if not self.configured:
@@ -149,6 +153,12 @@ class GateState:
             running = "no session runs"
         else:
             running = f"session {self.running.session[:SESSION_SHOWN]} on {self.running.item or 'item not recorded'}"
+        if self.dead is not None:  # #1668: the dead session by its own id, apart from the one started after it
+            died = f"session {self.dead.session[:SESSION_SHOWN]} ended dead"
+            if self.running is not None:
+                running = f"{died}, then the gate started {running}"
+            else:
+                running = f"{died}{'' if self.dead.item is None else f' on {self.dead.item}'}; {running}"
         if self.result_error is not None:
             result = f"unread {LAST_RESULT}: {self.result_error}"
         elif self.result is None:
@@ -174,6 +184,7 @@ class GateState:
             "tick_error": self.tick_error,
             "running": None if self.running is None else self.running.record(),
             "running_error": self.running_error,
+            "dead": None if self.dead is None else self.dead.record(),
             "result": None if self.result is None else self.result.record(),
             "result_error": self.result_error,
             "landed": None if self.landed is None else self.landed.record(),
@@ -182,14 +193,22 @@ class GateState:
 
 def read_gate_state(state: Path, configured: bool, landed: Landed | None) -> GateState:
     """S-091-2, S-091-3: tick.json, the running session (tick.json's, or gate.json's for a tick
-    that launched one), and last-result.json, each file's error its own part's (D-55)"""
+    that launched one), and last-result.json, each file's error its own part's (D-55). A
+    SESSION_DEAD tick's dead session is the one its reason names (#1668): gate.json's launch
+    runs only when it is another, the one the gate started after it"""
     if not configured:
         return GateState(False)
-    tick = tick_error = running = running_error = result = result_error = None
+    tick = tick_error = running = running_error = result = result_error = dead = None
     try:
         tick = load_tick(state / TICK)
     except CHECK_FAILURES as exc:
         tick_error = first_line(exc)
+    named = None
+    if tick is not None and tick.action == Action.SESSION_DEAD.value:
+        named = DEAD_NAMED.match(tick.reason)
+        if named is None:  # never pair gate.json's session with a death nobody is named for
+            tick_error = f"{Action.SESSION_DEAD.value} names no dead session in its reason: {tick.reason[:100]!r}"
+            tick = None
     if tick is not None and tick.action in RUNS and tick.running is not None:
         running = Session(tick.running.session, tick.running.item)
     elif tick is not None and tick.action in LAUNCHES:
@@ -198,11 +217,15 @@ def read_gate_state(state: Path, configured: bool, landed: Landed | None) -> Gat
             running = None if launch is None else Session(launch.session, launch.item)
         except CHECK_FAILURES as exc:
             running_error = first_line(exc)
+    if named is not None and running is not None and running.session == named.group(1):
+        dead, running = running, None  # no session followed it (DEAD_STREAK held its item)
+    elif named is not None:
+        dead = Session(named.group(1), None)
     try:
         result = load_last_result(state / LAST_RESULT)
     except CHECK_FAILURES as exc:
         result_error = first_line(exc)
-    return GateState(True, tick, tick_error, running, running_error, result, result_error, landed)
+    return GateState(True, tick, tick_error, running, running_error, result, result_error, landed, dead)
 
 
 LANDED_QUERY = (
