@@ -5,7 +5,8 @@ recent releases, the environments shipmill operate runs, and the issue intake.
 Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN]
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
-                      [--role NAME=FILLER[,FILLER...] ...] [--no-host] [--no-trends] [--item N]
+                      [--role NAME=FILLER[,FILLER...] ...] [--no-host] [--no-trends]
+                      [--item N | --open-items]
        watch_state.py <owner/repo> --host {sessions,shipmill} [--host-wide] [--repo-dir PATH] [--json]
        watch_state.py <owner/repo> (--tier N [--known FILE] | --sweep) [--repo-dir PATH] [--json] ...
 
@@ -7428,6 +7429,12 @@ def arguments() -> argparse.ArgumentParser:
         help="print only the full report's rows `shipmill status --item N` reads, skipping the reads that"
         " can't give one (#1469); N is an issue or pull request number, or a goal id, G-3 (spec 106)",
     )
+    parser.add_argument(
+        "--open-items",
+        action="store_true",
+        help="print only the full report's rows `shipmill status --summary` reads: --item's sections, for"
+        " every open item at once, without the rows only an --item read prints (#1855)",
+    )
     return parser
 
 
@@ -7679,7 +7686,10 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
     (owner/repo#N). BOT_STALLED, whose
     reason is the planner's, is read only with a release due. The triage read, the longest,
     and an intake read of the heads alone start before the default branch's read and fetch,
-    which neither needs (#1831)"""
+    which neither needs (#1831). With --open-items (#1855) the same sections are read for every
+    open item at once, as `shipmill status --summary` explains each: the intake reads the plans
+    as the full report does, and none of the rows only an --item read prints is added (the held
+    plans, the goals', plans', and project heads' states), so every row is the full report's"""
     policy = policy_file(repo_dir)
     text = None if policy is None else (repo_dir / policy).read_text(encoding="utf-8")
     read = None if policy is None or text is None else config(text, policy, args.incident_label)
@@ -7724,7 +7734,8 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
         # requests unread (D-16), so neither starts before the intake's lines say it's read
         triage_read = None if args.trusted_only else pool.submit(triage)
         # #1831: with --trusted-only the plans' read is what keeps an outsider's plan in UNTRUSTED (D-16)
-        projects_only = planned and not args.trusted_only and not item_plans(args.repo, args.item)
+        every = args.item is None  # --open-items: every open item's rows, the full report's alone
+        projects_only = planned and not args.trusted_only and not every and not item_plans(args.repo, args.item)
         # the heads alone start now; the plans' read runs retro.py, which checks the checkout
         # against origin/HEAD, so it starts after the fetch, as in the full report
         early = pool.submit(intake_lines, True) if projects_only else None
@@ -7780,10 +7791,10 @@ def item_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime) -> lis
             plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
             feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
         rows += plans.rows + feedback.rows
-        if planned and not isinstance(lines, PypiWait):  # S-098-13: a held plan's condition
-            rows += plans_held(lines, args.repo, args.bot_login, args.trusted_only)
+        if planned and not isinstance(lines, PypiWait):  # S-098-13: a held plan's condition, in an --item read only
+            rows += [] if every else plans_held(lines, args.repo, args.bot_login, args.trusted_only)
             rows += plans_filed(lines, args.repo, args.bot_login, args.trusted_only)  # #1724
-            rows += item_states(lines, args.repo, args.bot_login, args.trusted_only)  # S-106-25
+            rows += [] if every else item_states(lines, args.repo, args.bot_login, args.trusted_only)  # S-106-25
         if not (isinstance(lines, PypiWait) and args.trusted_only):
             code, triaged = triage_read.result() if triage_read is not None else triage()
             directions = triage_directions(triaged) if table is not None else frozenset()
@@ -7831,6 +7842,8 @@ def main() -> int:
         parser.error("--no-trends goes with the full report: --tier, --sweep, and --host make no trends read")
     if args.item is not None and (args.tier is not None or args.sweep or args.host is not None):
         parser.error("--item reads the full report's rows: it goes without --tier, --sweep, and --host")
+    if args.open_items and (args.item is not None or args.tier is not None or args.sweep or args.host is not None):
+        parser.error("--open-items reads the full report's rows: it goes without --item, --tier, --sweep, and --host")
     if "/" not in args.repo:
         parser.error("repo must be owner/name")
     if not 1 <= args.releases <= 20:
@@ -7852,6 +7865,8 @@ def main() -> int:
         rows = tier_rows(args.tier, args, repo_dir, known, now)
     elif args.item is not None:
         rows = [r for r in item_rows(args, repo_dir, now) if item_row(r, args.item)]
+    elif args.open_items:  # #1855: every row item_rows reads is the full report's
+        rows = item_rows(args, repo_dir, now)
     else:
         rows = report_rows(args, repo_dir, now)
     for row in ordered(rows):

@@ -984,13 +984,15 @@ def watch_command(
     sweep: bool = False,
     known: Path | None = None,
     item: int | str | None = None,
+    open_items: bool = False,
 ) -> list[str]:
     """The gate reads JSON lines; `shipmill status` prints the table unless asked (S-008-7).
     Without host the host's sessions and shipmill rows are left out, for status's picture to
     read each on its own (#745). The gate's walk reads one tier, given what its change check
     read as known, or the sweep (spec 046); status passes neither and reads every section,
     and `status --item` its item, the rows it can be named in alone (#1469): a number, or a
-    goal id (S-106-25)"""
+    goal id (S-106-25); `status --summary` the sections every open item's rows come from,
+    open_items (#1855)"""
     script = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
     return [
         sys.executable,
@@ -1004,6 +1006,7 @@ def watch_command(
         *(["--known", str(known)] if known is not None else []),
         *(["--sweep"] if sweep else []),
         *([] if item is None else ["--item", str(item)]),
+        *(["--open-items"] if open_items else []),
         *read.flags(),
     ]
 
