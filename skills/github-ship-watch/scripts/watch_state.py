@@ -293,7 +293,27 @@ Intake (github-issue-triage's triage_state.py):
                   --item` and queue read what such a plan waits on from it. Report-only,
                   never an action or an agent's, and in no --tier or --sweep read; the
                   PLANS row still lists no filed plan (S-096-13)
-  PLAN_HELD      in an --item read only (spec 098, S-098-13), from the same run: the
+  GOALS           from the same run (spec 110), in the full report only: each goal's
+                  measure reading from its "goal-report" line, in the direction's order,
+                  `G-n <status>`, ` (<value_text>)` when it has one, `, <K> weeks` when
+                  met_weeks is above 0, `, <state>` (written, planned, overdue, met,
+                  dropped) from the goal's GOAL_* row for a goal of kind goal, and
+                  `, stalled <N> weeks` when stalled, joined by "; ". Report-only, never an
+                  action or an agent's, and in no --tier or --sweep read. A goal-report
+                  line with a missing key, a status outside met, not met, no data, and no
+                  measure, a goal id that isn't G-<n>, or a met_weeks or weeks_unserved
+                  that isn't a non-negative integer stops the watch (exit 2)
+  DIRECTION_DUE   from the same run (spec 110): each goal due for a direction proposal,
+                  `G-n met for 4 weeks` (a measure line met 4 weeks in a row) or `G-n
+                  stalled for 3 weeks` (a goal of kind goal or of no kind that stalled; a
+                  measure never), once each, as met when both; none for a goal the
+                  direction marks met or dropped. A goal is left out while an issue titled
+                  either `Direction: G-n met for 4 weeks` or `Direction: G-n stalled for 3
+                  weeks`, opened by an OWNER, MEMBER, or COLLABORATOR or the --bot-login,
+                  is open or closed as not planned: the titles are read in one gh api
+                  search/issues per read, and only when a goal is due. An action and an
+                  agent's: the session opens each goal's Direction issue
+  PLAN_HELD     in an --item read only (spec 098, S-098-13), from the same run: the
                   plan issues intake_state.py reads PLAN_HELD, each `#N until <condition>`
                   as its hold names it, trusted as PLAN_OPEN; `shipmill status --item`
                   reads a held plan's condition from it. The full report lists no held
@@ -572,7 +592,7 @@ deployments read GitHub refuses the App, the DEPLOYMENTS_FORBIDDEN row (#973).
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, DIRECTION_PENDING, UPSTREAM_DUE, VETOED,
-SPEC_DUE, and FEEDBACK_DUE but under intake = "observe"; a BASE_RED row by its reading and
+SPEC_DUE, DIRECTION_DUE, and FEEDBACK_DUE but under intake = "observe"; a BASE_RED row by its reading and
 [autonomy] revert, above): the rows
 shipmill gate starts a
 session for. A waiting
@@ -615,7 +635,7 @@ NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MIS
 GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
 CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, MILESTONE_RELEASED,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, LAND_DUE, CLASS_CONFLICT,
-FIXED_DATE_AT_RISK, FIXED_DATE_NO_DATE, SPEC_DUE, BASE_RED, or FEEDBACK_DUE (not under intake =
+FIXED_DATE_AT_RISK, FIXED_DATE_NO_DATE, SPEC_DUE, DIRECTION_DUE, BASE_RED, or FEEDBACK_DUE (not under intake =
 "observe") row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
 milestones`, or a failing intake_state.py; a `shipmill plan` failing with its own
@@ -645,21 +665,21 @@ The gate walks seven tiers in order and stops at the first item no
 session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BASE_RED, BOT_FAILED, NOT_PUBLISHED,
 WORK_BRANCH_STALE, BOT_STALLED; 3 LAND_DUE, PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
 UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS,
-SPEC_DUE, FEEDBACK_DUE (D-69 retired tier 8, UNANNOUNCED). --tier N prints that tier's rows, and NEEDS_DECISION
-in tiers 3 and 4, where the gate's headless notifications read it; its ISSUES rows are one
-per triage state, `STATE #N ...`. Tier 2 reads BASE_RED first, from base_red.py only when
---known's base_read is true or absent (spec 079: the gate sets it when the default head's
-check rollup fails or its last reading wasn't GREEN), reads NOT_PUBLISHED for the newest tag
-alone, and leaves BOT_STALLED to the sweep; tier 3 reads the open pull requests and one batched GraphQL
-read of the comments of those labelled needs-decision or decided, and the land window's queue
-as the full report does; tier 4 runs triage_state.py --label needs-decision
---label decided, less a DECIDED read from a relay; tier 6 runs triage_state.py on every open
-issue, and gives its DECIDED read from a relay with the label off, then fetches the landing
-branch and gives SPEC_UNSPLIT (spec 053), read on every tier 6 read, not on a sweep: a spec
-merging or an issue changing is a change the gate's check sees; tiers 5 and 7 run their
-sections whole. --sweep prints the timed sections' rows, read whole: BOT_STALLED,
-UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, PLANS, SPEC_DUE, and FEEDBACK_DUE
-(FEEDBACK_DUE only under intake = "propose"). --known FILE (with --tier)
+DIRECTION_DUE, SPEC_DUE, FEEDBACK_DUE (D-69 retired tier 8, UNANNOUNCED). --tier N prints that
+tier's rows, and NEEDS_DECISION in tiers 3 and 4, where the gate's headless notifications
+read it; its ISSUES rows are one per triage state, `STATE #N ...`. Tier 2 reads BASE_RED
+first, from base_red.py only when --known's base_read is true or absent (spec 079: the gate
+sets it when the default head's check rollup fails or its last reading wasn't GREEN), reads
+NOT_PUBLISHED for the newest tag alone, and leaves BOT_STALLED to the sweep; tier 3 reads the
+open pull requests and one batched GraphQL read of the comments of those labelled
+needs-decision or decided, and the land window's queue as the full report does; tier 4 runs
+triage_state.py --label needs-decision --label decided, less a DECIDED read from a relay;
+tier 6 runs triage_state.py on every open issue, and gives its DECIDED read from a relay with
+the label off, then fetches the landing branch and gives SPEC_UNSPLIT (spec 053), read on
+every tier 6 read, not on a sweep: a spec merging or an issue changing is a change the gate's
+check sees; tiers 5 and 7 run their sections whole. --sweep prints the timed sections' rows, read whole: BOT_STALLED,
+UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, PLANS, DIRECTION_DUE, SPEC_DUE, and
+FEEDBACK_DUE (FEEDBACK_DUE only under intake = "propose"). --known FILE (with --tier)
 holds what the gate's change check read already: GitHub's default branch, whether a hold is
 open, the open pull requests, the open incidents, and the newest workflow runs, so tiers 1
 and 3 make no gh read of them again, and base_read or not; a workflow none of those runs
@@ -773,6 +793,22 @@ HORIZON = re.compile(r"[\w.+-]+")
 GOAL_STATE = "GOAL_STATE"
 PLAN_STATE = "PLAN_STATE"
 PROJECT_STATE = "PROJECT_STATE"
+# Spec 110: intake_state.py's --plans --goals "goal-report" lines, one per goal of the direction
+# from spec 027's report, the full report's GOALS row (report-only) and the DIRECTION_DUE action
+GOALS = "GOALS"
+DIRECTION_DUE = "DIRECTION_DUE"
+GOAL_REPORT_KEYS = frozenset(
+    {"kind", "goal", "goal_kind", "status", "value_text", "met_weeks", "stalled", "weeks_unserved", "ended"}
+)
+GOAL_REPORT_STATUSES = frozenset({"met", "not met", "no data", "no measure"})
+GOAL_MEASURED = frozenset({"met", "not met", "no data"})  # a goal with a measure line (spec 027)
+GOAL_KINDS = frozenset({"goal", "measure"})  # spec 105's kinds, or null
+GOAL_ENDED = frozenset({"met", "dropped"})  # spec 106's goal state in the direction, or null
+# spec 027's thresholds, as intake_state.py passes them to its report: the N of a Direction title
+MET_WEEKS = 4
+STALLED_WEEKS = 3
+# the Direction issues a retro or a DIRECTION_DUE session opens, read in one search per sweep
+DIRECTION_SEARCH = 'in:title "Direction:"'
 # a closing head whose check issue is closed, as intake_state.py --projects notes it
 CHECKED_NOTE = re.compile(r"check #[1-9]\d* closed; the head is open")
 # intake_state.py's PLAN_WAITS note while a plan of the product is overdue (S-106-9)
@@ -914,6 +950,7 @@ ACTION = {
     "FIXED_DATE_NO_DATE",
     "SPEC_DUE",  # spec 074: accepted opportunities the spec gate hasn't taken
     "FEEDBACK_DUE",  # spec 074: handed-over requests, report-only under [autonomy] intake = "observe"
+    "DIRECTION_DUE",  # spec 110: a goal met for 4 weeks or stalled, its Direction proposal not yet open
     BASE_RED,  # spec 079: a red default branch, an agent's row by its reading and [autonomy] revert
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
@@ -934,6 +971,7 @@ AGENT = {
     "AGENT_DRAFT",
     "SPEC_DUE",
     "FEEDBACK_DUE",
+    "DIRECTION_DUE",  # spec 110: a session opens each due goal's Direction proposal
 }
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
@@ -4619,6 +4657,149 @@ def item_states(text: str, repo: str, bot_login: str | None = None, trusted_only
     return [Row(state, repo, "; ".join(parts)) for state, parts in found_rows if parts]
 
 
+# -- each goal's measure reading and the direction proposals (spec 110) ----------------------
+
+
+def goal_report_line(line: str) -> dict[str, Any] | None:
+    """S-110-5: one of intake_state.py's --json lines when it is a goal's measure reading (kind
+    "goal-report"), checked; None for any other line. A missing key, a status outside spec
+    027's four, a goal id GOAL_ID doesn't match, a met_weeks or weeks_unserved that isn't a
+    non-negative integer, or any other value intake_state.py could not have printed stops the
+    watch, naming the line"""
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: intake_state.py printed {line[:200]!r}, not JSON: {exc}") from None
+    if not isinstance(row, dict) or row.get("kind") != "goal-report":
+        return None
+    goal, text = row.get("goal"), row.get("value_text")
+    well_formed = set(row) >= GOAL_REPORT_KEYS
+    well_formed &= isinstance(goal, str) and GOAL_ID.fullmatch(goal) is not None
+    well_formed &= row.get("goal_kind") is None or row.get("goal_kind") in GOAL_KINDS
+    well_formed &= row.get("status") in GOAL_REPORT_STATUSES
+    well_formed &= text is None or (isinstance(text, str) and bool(text) and "\n" not in text)
+    well_formed &= a_count(row.get("met_weeks")) and a_count(row.get("weeks_unserved"))
+    well_formed &= isinstance(row.get("stalled"), bool)
+    well_formed &= row.get("ended") is None or row.get("ended") in GOAL_ENDED
+    if not well_formed:
+        raise Refused(f"error: intake_state.py printed a malformed goal-report line: {line[:200]!r}")
+    return row
+
+
+def goal_reports(text: str) -> list[dict[str, Any]]:
+    """The run's goal-report lines, in the direction's order, each checked (S-110-5)"""
+    return [row for row in map(goal_report_line, text.splitlines()) if row is not None]
+
+
+def goals_row(text: str, repo: str) -> list[Row]:
+    """S-110-3: GOALS from intake_state.py --plans --goals --json's lines, one `; `-separated
+    entry per goal in the direction's order: `G-n <status>`, ` (<value_text>)` when it has one,
+    `, <K> weeks` when met_weeks is above 0, `, <state>` from the goal's spec 106 row in the
+    same run for a goal of kind goal, and `, stalled <N> weeks` when stalled, N its
+    weeks_unserved. Report-only (S-110-4): no action, no agent's, no fix, and in no --tier or
+    --sweep read; none without a goal-report line. Goal ids, statuses, and metrics.py's value
+    text only, never an issue's text (D-16)"""
+    states: dict[str, str] = {}
+    for line in text.splitlines():
+        found = goal_line(line)
+        if found is not None and found["kind"] == "goal-state" and found["goal"] is not None:
+            states[found["goal"]] = found["state"].removeprefix("GOAL_").lower()
+    entries: list[str] = []
+    for report in goal_reports(text):
+        entry = f"{report['goal']} {report['status']}"
+        entry += "" if report["value_text"] is None else f" ({report['value_text']})"
+        entry += f", {report['met_weeks']} weeks" if report["met_weeks"] > 0 else ""
+        if report["goal_kind"] == "goal":
+            state = states.get(report["goal"])
+            if state is None:  # spec 106 gives every goal of kind goal its row in the same run
+                raise Refused(f"error: intake_state.py printed no goal-state row for {report['goal']}, a goal")
+            entry += f", {state}"
+        entry += f", stalled {report['weeks_unserved']} weeks" if report["stalled"] else ""
+        entries.append(entry)
+    return [Row(GOALS, repo, "; ".join(entries))] if entries else []
+
+
+def due_goals(text: str) -> list[tuple[str, str]]:
+    """S-110-6: each goal due for a direction proposal, in the direction's order, as (goal,
+    reason): `met for 4 weeks` when it has a measure line whose met_weeks reached MET_WEEKS,
+    else `stalled for 3 weeks` when it is of kind goal or of no kind and stalled; a standing
+    measure is never due as stalled, a goal whose ended is met or dropped is never due, and a
+    goal met and stalled at once is due once, as met (the retro's step 4)"""
+    due: list[tuple[str, str]] = []
+    for report in goal_reports(text):
+        if report["ended"] is not None:
+            continue
+        if report["status"] in GOAL_MEASURED and report["met_weeks"] >= MET_WEEKS:
+            due.append((report["goal"], f"met for {MET_WEEKS} weeks"))
+        elif report["stalled"] and report["goal_kind"] != "measure":
+            due.append((report["goal"], f"stalled for {STALLED_WEEKS} weeks"))
+    return due
+
+
+def direction_titles(goal: str) -> tuple[str, str]:
+    """A goal's two proposal titles, as the retro's step 4 opens them"""
+    return f"Direction: {goal} met for {MET_WEEKS} weeks", f"Direction: {goal} stalled for {STALLED_WEEKS} weeks"
+
+
+def title_key(title: str) -> str:
+    """A title without case, punctuation, or extra spacing: retro.py's normal, which dedupe matches on"""
+    return " ".join(re.sub(r"[\W_]+", " ", title.casefold()).split())
+
+
+def proposed_titles(repo: str, bot_login: str | None, read: Callable[[list[str]], str] = run) -> frozenset[str]:
+    """S-110-7: the titles (title_key's) of the Direction issues that count as proposed, from
+    one search of the repo's issues titled Direction:, open or closed: an open one, or one
+    closed as not planned (a decline, D-10), as retro.py dedupe reads DUPLICATE and DECLINED,
+    opened by an OWNER, MEMBER, or COLLABORATOR or by the --bot-login (D-16). One by anyone
+    else, or closed as completed, counts for nothing"""
+    query = f"repo:{repo} is:issue {DIRECTION_SEARCH}"
+    jq = ".items[] | {title, state, state_reason, author_association, login: .user.login}"
+    cmd = ["gh", "api", "-X", "GET", "search/issues", "-f", f"q={query}", "-f", "per_page=100", "--paginate"]
+    found: set[str] = set()
+    for line in read([*cmd, "--jq", jq]).splitlines():
+        try:
+            issue = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise Refused(f"error: gh api search/issues printed {line[:200]!r}, not JSON: {exc}") from None
+        if not isinstance(issue, dict) or not isinstance(issue.get("title"), str):
+            raise Refused(f"error: gh api search/issues printed {line[:200]!r}, not an issue")
+        login = issue.get("login")
+        ours = bot_login is not None and isinstance(login, str) and login.lower() == bot_login.lower()
+        if not (ours or issue.get("author_association") in TRUSTED_ASSOCIATIONS):
+            continue
+        if issue.get("state") == "open" or issue.get("state_reason") == "not_planned":
+            found.add(title_key(issue["title"]))
+    return frozenset(found)
+
+
+def direction_due_rows(
+    text: str, repo: str, bot_login: str | None = None, read: Callable[[list[str]], str] = run
+) -> list[Row]:
+    """S-110-6, S-110-7: DIRECTION_DUE, `G-1 met for 4 weeks; G-6 stalled for 3 weeks`, each due
+    goal (due_goals) but one already proposed: either of its two titles (direction_titles)
+    among proposed_titles, read once and only when a goal is due. An action and an agent's: the
+    session opens each goal's Direction issue (spec 110). Goal ids only (D-16), so the row is
+    the same with --trusted-only"""
+    due = due_goals(text)
+    if not due:
+        return []
+    proposed = proposed_titles(repo, bot_login, read)
+    listed = [
+        f"{goal} {reason}" for goal, reason in due if not any(title_key(t) in proposed for t in direction_titles(goal))
+    ]
+    return [Row(DIRECTION_DUE, repo, "; ".join(listed), skill_fix("github-ship-watch", repo))] if listed else []
+
+
+def measure_rows(
+    text: str, repo: str, bot_login: str | None, host: bool, read: Callable[[list[str]], str] = run
+) -> list[Row]:
+    """Spec 110's rows from the one intake_state.py --plans --goals run of a checkout with
+    docs/product.md: GOALS in the full report alone (host), never in a --tier or --sweep read
+    (S-110-4), then DIRECTION_DUE in every read, so the sweep holds it for tier 7 (S-110-8)"""
+    goals = goals_row(text, repo) if host else []
+    return goals + direction_due_rows(text, repo, bot_login, read)
+
+
 # -- handed-over requests and accepted opportunities (spec 074) ------------------------------
 
 
@@ -6674,9 +6855,19 @@ TIERS: dict[int, tuple[str, ...]] = {
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: ("ISSUES",),
     # SPEC_DUE and FEEDBACK_DUE: accepted opportunities and handed-over requests (spec 074)
-    7: ("DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE"),
+    # DIRECTION_DUE: a goal due for a direction proposal, right after PLANS (spec 110)
+    7: ("DIRECTION_PENDING", "PLANS", DIRECTION_DUE, "SPEC_DUE", "FEEDBACK_DUE"),
 }
-SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE")
+SWEPT = (
+    "BOT_STALLED",
+    "UPGRADE_PENDING",
+    "UPSTREAM_DUE",
+    "DIRECTION_PENDING",
+    "PLANS",
+    DIRECTION_DUE,
+    "SPEC_DUE",
+    "FEEDBACK_DUE",
+)
 DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; VETOED has its own row
 ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
@@ -7543,6 +7734,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
     feedback = Feedback([], frozenset())
     # #1680: the plans waiting on the maintainer's answer, and #1724's unlinked filed plans, report-only
     waiting: list[Row] = []
+    goals: list[Row] = []  # spec 110: GOALS, report-only, and DIRECTION_DUE, from the same run
     unplanned = None  # PyPI's wait for the plans' pinned shipmill (#597)
     planned = (repo_dir / DIRECTION).is_file()  # a goal's plan needs goals (spec 028)
     try:  # one intake_state.py run per repo, its plans only with goals (spec 074)
@@ -7552,10 +7744,12 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
         waiting = plans_waiting(lines, args.repo, args.bot_login, args.trusted_only) if planned else []
         waiting += plans_filed(lines, args.repo, args.bot_login, args.trusted_only) if planned else []  # #1724
+        goals = measure_rows(lines, args.repo, args.bot_login, host) if planned else []
         feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
     except PypiWait as wait:
         unplanned = wait
     rows += plans.rows
+    rows += goals
     rows += waiting if host else []  # a --tier or --sweep read prints no report-only row
     # a --tier or --sweep read prints no report-only row: FEEDBACK_DUE under intake = "observe"
     rows += [r for r in feedback.rows if host or not r.report_only]

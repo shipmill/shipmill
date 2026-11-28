@@ -377,7 +377,7 @@ def test_s074_7_the_full_report_lists_an_outsiders_request_in_untrusted(tmp_path
 
 
 def test_s074_8_tier_7_and_the_swept_sections_match_in_both_files(ws: ModuleType) -> None:
-    tier = ("DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE")
+    tier = ("DIRECTION_PENDING", "PLANS", "DIRECTION_DUE", "SPEC_DUE", "FEEDBACK_DUE")  # S-110-8: after PLANS
     assert ws.TIERS[7] == gate_walk.TIERS[7] == tier
     assert {"SPEC_DUE", "FEEDBACK_DUE"} <= set(ws.SWEPT) and {"SPEC_DUE", "FEEDBACK_DUE"} <= gate_walk.SWEPT
     assert set(ws.SWEPT) == gate_walk.SWEPT

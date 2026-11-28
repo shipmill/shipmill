@@ -1036,8 +1036,10 @@ AGENT_ROWS = [
     "AGENT_DRAFT",  # #914 (D-67)
     "SPEC_DUE",  # spec 074
     "FEEDBACK_DUE",
+    "DIRECTION_DUE",  # spec 110
 ]
 REPORT_ROWS = [
+    "GOALS",  # spec 110
     "DIRECTION_MISSING",
     "PROMOTION_DUE",
     "UNHEALTHY",
@@ -2003,6 +2005,15 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.plans_rows(
             json.dumps({"goal": "G-1", "kind": "goal", "number": None, "state": "PLAN_DUE", "title": TITLE}), REPO
         ).rows,
+        # spec 110: a goal whose measure was met 4 weeks in a row, no proposal open
+        *ws.direction_due_rows(
+            json.dumps(
+                {"goal": "G-1", "kind": "goal-report", "goal_kind": None, "status": "met", "value_text": "1"}
+                | {"met_weeks": 4, "stalled": False, "weeks_unserved": 0, "ended": None}
+            ),
+            REPO,
+            read=lambda cmd: "",
+        ),
         # spec 074: an accepted opportunity and a request handed over two days ago
         *ws.feedback_rows(
             "\n".join(
@@ -2080,6 +2091,7 @@ FIXES = {
     "PLANS": ["/shipmill:product-intake o/r"],
     "SPEC_DUE": ["/shipmill:github-issue-triage o/r"],  # spec 074
     "FEEDBACK_DUE": ["/shipmill:product-intake o/r"],
+    "DIRECTION_DUE": ["/shipmill:github-ship-watch o/r"],  # spec 110
     "OPERATE_FAILED": ["gh run rerun 5 --failed -R o/r"],
     "UNHEALTHY": [
         "operate rolls staging back after [operate] rollback_after failures; check its health check if it persists"
