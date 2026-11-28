@@ -62,7 +62,8 @@ def test_s110_9_the_body_cites_the_reading_and_the_maintainers_commands() -> Non
     ):
         assert command in body, command
     assert "says the direction changes only by the maintainer" in body
-    assert re.search(r"`uvx shipmill==[\d.]+ gh issue create --title \"<title>\" --body-file <file>`", body)
+    assert '`shipmill gh issue create --title "<title>" --body-file <file>`' in body
+    assert "uvx shipmill==" not in STEP  # the file's one pinned mention stays the release stamp's only match
 
 
 def test_s110_9_the_step_writes_nothing_else() -> None:
