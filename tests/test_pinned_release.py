@@ -313,6 +313,9 @@ def test_s031_4_watch_state_runs_every_command_pinned_and_keeps_tool(ws: ModuleT
 
 
 def test_s031_4_retro_and_intake_run_the_pinned_cli_too(tmp_path: Path) -> None:
+    # pinned_shipmill imports watch_state from beside retro.py when called, after load has
+    # taken WATCH off sys.path again: load it here, so the test passes run alone (#1844)
+    load("watch_state", WATCH / "watch_state.py")
     retro = load("retro", WATCH / "retro.py", WATCH)
     intake = load("intake_state", ROOT / "skills" / "product-intake" / "scripts" / "intake_state.py")
     assert retro.pinned_shipmill() == ("uvx", f"shipmill=={version()}")
