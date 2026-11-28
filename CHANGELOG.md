@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.196.3] - 2026-11-28
+
+### Fixed
+
+- `retro.py gather --goals` and `--decisions` read the direction, the specs, and the config at the checkout's `origin/HEAD` commit, so a shared main copy that lags a fetch no longer fails `status` with exit 2 (#1876)
+
 ## [0.196.2] - 2026-11-28
 
 ### Fixed
@@ -3434,7 +3440,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.3...HEAD
+[0.196.3]: https://github.com/shipmill/shipmill/compare/v0.196.2...v0.196.3
 [0.196.2]: https://github.com/shipmill/shipmill/compare/v0.196.1...v0.196.2
 [0.196.1]: https://github.com/shipmill/shipmill/compare/v0.196.0...v0.196.1
 [0.196.0]: https://github.com/shipmill/shipmill/compare/v0.195.0...v0.196.0
