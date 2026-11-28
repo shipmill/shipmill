@@ -311,6 +311,7 @@ def test_the_gate_reads_the_rows_watch_state_prints() -> None:
         "VETOED",  # S-030-16: a session takes up an unanswered veto
         "SPEC_DUE",  # S-074-8: triage's spec gate takes up an accepted opportunity
         "FEEDBACK_DUE",  # S-074-8: an intake pass groups the requests handed over
+        "DIRECTION_DUE",  # S-110-8: a session opens a due goal's Direction proposal
     }  # #914: AGENT_DRAFT is land-stage work, so like PRS_OPEN it starts nothing under observe
 
 

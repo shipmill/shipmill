@@ -205,6 +205,7 @@ ACTION = frozenset(
         "FIXED_DATE_NO_DATE",
         "SPEC_DUE",  # spec 074: accepted opportunities for the spec gate
         "FEEDBACK_DUE",  # spec 074: handed-over requests for an intake pass
+        "DIRECTION_DUE",  # spec 110: a goal due for a direction proposal
         "BASE_RED",  # spec 079: a red default branch
     }
 )

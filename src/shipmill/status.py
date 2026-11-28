@@ -185,6 +185,8 @@ OTHER_ROWS = frozenset(
         "BASE_RED",  # an action: the default branch reads red, with its repair or question
         "DIRECTION_MISSING",  # an action: the direction's answer is the maintainer's (D-34)
         "DIRECTION_PENDING",  # an action: a session asks for the direction or takes up its answer
+        "DIRECTION_DUE",  # an action: a session opens a due goal's Direction proposal (spec 110)
+        "GOALS",  # report-only: each goal's measure reading beside its state (spec 110)
         "LAND_DUE",  # an action: the land window is open for a queued pull request
         "UPSTREAM_DUE",  # an action: the coordinator routes, closes, or checks upstream reports
         "UPSTREAM_ASKED",  # an action: an upstream report's question waits on the maintainer
