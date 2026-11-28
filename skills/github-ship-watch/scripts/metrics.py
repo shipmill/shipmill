@@ -1527,6 +1527,7 @@ class Decided:
     people: list[str]
     credited: bool
     written: bool
+    sha: str | None
 
 
 def decided_merges(data: Data, window: Window) -> tuple[int, list[Decided]]:
@@ -1538,13 +1539,20 @@ def decided_merges(data: Data, window: Window) -> tuple[int, list[Decided]]:
         people = [] if decision is None else deciders(decision, data.bots)
         if decision is not None and people:
             found.append(
-                Decided(pr["number"], people, credited(decision, people), written_as_decider(decision, people))
+                Decided(
+                    pr["number"],
+                    people,
+                    credited(decision, people),
+                    written_as_decider(decision, people),
+                    (pr.get("mergeCommit") or {}).get("oid"),
+                )
             )
     return len(merged), found
 
 
 def decided_extra(merges: int, found: Sequence[Decided]) -> dict[str, Any]:
-    """The counts both measures carry, and per decider login, sorted, the PRs they decided"""
+    """The counts both measures carry, per decider login, sorted, the PRs they decided, and
+    each decided PR, sorted by number, with its merge commit and both reads"""
     people: dict[str, dict[str, Any]] = {}
     for d in found:
         for login in d.people:
@@ -1560,6 +1568,10 @@ def decided_extra(merges: int, found: Sequence[Decided]) -> dict[str, Any]:
         "credited": sum(d.credited for d in found),
         "written_as_decider": sum(d.written for d in found),
         "people": [people[key] for key in sorted(people)],
+        "pulls": [
+            {"number": d.number, "sha": d.sha, "credited": d.credited, "written_as_decider": d.written}
+            for d in sorted(found, key=lambda d: d.number)
+        ],
     }
 
 

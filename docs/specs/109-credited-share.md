@@ -66,7 +66,11 @@ The measures:
 - Each measure's JSON carries `decided`, `credited`, `written_as_decider`, and `merges`, and a
   `people` list, one entry per decider login, sorted by login: `{"login", "decided",
   "credited", "written_as_decider"}`, counted over the pull requests that person decided, so
-  each person's own share can be read
+  each person's own share can be read, and a `pulls` list, one entry per decided pull request
+  merged in the window, sorted by number: `{"number", "sha", "credited",
+  "written_as_decider"}`, its sha the merge commit's (null when GitHub reads none) and the two
+  reads booleans, so a checker can compare the counts with GitHub merge by merge; an
+  undecided merge isn't listed, and with no decided merge the list is empty
 - In the table and markdown output a login is never written bare: the `people` list is JSON
   only (D-61)
 

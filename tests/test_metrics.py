@@ -1159,6 +1159,39 @@ def test_s109_6_people_counts_each_deciders_prs_and_only_the_json_names_them(mx:
     assert "Carol-z" in mx.render("o/r", 30, w, found, "json")
 
 
+def test_s109_pulls_lists_each_decided_merge_by_number_with_its_sha_and_both_reads(mx: ModuleType) -> None:
+    """#1875: the JSON names the decided merges it counted, so a checker can compare them with GitHub"""
+    bob = (approved("bob"),)
+    no_sha = pull(4, day(1))
+    no_sha["mergeCommit"] = None
+    d = data(
+        mx,
+        pulls=[pull(9, day(1), merge="c9"), no_sha, pull(7, day(1), merge="c7"), pull(2, day(1), merge="c2")],
+        decisions={
+            9: decision(mx, bob, merge=merge_commit("bob", "bob", message=f"Fix\n\n{BOT_TRAILER}")),  # both
+            4: decision(mx, bob, merge=merge_commit("alice", "bob")),  # credited, no merge commit read
+            7: decision(mx),  # no decider: not listed
+            2: decision(mx, bob, merge=merge_commit("alice", "alice")),  # neither
+        },
+    )
+    w = window(mx)
+    found = mx.measures(d, w)
+    pulls = [
+        {"number": 2, "sha": "c2", "credited": False, "written_as_decider": False},
+        {"number": 4, "sha": None, "credited": True, "written_as_decider": False},
+        {"number": 9, "sha": "c9", "credited": True, "written_as_decider": True},
+    ]
+    measured = {m["measure"]: m for m in json.loads(mx.render("o/r", 30, w, found, "json"))["measures"]}
+    for name in DECIDED:
+        assert measured[name]["pulls"] == pulls, name
+        assert (measured[name]["merges"], measured[name]["decided"]) == (4, 3), name
+    for form in ("table", "markdown"):
+        text = mx.render("o/r", 30, w, found, form)
+        assert "pulls" not in text and "c9" not in text, form
+    empty = json.loads(mx.render("o/r", 30, w, mx.measures(decided_data(mx, decision(mx)), w), "json"))
+    assert [m["pulls"] for m in empty["measures"] if m["measure"] in DECIDED] == [[], []]
+
+
 def test_s109_7_the_records_are_read_only_for_prs_merged_in_the_window(mx: ModuleType) -> None:
     gh = DecidedForge(mx)
     mx.fetch("o/r", window(mx), frozenset(), "incident", "release-blocker", run=gh, decided=True)
