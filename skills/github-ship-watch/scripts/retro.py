@@ -379,6 +379,9 @@ METRIC_MEASURES = {
     "issue_to_release_p90": ("Issue to release", "p90"),
     "human_touch": ("Human touch", "value"),
     "agent_share": ("Agent share", "value"),
+    # Decided work GitHub credits to its deciders (spec 109)
+    "decided_credited": ("Decided work credited", "value"),
+    "decided_written_as_decider": ("Decided work written as the decider", "value"),
     # Issue to release by stage (spec 066)
     "issue_to_agent_comment_median": ("Issue to first agent comment", "value"),
     "issue_to_agent_comment_p90": ("Issue to first agent comment", "p90"),

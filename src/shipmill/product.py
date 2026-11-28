@@ -84,6 +84,9 @@ class Metric(StrEnum):
     ISSUE_TO_RELEASE_P90 = "issue_to_release_p90"  # Issue to release, p90
     HUMAN_TOUCH = "human_touch"  # Human touch
     AGENT_SHARE = "agent_share"  # Agent share
+    # Decided work GitHub credits to its deciders (spec 109)
+    DECIDED_CREDITED = "decided_credited"  # Decided work credited
+    DECIDED_WRITTEN_AS_DECIDER = "decided_written_as_decider"  # Decided work written as the decider
     # Issue to release by stage (spec 066)
     ISSUE_TO_AGENT_COMMENT_MEDIAN = "issue_to_agent_comment_median"  # Issue to first agent comment
     ISSUE_TO_AGENT_COMMENT_P90 = "issue_to_agent_comment_p90"
@@ -118,6 +121,8 @@ _METRIC_UNITS = {
     Metric.ISSUE_TO_RELEASE_P90: Unit.HOURS,
     Metric.HUMAN_TOUCH: Unit.RATIO,
     Metric.AGENT_SHARE: Unit.RATIO,
+    Metric.DECIDED_CREDITED: Unit.RATIO,
+    Metric.DECIDED_WRITTEN_AS_DECIDER: Unit.RATIO,
     Metric.ISSUE_TO_AGENT_COMMENT_MEDIAN: Unit.HOURS,
     Metric.ISSUE_TO_AGENT_COMMENT_P90: Unit.HOURS,
     Metric.ISSUE_TO_PR_MEDIAN: Unit.HOURS,
