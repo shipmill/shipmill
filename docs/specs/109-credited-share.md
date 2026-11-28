@@ -133,4 +133,7 @@ and `skills/github-ship-watch/SKILL.md` names the two measures where it lists me
 
 ## Issues
 
+- shipmill/shipmill#1834: S-109-1, S-109-2, S-109-3, S-109-4, S-109-5, S-109-6, S-109-7
+- shipmill/shipmill#1835: S-109-8, S-109-9, S-109-10
+
 ## Verification
