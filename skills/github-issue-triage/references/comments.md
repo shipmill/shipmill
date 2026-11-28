@@ -344,6 +344,21 @@ Closing: its parent {owner/repo#N} closed, and {the step was done in ... / the s
 Its parent {owner/repo#N} closed, and this step still waits on `@{assignee}`: {why it is still needed}.
 ```
 
+**STALE_HANDOFF**, its note `#M merged after the hand-off` (#1871), and those pull requests did every step the hand-off names: the done report, posted by the App as the `--bot-login` (D-62 counts it), so the item reads VERIFY_DUE and its `## Check` runs next. Its first line starts with `Done`; name each pull request, and mention nobody (D-61):
+
+```markdown
+Done: the steps of the hand-off are on `main`: {step} in #{M}, {step} in #{N}.
+
+What's left is its ## Check: {the check, quoted}, run by {the session / someone other than its author, as the check asks}.
+```
+
+**STALE_HANDOFF**, its note `#M merged after the hand-off`, and steps remain: the still-waits comment naming them, which ends the state until a newer pull request linking the item merges. Post it once, and mention nobody:
+
+```markdown
+<!-- shipmill:still-waits -->
+#{M} merged after the hand-off and did {the steps it did}; these steps still wait on `@{assignee}`: {the steps left}.
+```
+
 **NO_ASSIGNEE** gets no comment and no question: it means the state was read without the `--role` flags, so read it again with them ([triage-rubric.md](triage-rubric.md), A person's item). The roles say who does a step, so a session never asks. Only an ASSIGN_DUE assignment GitHub refuses goes to the maintainer, through the [needs-decision protocol](needs-decision.md): name the users it couldn't assign and GitHub's message, and recommend assigning the maintainer.
 
 A check the session can't run: a question through the [needs-decision protocol](needs-decision.md), in its format, with its marker and the `needs-decision` label. Say what the report claims and why the check can't run here, and give two options, the recommended one first, as the protocol asks: close it on the report when other evidence backs the report (a log line, a page that changed), it isn't done when nothing but the report does (then it comes first, with the `(recommended)` mark and why):
