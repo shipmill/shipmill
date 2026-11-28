@@ -10,6 +10,7 @@ Usage:
   specs.py coverage [--dir D] [--root R] [--spec NNN]...
   specs.py split [--dir D] [--repo OWNER/REPO] [--group K,K...]... [--after B:A]... [--milestone T] [--json] NNN
   specs.py same-approval [--base REF] SPEC ANSWERED_HEAD HEAD
+  specs.py contradictions [--base REF] [--decisions F] [--json] SPEC
 
 A spec has a title line, a status line, and fixed sections, in this order:
 
@@ -80,17 +81,32 @@ same-approval
           the decisions log adds, matched by its title) renumbered, with the lines citing
           it. Exit 1 prints each remaining difference by section: what changed since the
           answer. Run it in the repo's checkout
+contradictions
+          what one spec's Behaviour and Acceptance criteria name in code spans that the
+          code at REF (default origin/main) or the decisions log lacks (spec 099): a path
+          not in REF's tree (a bare file name is looked up anywhere in it; a span holding
+          < > { } * ? [ # or :// is no path), a subcommand or --flag of the repo's own
+          command (a [project.scripts] entry of pyproject.toml, or a script file, after a
+          `uvx NAME==VERSION` or `uv run [options] python` prefix) that appears as no quoted
+          string literal in its source, a D-n the log (--decisions F, default the one check
+          reads, from the working tree) lacks or marks superseded, unless its line says it
+          supersedes. Names on a Behaviour line starting `Adds:` are never missing; while
+          the spec is not on REF, an added path or flagless command REF already has is
+          `already exists`. The code is read through git at REF only, never the working
+          tree. One `<spec>:<line>: <kind>: <name>: <other side>` line each, or `no
+          contradictions found`; --json prints one object. check doesn't run it
 
 Exit 0 on success (find: at least one match; same-approval: only the format changed), 1
 when check (or criteria or split, for its spec) finds a problem, find matches nothing,
-coverage finds a criterion with no test (or a test naming a criterion its spec lacks), or
-same-approval finds a change beyond format, 2 on bad input. Python 3.10+, standard library
-only.
+coverage finds a criterion with no test (or a test naming a criterion its spec lacks),
+same-approval finds a change beyond format, or contradictions finds one, 2 on bad input.
+Python 3.10+, standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import difflib
 import fnmatch
 import json
@@ -108,6 +124,11 @@ from typing import Any
 from decisions import CANDIDATES as DECISION_LOGS
 from decisions import HEADING as DECISION_HEADING
 from decisions import parse as parse_log
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: [project.scripts] is read line by line instead
+    tomllib = None
 
 DEFAULT_DIR = Path("docs/specs")
 NOT_SPECS = ("TEMPLATE.md", "README.md")
@@ -1117,6 +1138,322 @@ def same_approval(path: str, answered_ref: str, head_ref: str, base_ref: str) ->
     return 1
 
 
+# contradictions (spec 099): what a spec's Behaviour and Acceptance criteria name in code spans
+# that the code at REF or the decisions log lacks
+CHECKED_SECTIONS = ("Behaviour", "Acceptance criteria")
+SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
+ADDS = "Adds:"
+NOT_A_PATH = ("<", ">", "{", "}", "*", "?", "[", "#", "://")
+# A name, a dot, and a file's extension, so that a code name (`Policy.parse`), a host
+# (`github.com`), or a version (`0.19.0`, `X.Y.Z`) reads as no path
+EXTENSION = re.compile(
+    r"^.+\.(?:md|mdx|rst|txt|py|pyi|json|jsonl|toml|ya?ml|lock|cfg|ini|conf|env|sh|bash|zsh|ps1|[cm]?js|jsx|"
+    r"[cm]?ts|tsx|vue|svelte|html|s?css|svg|png|jpe?g|gif|ico|pdf|xml|plist|[ct]sv|sql|log|t?gz|tar|zip|whl|"
+    r"rs|go|mod|sum|rb|pl|php|lua|java|kt|swift|[ch]|cc|[ch]pp|cs|tf|hcl|pem|crt|patch|diff|tmpl|j2|ipynb|"
+    r"service|timer)$",
+    re.IGNORECASE,
+)
+OUTSIDE = ("~", "/")  # a home or absolute path: never in the repo's tree
+UVX_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]*\])?==\S+$")
+PYTHONS = ("python", "python3")
+SUBCOMMAND = re.compile(r"^[a-z][a-z0-9-]*$")
+FLAG = re.compile(r"(?<![\w-])(--[a-z0-9][a-z0-9-]*)")
+SCRIPT_SUFFIXES = (".py", ".sh", ".bash", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl")
+EXECUTABLE = "100755"
+SUPERSEDE = re.compile(r"supersed", re.IGNORECASE)
+SCRIPTS_TABLE = re.compile(r"^\s*\[\s*project\.scripts\s*\]\s*(?:#.*)?$")
+TABLE_HEADER = re.compile(r"^\s*\[")
+SCRIPT_ENTRY = re.compile(r"^\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*=\s*(?:\"([^\"\\]*)\"|'([^']*)')\s*(?:#.*)?$")
+
+
+@dataclass
+class Finding:
+    line: int
+    kind: str
+    name: str
+    other: str
+
+
+@dataclass
+class Span:
+    line: int
+    text: str
+    adds: bool  # on a Behaviour line starting `Adds:`
+
+
+@dataclass
+class Command:
+    word: str  # the command as the span writes it
+    subcommand: str | None
+    flags: list[str]
+
+
+class Tree:
+    """The files of a commit, read through git: never the working tree"""
+
+    def __init__(self, commit: str, base: str) -> None:
+        self.commit, self.base = commit, base
+        self.modes: dict[str, str] = {}
+        for entry in git("ls-tree", "-r", "--full-tree", "-z", commit).split("\0"):
+            if not entry:
+                continue
+            meta, path = entry.split("\t", 1)
+            self.modes[path] = meta.split()[0]
+        self.names: dict[str, list[str]] = {}
+        for path in sorted(self.modes):
+            self.names.setdefault(path.rsplit("/", 1)[-1], []).append(path)
+        self.found: dict[tuple[str, tuple[str, ...]], bool] = {}
+
+    def has(self, path: str) -> bool:
+        """A path span: a file, or a folder when it ends in /, from the top or from any folder
+        (a skill's `references/x.md`); a bare file name anywhere"""
+        if "/" not in path:
+            return path in self.names
+        if path in self.modes:
+            return True
+        within = "/" + path
+        if path.endswith("/"):
+            return any(("/" + p).find(within) >= 0 for p in self.modes)
+        return any(p.endswith(within) for p in self.modes)
+
+    def quoted(self, word: str, sources: tuple[str, ...]) -> bool:
+        """Whether word appears as a quoted string literal in any of the sources at the commit"""
+        key = (word, sources)
+        if key not in self.found:
+            top = [f":(top){source}" for source in sources]  # from the top, as ls-tree --full-tree lists them
+            done = subprocess.run(
+                ["git", "grep", "-q", "-F", "-e", f'"{word}"', "-e", f"'{word}'", self.commit, "--", *top],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            if done.returncode not in (0, 1):
+                raise SpecError(f"git grep at {self.base}: {done.stderr.strip() or f'exit {done.returncode}'}")
+            self.found[key] = done.returncode == 0
+        return self.found[key]
+
+
+def project_scripts(text: str) -> dict[str, str]:
+    """The [project.scripts] table of a pyproject.toml: each command to its entry point"""
+    if tomllib is not None:
+        try:
+            table = tomllib.loads(text).get("project", {}).get("scripts", {})
+        except tomllib.TOMLDecodeError as exc:
+            raise SpecError(f"pyproject.toml is not valid TOML: {exc}") from exc
+        return {str(k): str(v) for k, v in table.items()}
+    return project_scripts_310(text)
+
+
+def project_scripts_310(text: str) -> dict[str, str]:
+    """[project.scripts] read line by line on Python 3.10, which has no tomllib: plain
+    `name = "module:function"` lines, as decisions.py reads its table"""
+    scripts: dict[str, str] = {}
+    inside = False
+    for line in text.splitlines():
+        if TABLE_HEADER.match(line):
+            inside = SCRIPTS_TABLE.match(line) is not None
+            continue
+        entry = SCRIPT_ENTRY.match(line) if inside else None
+        if entry:
+            scripts[entry.group(1)] = entry.group(2) if entry.group(2) is not None else entry.group(3)
+    return scripts
+
+
+def entry_sources(tree: Tree, entry: str) -> tuple[str, ...]:
+    """The files of an entry point's top-level package at the commit: its folder, or its module"""
+    package = entry.split(":", 1)[0].split(".", 1)[0].strip()
+    for root in ("", "src/"):
+        if f"{root}{package}/__init__.py" in tree.modes:
+            return (f"{root}{package}/",)
+    return tuple(f"{root}{package}.py" for root in ("", "src/") if f"{root}{package}.py" in tree.modes)
+
+
+def is_path(text: str) -> bool:
+    """A span that names a path of the repo: a / and a file extension or a trailing /, or a
+    bare file name with a file extension; never a placeholder or a pattern, nor a path outside
+    the repo (`~/...`, `/...`)"""
+    if not text.strip("./") or any(c.isspace() for c in text) or any(mark in text for mark in NOT_A_PATH):
+        return False
+    if text.startswith(OUTSIDE):
+        return False
+    return text.endswith("/") or EXTENSION.match(text.rsplit("/", 1)[-1]) is not None
+
+
+def command_of(words: list[str]) -> Command | None:
+    """The command a span's words run, past a `uvx NAME==VERSION` or `uv run [options]
+    python` prefix: its first word, the first word after it that reads as a subcommand, and
+    its --flags"""
+    if len(words) >= 2 and words[0] == "uvx" and UVX_PIN.match(words[1]):
+        words = [words[1].split("==", 1)[0].split("[", 1)[0], *words[2:]]  # uvx NAME==VERSION runs NAME
+    elif words[:2] == ["uv", "run"]:
+        words = words[2:]
+        python = next((i for i, w in enumerate(words) if w in PYTHONS), None)
+        if python is not None and (python == 0 or words[0].startswith("-")):
+            words = words[python + 1 :]  # uv run [options] python
+        else:
+            while words and words[0].startswith("-"):
+                words = words[1:]
+    if not words or words[0].startswith("-"):
+        return None
+    rest = words[1:]
+    subcommand = next((w for w in rest if SUBCOMMAND.match(w)), None)
+    return Command(words[0], subcommand, FLAG.findall(" ".join(rest)))
+
+
+def command_sources(tree: Tree, word: str, scripts: dict[str, str]) -> tuple[str, ...]:
+    """The source files of the repo's own command a word names at the commit, none when it
+    is another tool's: a [project.scripts] entry's package, or a script file by path or name"""
+    if word in scripts:
+        return entry_sources(tree, scripts[word])
+    path = word.removeprefix("./")
+    if "/" not in path:  # a bare name is a script's file name, never a tool's: an executable `gh` stub is not gh
+        return tuple(tree.names.get(path, [])) if path.endswith(SCRIPT_SUFFIXES) else ()
+    script = path in tree.modes and (path.endswith(SCRIPT_SUFFIXES) or tree.modes[path] == EXECUTABLE)
+    return (path,) if script else ()
+
+
+def spans(spec: Spec) -> list[Span]:
+    """The inline code spans of the Behaviour and the Acceptance criteria, at the line each starts"""
+    found: list[Span] = []
+    for section in CHECKED_SECTIONS:
+        lines = spec.sections.get(section, [])
+        starts: list[int] = []
+        offset = 0
+        for _, line in lines:
+            starts.append(offset)
+            offset += len(line) + 1
+        text = "\n".join(line for _, line in lines)
+        adds = {n for n, line in lines if section == "Behaviour" and line.startswith(ADDS)}
+        for match in SPAN.finditer(text):
+            index = bisect.bisect_right(starts, match.start(2)) - 1
+            content = match.group(2)
+            if "\n\n" in content:
+                continue  # a stray backtick, not a span across a paragraph
+            stripped = content[1:-1] if len(content) > 2 and content[0] == content[-1] == " " else content
+            found.append(Span(lines[index][0], stripped.strip(), lines[index][0] in adds))
+    return found
+
+
+def decision_log(given: str | None) -> tuple[str, dict[int, tuple[str, int] | None]] | None:
+    """The decisions log, read from the working tree so a D-n the spec pull request adds
+    counts: its path, and each D-n to its Superseded by value and that line (None when
+    active); None without a log"""
+    path = Path(given) if given else next((p for p in DECISION_LOGS if p.is_file()), None)
+    if path is None:
+        return None
+    if not path.is_file():
+        raise SpecError(f"no decisions log at {path}")
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    entries, _ = parse_log(text)
+    states: dict[int, tuple[str, int] | None] = {}
+    for k, entry in enumerate(entries):
+        end = entries[k + 1].line - 1 if k + 1 < len(entries) else len(lines)
+        superseded = entry.fields.get("Superseded by")
+        at = next((n for n in range(entry.line, end + 1) if lines[n - 1].startswith("- Superseded by:")), entry.line)
+        states[entry.number] = (superseded, at) if superseded is not None else None
+    return path.as_posix(), states
+
+
+def decision_findings(spec: Spec, log: tuple[str, dict[int, tuple[str, int] | None]] | None) -> list[Finding]:
+    """Each D-n the Behaviour or a criterion cites that the log lacks or marks superseded; a
+    line that says it supersedes may name the rule it replaces"""
+    findings = []
+    for section in CHECKED_SECTIONS:
+        for n, line in spec.sections.get(section, []):
+            if SUPERSEDE.search(line):
+                continue
+            for number in dict.fromkeys(int(m.group(1)) for m in DECISION_ID.finditer(line)):
+                name = f"D-{number}"
+                if log is None:
+                    findings.append(Finding(n, "missing decision", name, "there is no decisions log"))
+                elif number not in log[1]:
+                    findings.append(Finding(n, "missing decision", name, f"not in {log[0]}"))
+                elif (state := log[1][number]) is not None:
+                    findings.append(
+                        Finding(n, "superseded decision", name, f"{log[0]}:{state[1]}: Superseded by: {state[0]}")
+                    )
+    return findings
+
+
+def name_findings(spec: Spec, rel: str | None, tree: Tree) -> list[Finding]:
+    """The paths, commands, and flags the spec's spans name that the tree lacks, and while
+    the spec is not on the tree, the ones its `Adds:` lines name that the tree already has"""
+    base = tree.base
+    pyproject = file_at(tree.commit, "pyproject.toml") if "pyproject.toml" in tree.modes else None
+    scripts = project_scripts(pyproject) if pyproject is not None else {}
+    found = spans(spec)
+    added_paths: set[str] = set()
+    added_words: set[str] = set()
+    for span in found:
+        if not span.adds:
+            continue
+        if is_path(span.text):
+            added_paths.add(span.text.removeprefix("./"))
+        command = command_of(span.text.split())
+        if command is not None:
+            added_paths.add(command.word.removeprefix("./"))
+            added_words.update(w for w in (command.subcommand, *command.flags) if w)
+    on_tree = rel is not None and rel in tree.modes
+    findings = []
+    for span in found:
+        if is_path(span.text):
+            path = span.text.removeprefix("./")
+            if span.adds and not on_tree and tree.has(path):
+                findings.append(Finding(span.line, "already exists", span.text, f"{path} at {base}"))
+            elif not span.adds and path not in added_paths and not tree.has(path):
+                findings.append(Finding(span.line, "missing path", span.text, f"not in {base}"))
+        command = command_of(span.text.split())
+        sources = command_sources(tree, command.word, scripts) if command is not None else ()
+        if command is None or not sources:
+            continue
+        label = ", ".join(sources)
+        sub = command.subcommand
+        if span.adds:
+            if not on_tree and sub and not command.flags and tree.quoted(sub, sources):
+                name = f"{command.word} {sub}"
+                findings.append(Finding(span.line, "already exists", name, f'"{sub}" in {label} at {base}'))
+            continue
+        if sub and sub not in added_words and not tree.quoted(sub, sources):
+            name = f"{command.word} {sub}"
+            findings.append(Finding(span.line, "missing command", name, f'no "{sub}" in {label} at {base}'))
+        for flag in dict.fromkeys(command.flags):
+            if flag not in added_words and not tree.quoted(flag, sources):
+                findings.append(Finding(span.line, "missing flag", flag, f'no "{flag}" in {label} at {base}'))
+    return findings
+
+
+def repo_path(path: Path) -> str | None:
+    """The spec's path relative to the repo's top level, None outside it"""
+    top = Path(git("rev-parse", "--show-toplevel").strip())
+    try:
+        return path.resolve().relative_to(top.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def contradictions(given: str, base: str, decisions: str | None, as_json: bool) -> int:
+    path = Path(given)
+    if not path.is_file():
+        raise SpecError(f"no spec file {given}")
+    spec, problems = parse(path)
+    if spec is None:
+        raise SpecError(problems[0])
+    tree = Tree(commit_of(base), base)
+    findings = decision_findings(spec, decision_log(decisions)) + name_findings(spec, repo_path(path), tree)
+    findings.sort(key=lambda f: f.line)
+    shown = path.as_posix()
+    if as_json:
+        print(json.dumps({"spec": shown, "base": base, "findings": [vars(f) for f in findings]}, indent=2))
+    elif findings:
+        for f in findings:
+            print(f"{shown}:{f.line}: {f.kind}: {f.name}: {f.other}")
+    else:
+        print("no contradictions found")
+    return 1 if findings else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1147,10 +1484,17 @@ def main() -> int:
     p.add_argument("spec", metavar="SPEC", help="the spec file, docs/specs/NNN-<slug>.md")
     p.add_argument("answered", metavar="ANSWERED_HEAD", help="the pull request's head when the answer was given")
     p.add_argument("head", metavar="HEAD", help="its head now")
+    p = sub.add_parser("contradictions")
+    p.add_argument("--base", default="origin/main", help="the code to read, through git (default: origin/main)")
+    p.add_argument("--decisions", help="the decisions log (default: DECISIONS.md or docs/decisions.md)")
+    p.add_argument("--json", action="store_true", help="print the findings as one JSON object")
+    p.add_argument("spec", metavar="SPEC", help="the spec file, docs/specs/NNN-<slug>.md")
     args = parser.parse_args()
     try:
         if args.command == "same-approval":
             return same_approval(args.spec, args.answered, args.head, args.base)
+        if args.command == "contradictions":
+            return contradictions(args.spec, args.base, args.decisions, args.json)
         if args.command == "new":
             return new(args.dir, args.slug, args.title)
         if args.command == "criteria":
