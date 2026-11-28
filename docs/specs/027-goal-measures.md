@@ -123,8 +123,9 @@ measure`; a goal the maintainer gives no measure gets none. It never invents a t
 (default `.`), `--stalled-weeks N` (default 3), and `--met-weeks N` (default 4). With
 `--goals`:
 
-- DIR must be a checkout whose `HEAD` is `origin/HEAD`'s commit (the skill fetches it
-  first); otherwise exit 2 naming `git fetch` and `git checkout`. A repo whose checkout has
+- It reads DIR's `origin/HEAD` commit, never its working tree: DIR may be a shared main
+  copy whose `HEAD` lags a fetch another worktree made (#1876). A DIR without `origin/HEAD`
+  exits 2 naming `git fetch` and `git remote set-head`. A repo whose `origin/HEAD` has
   no `docs/product.md` gets `"goals": {"direction": false}` in its JSON and the line "No
   direction (docs/product.md): no per-goal report" in its text, and exits 0
 - It reads the direction with `shipmill product show --json --repo DIR` (`shipmill` on
@@ -185,7 +186,7 @@ The JSON gains one key, `goals`: `{"direction": true, "goals": [{"id", "text", "
 `skills/github-ship-watch/SKILL.md`, Weekly retro, gains these steps; the retro stays an
 option the user schedules:
 
-1. Gather passes `--goals` and the repo's checkout, fetched and at `origin/<default>`
+1. Gather passes `--goals` and the repo's checkout, fetched
 2. The tracking-issue comment gains a section **Goals**: a row per goal (id, served this
    week and the week before, measure status with its value, stalled), then the quality-bar
    row, the off-direction counts with the most-cited non-goal, and the unlinked pull
@@ -216,7 +217,7 @@ maintainer changes it (D-34, N-3).
 - S-027-4: `shipmill product measure <G-n> "<measure>"` writes or replaces the goal's measure line and `--clear` removes it, leaving every other line unchanged, including in a moved Goals section, and exits 2 without writing for an id that isn't a listed goal or a measure `check` refuses
 - S-027-5: `shipmill product retire <G-n>` removes the goal's measure line with its item, `shipmill product edit <G-n>` keeps it, and `shipmill product add goals` appends after the last goal's measure line
 - S-027-6: `pr_gate.py` reads the goal ids of a direction whose goals carry measure lines, and still stops on any other non-item line in a list section; `specs.py check` accepts a spec serving a goal that carries a measure
-- S-027-7: `retro.py gather --goals` without `docs/product.md` in the checkout reports `"direction": false` and exits 0; with a checkout not at `origin/HEAD`, or a direction `shipmill product show` refuses, it exits 2
+- S-027-7: `retro.py gather --goals` without `docs/product.md` in the checkout reports `"direction": false` and exits 0; it reads `origin/HEAD`'s commit, so a checkout whose `HEAD` is behind it gathers `origin/HEAD`'s files (#1876); with a checkout without `origin/HEAD`, or a direction `shipmill product show` refuses, it exits 2
 - S-027-8: `retro.py gather --goals` counts an issue closed as completed in the window under each goal its latest trusted verdict comment names in `Serves:`, or its spec's `serves:` line names when it is a listed build issue, and a merged pull request under each goal its `## Plan` `Serves:` names; a verdict comment by an author that isn't an OWNER, MEMBER, COLLABORATOR, or `--bot` login is ignored, and `quality bar` counts on its own row
 - S-027-9: Each goal's status is met, not met with metrics.py's text for the value, no data when metrics.py reports no data, or no measure, compared in the metric's unit (`1d` against 24 hours, `20%` against 0.2), and `met_weeks` counts the consecutive weeks back from this one that the goal was met, running metrics.py for no extra week when no goal has a measure
 - S-027-10: A goal is stalled when no issue or pull request served it in each of the last `--stalled-weeks` weeks, and never when its id first appeared in the direction's history fewer weeks ago

@@ -16,11 +16,12 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          each measure for both windows; then the pull requests of the window that were
          refused (closed without a merge) or reworked (merged after a review requested
          changes). Read-only
-         --goals adds the report per goal of the direction (spec 027), read from DIR, a
-         checkout whose HEAD is origin/HEAD's commit (else exit 2), through `shipmill product
-         show --json --local` (as `uvx shipmill==<version>`, the version in the plugin's
-         .claude-plugin/plugin.json, spec 031; a direction it refuses exits 2; --local: the
-         repo's own goals, never a component's product home's, spec 071); without
+         --goals adds the report per goal of the direction (spec 027), read at origin/HEAD's
+         commit of DIR, a checkout of the repo on any branch or HEAD (no origin/HEAD: exit 2;
+         #1876), through `shipmill product show --json --local` (as `uvx shipmill==<version>`,
+         the version in the plugin's .claude-plugin/plugin.json, spec 031; a direction it
+         refuses exits 2; --local: the repo's own goals, never a component's product home's,
+         spec 071); without
          docs/product.md it says so and exits 0. "A week" is one --days window. Per goal: the
          issues closed as completed and the pull requests merged that served it, this week
          and the week before (an issue by its latest trusted verdict comment's `Serves:`, or
@@ -37,7 +38,7 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          listed goal. A verdict comment counts only when its first line starts `Triage: ` and
          an OWNER, MEMBER, or COLLABORATOR or a --bot login wrote it (D-29)
          --decisions adds the report per zone of the decision policy (spec 030), the levels
-         read from DIR's .github/shipmill.toml [decisions] (DIR at origin/HEAD, else exit 2;
+         read from .github/shipmill.toml [decisions] at DIR's origin/HEAD (none: exit 2;
          the zones, defaults, and floors from github-issue-triage's decisions.py). Per zone,
          on the issues' and pull requests' comments posted in this --days window by a
          trusted author as above: the decided markers, the veto-handled markers, the
@@ -119,6 +120,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Container, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -278,9 +280,18 @@ def pinned_shipmill(plugin: Path | None = None) -> tuple[str, ...]:
 
 
 def gather(args: argparse.Namespace, sources: Sources) -> int:
+    """--goals and --decisions read the checkout's origin/HEAD commit, copied into a folder
+    that lives as long as the gather (#1876)"""
+    if not (args.goals or args.decisions):
+        return gather_at(args, sources, None)
+    with tempfile.TemporaryDirectory(prefix="shipmill-retro-") as folder:
+        return gather_at(args, sources, snapshot(sources, args.checkout, Path(folder)))
+
+
+def gather_at(args: argparse.Namespace, sources: Sources, at: Snapshot | None) -> int:
     maintainers = maintainer_logins(args.role) if args.decisions else frozenset()
-    direction = read_direction(sources, args.checkout) if args.goals else None
-    levels = read_policy(sources, args.checkout) if args.decisions else None
+    direction = read_direction(sources, at) if args.goals and at is not None else None
+    levels = read_policy(at) if args.decisions and at is not None else None
     current = sources.metrics(None)
     previous = sources.metrics(current["start"])
     start, end = timestamp(current["start"]), timestamp(current["end"])
@@ -308,8 +319,8 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
     goals: dict[str, Any] | None = None
     if args.goals:
         goals = {"direction": False}
-        if direction is not None:
-            goals = goals_report(args, sources, direction, [current, previous])
+        if direction is not None and at is not None:
+            goals = goals_report(args, at, sources, direction, [current, previous])
     decisions = decisions_report(args, sources, levels, end, maintainers) if levels is not None else None
     reviews = None
     if args.reviews:
@@ -350,6 +361,7 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
 
 DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product"
+SPECS_DIR = "docs/specs"
 QUALITY_BAR = "quality bar"
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})  # D-16, D-29
 VERDICT = "Triage: "
@@ -472,35 +484,68 @@ def weeks(end: dt.datetime, days: int, count: int) -> list[Window]:
     return [Window(end - (k + 1) * span, end - k * span) for k in range(count)]
 
 
-def at_origin_head(sources: Sources, checkout: Path) -> None:
-    """Exit 2 unless the checkout's HEAD is origin/HEAD's commit"""
-    proc = sources.command(["git", "-C", str(checkout), "rev-parse", "HEAD", "origin/HEAD"])
-    heads = proc.stdout.split()
-    if proc.returncode != 0 or len(heads) != 2 or heads[0] != heads[1]:
-        why = proc.stderr.strip() or "HEAD is not origin/HEAD's commit"
+@dataclass(frozen=True)
+class Snapshot:
+    """origin/HEAD's commit of the checkout (the git store), and a folder holding the files
+    gather reads as that commit has them"""
+
+    store: Path
+    commit: str
+    folder: Path
+
+    def named(self, text: str) -> str:
+        """text with the folder's paths named as git names the commit's files"""
+        return text.replace(f"{self.folder}/", f"{self.store}: origin/HEAD:")
+
+
+_COMMIT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def snapshot(sources: Sources, checkout: Path, folder: Path) -> Snapshot:
+    """Copy the direction, the specs, and the config at the checkout's origin/HEAD into folder,
+    so neither the checkout's HEAD nor its working tree matters: a shared main copy lags a
+    fetch another worktree made (#1876). Exit 2 when origin/HEAD names no commit"""
+    git = ["git", "-C", str(checkout)]
+    proc = sources.command([*git, "rev-parse", "--verify", "--quiet", "origin/HEAD^{commit}"])
+    commit = proc.stdout.strip()
+    if proc.returncode != 0 or not _COMMIT.fullmatch(commit):
+        why = proc.stderr.strip() or "origin/HEAD names no commit"
         raise fail(
             f"{checkout}: {why}; run `git -C {checkout} fetch origin` and "
-            f"`git -C {checkout} checkout --detach origin/HEAD`, then gather again"
+            f"`git -C {checkout} remote set-head origin --auto`, then gather again"
         )
+    paths = (DIRECTION, DIRECTION_DIR, SPECS_DIR, CONFIG)
+    proc = sources.command([*git, "ls-tree", "-r", "-z", "--name-only", "--full-tree", commit, "--", *paths])
+    if proc.returncode != 0:
+        raise fail(f"git ls-tree in {checkout}: {proc.stderr.strip()}")
+    for name in proc.stdout.split("\0"):
+        if not name or not (name == CONFIG or name.endswith(".md")):
+            continue
+        shown = sources.command([*git, "show", f"{commit}:{name}"])
+        if shown.returncode != 0:
+            raise fail(f"git show {commit}:{name} in {checkout}: {shown.stderr.strip()}")
+        path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(shown.stdout, encoding="utf-8")
+    return Snapshot(checkout, commit, folder)
 
 
-def read_direction(sources: Sources, checkout: Path) -> dict[str, Any] | None:
-    """The direction as `shipmill product show --json --local` gives it, None without
-    docs/product.md; exit 2 when the checkout isn't at origin/HEAD or shipmill refuses the
-    direction. --local: the report per goal reads only the repo's own goals, so a component
-    never reads its product home's here, and a home it can't read doesn't stop it (spec 071, #1417)"""
-    at_origin_head(sources, checkout)
-    if not (checkout / DIRECTION).is_file():
+def read_direction(sources: Sources, at: Snapshot) -> dict[str, Any] | None:
+    """The direction at origin/HEAD as `shipmill product show --json --local` gives it, None
+    without docs/product.md; exit 2 when shipmill refuses the direction. --local: the report
+    per goal reads only the repo's own goals, so a component never reads its product home's
+    here, and a home it can't read doesn't stop it (spec 071, #1417)"""
+    if not (at.folder / DIRECTION).is_file():
         return None
-    proc = sources.command([*sources.shipmill, "product", "show", "--json", "--local", "--repo", str(checkout)])
+    proc = sources.command([*sources.shipmill, "product", "show", "--json", "--local", "--repo", str(at.folder)])
     if proc.returncode != 0:
         raise fail(
-            f"shipmill product show refused {checkout / DIRECTION}: {proc.stderr.strip()}; "
-            f"run `shipmill product check --repo {checkout}`"
+            f"shipmill product show refused {at.store}: origin/HEAD:{DIRECTION}: {at.named(proc.stderr.strip())}; "
+            f"run `shipmill product check --ref origin/HEAD --repo {at.store}`"
         )
     direction: dict[str, Any] = json.loads(proc.stdout)
     if not isinstance(direction.get("goals"), list):
-        raise fail(f"shipmill product show --json gave no goals list for {checkout}")
+        raise fail(f"shipmill product show --json gave no goals list for {at.store}: origin/HEAD")
     return direction
 
 
@@ -577,7 +622,7 @@ def plan_serves(body: str | None) -> set[str]:
 def spec_goals(checkout: Path, repo: str) -> dict[int, set[str]]:
     """Each build issue a spec lists under `## Issues`, with what its `serves:` line names"""
     found: dict[int, set[str]] = {}
-    folder = checkout / "docs" / "specs"
+    folder = checkout / SPECS_DIR
     if not folder.is_dir():
         return found
     for path in sorted(folder.glob("*.md")):
@@ -797,18 +842,23 @@ def met_streaks(goals: list[dict[str, Any]], report: Callable[[int], dict[str, A
     return streaks
 
 
-def first_listed(sources: Sources, checkout: Path, goal: str) -> dt.datetime | None:
-    """When the goal's item line first entered the direction's history, by git log"""
-    cmd = ["git", "-C", str(checkout), "log", "--reverse", "--format=%cI", "-G", f"^- {goal}: "]
-    proc = sources.command([*cmd, "--", DIRECTION, DIRECTION_DIR])
+def first_listed(sources: Sources, at: Snapshot, goal: str) -> dt.datetime | None:
+    """When the goal's item line first entered the direction's history at the snapshot's
+    commit, by git log"""
+    cmd = ["git", "-C", str(at.store), "log", "--reverse", "--format=%cI", "-G", f"^- {goal}: "]
+    proc = sources.command([*cmd, at.commit, "--", DIRECTION, DIRECTION_DIR])
     if proc.returncode != 0:
-        raise fail(f"git log in {checkout}: {proc.stderr.strip()}")
+        raise fail(f"git log in {at.store}: {proc.stderr.strip()}")
     lines = proc.stdout.split()
     return timestamp(lines[0]) if lines else None
 
 
 def goals_report(
-    args: argparse.Namespace, sources: Sources, direction: dict[str, Any], reports: list[dict[str, Any]]
+    args: argparse.Namespace,
+    at: Snapshot,
+    sources: Sources,
+    direction: dict[str, Any],
+    reports: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """The JSON `goals` key of spec 027; reports holds metrics.py's runs for this week and the
     week before, and gains the earlier weeks it asks for"""
@@ -818,7 +868,7 @@ def goals_report(
     windows = weeks(end, args.days, max(2, args.stalled_weeks))
     issues = fetch_issues(sources, args.repo, windows[-1].start, bots)
     pulls = fetch_merged(sources, args.repo, windows[-1].start)
-    work = served(issues, pulls, windows, spec_goals(args.checkout, args.repo), bots)
+    work = served(issues, pulls, windows, spec_goals(at.folder, args.repo), bots)
 
     def report(k: int) -> dict[str, Any]:
         while len(reports) <= k:
@@ -837,7 +887,7 @@ def goals_report(
             unserved += 1
         stalled = False
         if unserved >= args.stalled_weeks:
-            entered = first_listed(sources, args.checkout, goal["id"])
+            entered = first_listed(sources, at, goal["id"])
             stalled = entered is not None and entered <= young
         row = {
             "id": goal["id"],
@@ -1052,15 +1102,14 @@ class Levels:
     veto_hours: int
 
 
-def read_policy(sources: Sources, checkout: Path) -> Levels:
-    """The [decisions] levels of the checkout's config, which must be at origin/HEAD: levels
-    are read from the default branch (D-48); a malformed table exits 2"""
-    at_origin_head(sources, checkout)
+def read_policy(at: Snapshot) -> Levels:
+    """The [decisions] levels of the config at origin/HEAD: levels are read from the default
+    branch (D-48); a malformed table exits 2"""
     module = decisions_module()
     try:
-        found = module.policy(checkout / CONFIG)
+        found = module.policy(at.folder / CONFIG)
     except module.LogError as refused:
-        raise fail(str(refused)) from None
+        raise fail(at.named(str(refused))) from None
     floors = {zone: floor for zone, (_, floor) in module.ZONES.items()}
     return Levels(dict(found.levels), floors, int(found.veto_hours))
 
@@ -2374,7 +2423,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--checkout",
         type=Path,
         default=Path("."),
-        help="with --goals or --decisions: the repo's checkout, at origin/HEAD",
+        help="with --goals or --decisions: the repo's checkout, read at its origin/HEAD, whatever its own HEAD",
     )
     g.add_argument("--stalled-weeks", type=int, default=3, help="with --goals: weeks unserved that make a goal stalled")
     g.add_argument("--met-weeks", type=int, default=4, help="with --goals: weeks met in a row the report counts up to")

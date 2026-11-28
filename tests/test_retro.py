@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -266,16 +267,31 @@ def done(stdout: str = "", code: int = 0, stderr: str = "") -> subprocess.Comple
 
 
 def commands(
-    heads: str = f"{SHA}\n{SHA}\n", product: subprocess.CompletedProcess[str] | None = None, entered: str = ""
+    heads: str = f"{SHA}\n{SHA}\n",
+    product: subprocess.CompletedProcess[str] | None = None,
+    entered: str = "",
+    origin: subprocess.CompletedProcess[str] | None = None,
 ) -> tuple[list[list[str]], Callable[[list[str]], subprocess.CompletedProcess[str]]]:
-    """A fake command run: git rev-parse prints heads, shipmill product show gives product,
-    git log prints entered; every command is recorded"""
+    """A fake command run: git rev-parse prints heads (origin for `--verify origin/HEAD`, SHA by
+    default), git ls-tree and git show give the checkout's files as origin/HEAD's commit,
+    shipmill product show gives product, git log prints entered; every command is recorded"""
     ran: list[list[str]] = []
 
     def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         ran.append(cmd)
+        if cmd[0] == "git" and "rev-parse" in cmd and "--verify" in cmd:
+            return origin or done(f"{SHA}\n")
         if cmd[0] == "git" and "rev-parse" in cmd:
             return done(heads)
+        if cmd[0] == "git" and "ls-tree" in cmd:
+            root = Path(cmd[2])
+            tops = [root / name for name in cmd[cmd.index("--") + 1 :]]
+            found = sorted(f for top in tops for f in ([top] if top.is_file() else top.rglob("*")) if f.is_file())
+            return done("".join(f"{f.relative_to(root).as_posix()}\0" for f in found))
+        if cmd[0] == "git" and "show" in cmd:
+            commit, name = cmd[-1].split(":", 1)
+            assert commit == SHA, cmd
+            return done((Path(cmd[2]) / name).read_text(encoding="utf-8"))
         if cmd[0] == "git" and "log" in cmd:
             return done(entered)
         assert cmd[:3] == ["shipmill", "product", "show"], cmd
@@ -337,15 +353,78 @@ def test_s027_7_without_goals_the_output_has_no_goals_key(
     assert ran == []
 
 
-def test_s027_7_a_checkout_not_at_origin_head_exits_2(
+def test_s027_7_a_checkout_without_origin_head_exits_2(
     rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _, run = commands(heads=f"{SHA}\n{'b' * 40}\n")
+    _, run = commands(heads=f"{SHA}\n", origin=done(code=1))
     with pytest.raises(SystemExit) as stopped:
         rt.gather(arguments(tmp_path), sources(rt, run))
     assert stopped.value.code == 2
     err = capsys.readouterr().err
-    assert "fetch origin" in err and "checkout" in err
+    assert "fetch origin" in err and "remote set-head origin --auto" in err
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_s027_7_a_checkout_behind_origin_head_gathers_origin_heads_files(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1876: a shared main copy lags its origin/main for minutes after another worktree
+    fetches; gather reads the direction, the specs, the config, and the goals' history at
+    origin/HEAD's commit, so the checkout's own HEAD and working tree no longer matter"""
+    repo = tmp_path / "main-copy"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    for key, value in (("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+        git(repo, "config", key, value)
+
+    def commit(files: Mapping[str, str], when: str) -> None:
+        for name, text in files.items():
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text(text, encoding="utf-8")
+        git(repo, "add", "-A")
+        dated = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+        hooks = f"core.hooksPath={tmp_path / 'no-hooks'}"
+        subprocess.run(["git", "-C", str(repo), "-c", hooks, "commit", "-q", "-m", when], env=dated, check=True)
+
+    commit(
+        {"README.md": "old\n", ".github/shipmill.toml": "[decisions]\nveto_hours = 6\n"},
+        iso(START - dt.timedelta(days=40)),
+    )
+    behind = git(repo, "rev-parse", "HEAD")
+    commit(
+        {
+            "docs/product.md": "# Product\n\n## Goals\n\n- G-1: Ship\n",
+            "docs/specs/007-thing.md": "# S-007: Thing\n\nserves: G-1\n\n## Issues\n\n- #15: S-007-1\n",
+            ".github/shipmill.toml": "[decisions]\nveto_hours = 12\n",
+        },
+        iso(END - dt.timedelta(days=30)),
+    )
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    git(repo, "reset", "-q", "--hard", behind)  # another worktree's fetch moved origin/main only
+    (repo / ".github" / "shipmill.toml").write_text("[decisions]\nveto_hours = 3\n", encoding="utf-8")
+
+    read: list[str] = []
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "git":
+            return subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert cmd[:3] == ["shipmill", "product", "show"], cmd
+        folder = Path(cmd[cmd.index("--repo") + 1])
+        read.append((folder / "docs" / "product.md").read_text(encoding="utf-8"))
+        assert rt.spec_goals(folder, "o/r") == {15: {"G-1"}}
+        return done(json.dumps({"goals": [{"id": "G-1", "text": "Ship", "measure": None}]}))
+
+    assert rt.gather(arguments(repo, stalled_weeks=1), sources(rt, run, graphql=graphql(rt, [], []))) == 0
+    goals = json.loads(capsys.readouterr().out)["goals"]["goals"]
+    assert read == ["# Product\n\n## Goals\n\n- G-1: Ship\n"]
+    assert [(g["id"], g["stalled"]) for g in goals] == [("G-1", True)]  # listed 30 days ago, at origin/HEAD only
+    assert rt.gather(policy_args(repo), sources(rt, run, graphql=thread_graphql(rt, [], []))) == 0
+    assert json.loads(capsys.readouterr().out)["decisions"]["veto_hours"] == 12
+    assert git(repo, "rev-parse", "HEAD") == behind and git(repo, "status", "--porcelain") == "M .github/shipmill.toml"
 
 
 def test_s027_7_a_direction_shipmill_refuses_exits_2(
@@ -357,7 +436,7 @@ def test_s027_7_a_direction_shipmill_refuses_exits_2(
     with pytest.raises(SystemExit) as stopped:
         rt.gather(arguments(tmp_path), sources(rt, run))
     assert stopped.value.code == 2
-    assert "shipmill product check" in capsys.readouterr().err
+    assert f"run `shipmill product check --ref origin/HEAD --repo {tmp_path}`" in capsys.readouterr().err
 
 
 HOME_REFUSED = (
@@ -385,7 +464,7 @@ def test_a_components_retro_reads_its_own_goals_so_an_unreadable_home_never_stop
             return done(code=2, stderr=HOME_REFUSED)
         return done(json.dumps(own))
 
-    assert rt.read_direction(sources(rt, run), tmp_path) == own
+    assert rt.read_direction(sources(rt, run), at(rt, tmp_path)) == own
     assert ran[-1] == ["shipmill", "product", "show", "--json", "--local", "--repo", str(tmp_path)]
 
 
@@ -495,6 +574,11 @@ def test_s027_9_met_weeks_counts_back_and_asks_only_while_a_goal_is_met(rt: Modu
     assert asked == []
 
 
+def at(rt: ModuleType, checkout: Path) -> Any:
+    """The checkout's own files as origin/HEAD's commit, SHA"""
+    return rt.Snapshot(checkout, SHA, checkout)
+
+
 def test_s027_9_no_measure_runs_no_extra_week_and_a_measure_does(rt: ModuleType, tmp_path: Path) -> None:
     def direction(m: dict[str, Any] | None) -> dict[str, Any]:
         return {"goals": [{"id": "G-1", "text": "a", "measure": m}]}
@@ -503,10 +587,10 @@ def test_s027_9_no_measure_runs_no_extra_week_and_a_measure_does(rt: ModuleType,
     _, run = commands(entered=iso(END - dt.timedelta(days=100)))
     asked: list[str | None] = []
     src = sources(rt, run, graphql=graphql(rt, [], []), reports=met[2:], asked=asked)
-    rt.goals_report(arguments(tmp_path), src, direction(None), met[:2])
+    rt.goals_report(arguments(tmp_path), at(rt, tmp_path), src, direction(None), met[:2])
     assert asked == []
     touch = measure("human_touch", "<=", 0.2, "ratio", "human_touch <= 20%")
-    found = rt.goals_report(arguments(tmp_path), src, direction(touch), met[:2])
+    found = rt.goals_report(arguments(tmp_path), at(rt, tmp_path), src, direction(touch), met[:2])
     assert asked == [met[1]["start"], met[2]["start"]]  # each earlier week ends where the later starts
     assert (found["goals"][0]["status"], found["goals"][0]["met_weeks"]) == ("met", 4)
 
@@ -517,7 +601,7 @@ def test_s027_10_a_goal_unserved_for_the_weeks_is_stalled_unless_it_is_new(rt: M
     for entered, stalled in ((END - dt.timedelta(days=30), True), (END - dt.timedelta(days=10), False)):
         ran, run = commands(entered=iso(entered) + "\n" + iso(END))
         src = sources(rt, run, graphql=graphql(rt, [], pulls))
-        found = rt.goals_report(arguments(tmp_path), src, direction, [report(END), report(START)])
+        found = rt.goals_report(arguments(tmp_path), at(rt, tmp_path), src, direction, [report(END), report(START)])
         rows = {g["id"]: g for g in found["goals"]}
         assert (rows["G-1"]["stalled"], rows["G-1"]["weeks_unserved"]) == (stalled, 3)
         assert (rows["G-2"]["stalled"], rows["G-2"]["weeks_unserved"]) == (False, 2)
@@ -532,6 +616,7 @@ def test_s027_10_a_goal_unserved_for_the_weeks_is_stalled_unless_it_is_new(rt: M
                 "--format=%cI",
                 "-G",
                 "^- G-1: ",
+                SHA,
                 "--",
                 "docs/product.md",
                 "docs/product",
@@ -570,7 +655,7 @@ def test_s027_11_off_direction_verdicts_and_unlinked_agent_pulls(rt: ModuleType,
     ]
     _, run = commands()
     src = sources(rt, run, graphql=graphql(rt, issues, pulls))
-    found = rt.goals_report(arguments(tmp_path), src, direction, [report(END), report(START)])
+    found = rt.goals_report(arguments(tmp_path), at(rt, tmp_path), src, direction, [report(END), report(START)])
     off = found["off_direction"]
     assert off["postponed"] == [40]
     assert off["wont_fix"] == [
@@ -595,7 +680,7 @@ def test_s027_12_the_weekly_retro_reports_goals_and_proposes_but_never_edits_the
     ).stdout
     for flag in ("--goals", "--checkout", "--met-weeks", "--stalled-weeks", "--bot"):
         assert f"{flag} " in flags and flag in retro, flag  # the skill names only flags gather has
-    assert "Always pass `--goals --checkout <dir>`, a checkout of the repo fetched and at `origin/<default>`" in retro
+    assert "Always pass `--goals --checkout <dir>`, a checkout of the repo fetched with `git -C <dir> fetch" in retro
     assert "with `[agents] app_id` also pass `--bot <slug>[bot]`, the App that posts triage's verdicts" in retro
     assert "a section **Goals**: a row per goal (id, served this week and the week before, measure status" in retro
     assert "the quality-bar row, the off-direction counts with the most-cited non-goal, and the unlinked" in retro
@@ -642,7 +727,7 @@ def goal_rows(
 ) -> dict[str, dict[str, Any]]:
     _, run = commands(entered=iso(END - dt.timedelta(days=100)))
     src = sources(rt, run, graphql=graphql(rt, [], []), reports=[])
-    found = rt.goals_report(arguments(tmp_path), src, {"goals": goals}, weeks)
+    found = rt.goals_report(arguments(tmp_path), at(rt, tmp_path), src, {"goals": goals}, weeks)
     return {g["id"]: g for g in found["goals"]}
 
 
@@ -1028,10 +1113,11 @@ def test_s030_18_gather_reads_the_levels_from_the_checkouts_config(
     with pytest.raises(SystemExit) as stopped:
         rt.gather(policy_args(tmp_path), sources(rt, run))
     assert stopped.value.code == 2
-    assert "scope = 'notify' is below its floor ask" in capsys.readouterr().err
-    _, elsewhere = commands(heads=f"{SHA}\n{'b' * 40}\n")
+    err = capsys.readouterr().err
+    assert f"{tmp_path}: origin/HEAD:.github/shipmill.toml: [decisions] scope = 'notify' is below its floor ask" in err
+    _, unset = commands(origin=done(code=1))
     with pytest.raises(SystemExit) as stopped:
-        rt.gather(policy_args(tmp_path), sources(rt, elsewhere))
+        rt.gather(policy_args(tmp_path), sources(rt, unset))
     assert stopped.value.code == 2
     assert "fetch origin" in capsys.readouterr().err
 
