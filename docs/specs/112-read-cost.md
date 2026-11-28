@@ -23,8 +23,8 @@ show what is left:
 - **A person's session reads as the maintainer** (#1849). `shipmill status` (with `--item` and
   `--summary`), `shipmill queue`, and the `status --item` that `decision answer` runs read with
   plain `gh`, and so do the state scripts a session runs by hand. On 2026-11-28 one session's
-  check ran two goal-report chains on the maintainer's token beside 25 gates. The maintainer
-  asked for shipmill commands for these reports rather than a generic script runner, so the
+  check ran two goal-report chains on the maintainer's token beside 25 gates. A comment on
+  #1849 proposes shipmill commands for these reports rather than a generic script runner, so the
   scripts stay the skills' internals
 
 ## Behaviour
