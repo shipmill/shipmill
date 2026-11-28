@@ -707,6 +707,52 @@ def test_s078_7_metric_measures_maps_each_quality_metric_and_setup_offers_it(rt:
     assert "rework_cycles" not in offered
 
 
+DECIDED_METRICS = {
+    "decided_credited": "Decided work credited",
+    "decided_written_as_decider": "Decided work written as the decider",
+}
+
+
+def test_s109_9_metric_measures_maps_each_decided_metric_to_its_measures_value(rt: ModuleType) -> None:
+    from shipmill.product import Metric, Unit
+
+    from . import test_metrics as tm
+
+    assert {m: rt.METRIC_MEASURES[m] for m in DECIDED_METRICS} == {m: (n, "value") for m, n in DECIDED_METRICS.items()}
+    assert all(Metric(m).unit is Unit.RATIO for m in DECIDED_METRICS)
+    mx = sys.modules["metrics"]  # loaded by retro, as when it runs
+    bob = (tm.approved("bob"),)
+    full = tm.decided_data(
+        mx,
+        tm.decision(mx, bob, merge=tm.merge_commit("bob", "bob", message=f"Fix\n\n{tm.BOT_TRAILER}")),  # both
+        tm.decision(mx, bob, merge=tm.merge_commit("alice", "alice")),  # neither
+        tm.decision(mx, bob, merge=tm.merge_commit("alice", "alice")),  # neither
+        tm.decision(mx, bob, merge=tm.merge_commit("bob", "bob")),  # credited, bob's own merge
+    )
+    w = tm.window(mx)
+    found = json.loads(mx.render("o/r", 30, w, mx.measures(full, w), "json"))
+    empty = json.loads(mx.render("o/r", 30, w, mx.measures(tm.data(mx), w), "json"))
+    expected = {"decided_credited": 0.5, "decided_written_as_decider": 0.25}
+    for metric, value in expected.items():
+        assert rt.status(measure(metric, ">=", value, "ratio", "x"), found)[:2] == ("met", value), metric
+        assert rt.status(measure(metric, ">", value, "ratio", "x"), found)[:2] == ("not met", value), metric
+        assert rt.status(measure(metric, ">=", value, "ratio", "x"), empty)[:2] == ("no data", None), metric
+
+
+def test_s109_10_setup_offers_both_decided_metrics_and_ship_watch_names_both_measures() -> None:
+    def text(skill: str) -> str:
+        return " ".join((SCRIPTS.parents[1] / skill / "SKILL.md").read_text(encoding="utf-8").split())
+
+    offered = (
+        text("shipmill-setup").split("offer a measure from the registry", 1)[1].split("Write only the measures", 1)[0]
+    )
+    listed = text("github-ship-watch").split("`scripts/metrics.py <owner/repo>", 1)[1].split("## Trends", 1)[0]
+    for metric, name in DECIDED_METRICS.items():
+        assert f"`{metric}`" in offered, metric
+        assert name.lower() in listed.lower(), name
+        assert f"**{name}**" in listed, name
+
+
 def test_s066_9_a_missed_lead_time_goal_names_the_stage_that_grew_most(
     rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

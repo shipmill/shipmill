@@ -112,6 +112,9 @@ STAGE_METRICS = tuple(
 )
 
 
+DECIDED_METRICS = ("decided_credited", "decided_written_as_decider")  # spec 109
+
+
 QUALITY_METRICS = {
     "first_pass_merge_rate": "ratio",
     "plan_match": "ratio",
@@ -131,6 +134,7 @@ def test_s027_1_the_registry_is_the_spec_s_nine_metrics_and_spec_066_s_stages() 
         "issue_to_release_p90": "hours",
         "human_touch": "ratio",
         "agent_share": "ratio",
+        **dict.fromkeys(DECIDED_METRICS, "ratio"),
         **dict.fromkeys(STAGE_METRICS, "hours"),
         **QUALITY_METRICS,
     }
@@ -165,6 +169,39 @@ def test_s078_7_check_takes_each_quality_metric_in_its_unit_and_refuses_another(
         ]
         assert run(root, "check") == 1
         capsys.readouterr()
+
+
+HELD_G1 = "- G-1: Held: decided work is credited. Threshold: its measure line. Source: the weekly metrics\n"
+
+
+@pytest.mark.parametrize("metric", DECIDED_METRICS)
+def test_s109_8_check_takes_each_decided_metric_as_a_ratio_and_refuses_another_unit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], metric: str
+) -> None:
+    held = WELL_FORMED.replace("- G-1: Widgets reach buyers in a day\n", HELD_G1)
+    assert Metric(metric).unit is Unit.RATIO
+    for target, value in (("90%", 0.9), ("100%", 1.0)):
+        root = write(tmp_path / target, held.replace(G1_MEASURE, f"  measure: {metric} >= {target}\n"))
+        assert check(root) == ()
+        assert run(root, "check") == 0
+        capsys.readouterr()
+        assert run(root, "show", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["goals"][0]["measure"] == {
+            "metric": metric,
+            "comparison": ">=",
+            "target": pytest.approx(value),
+            "unit": "ratio",
+            "text": f"{metric} >= {target}",
+        }
+    for target in ("12h", "2d", "5/week"):
+        root = write(
+            tmp_path / target.replace("/", "-"), held.replace(G1_MEASURE, f"  measure: {metric} >= {target}\n")
+        )
+        assert [str(p) for p in check(root)] == [
+            f"docs/product.md:14: `{metric}` takes a target in `<n>%`, a non-negative number; got `{target}`"
+        ]
+        assert run(root, "check") == 1
+        assert f"docs/product.md:14: `{metric}`" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("metric", STAGE_METRICS)

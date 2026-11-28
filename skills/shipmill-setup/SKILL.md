@@ -785,6 +785,7 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    `pr_to_merge_median`, `pr_to_merge_p90`, `merge_to_release_median`,
    `merge_to_release_p90`, and the agent quality measures (spec 078) `review_time_median`,
    `review_time_p90` (`<n>h` or `<n>d`), `change_failure_rate`, `human_touch`, `agent_share`,
+   the decided work GitHub credits (spec 109) `decided_credited`, `decided_written_as_decider`,
    `first_pass_merge_rate`, `plan_match` (`<n>%`), such as
    `issue_to_release_median < 2d`. Write only the measures the maintainer gives, each with
    `$CR product measure G-n "<metric> <comparison> <target>"`, never by hand; a goal they

@@ -1,6 +1,6 @@
 # S-109: How much of the work a person decided GitHub credits to them, per repository
 
-status: approved
+status: built
 serves: G-8
 
 ## Problem
@@ -137,3 +137,20 @@ and `skills/github-ship-watch/SKILL.md` names the two measures where it lists me
 - shipmill/shipmill#1835: S-109-8, S-109-9, S-109-10
 
 ## Verification
+
+Checked on the default branch plus #1835's pull request: `shipmill product check` and
+`shipmill product show --json` run on a direction holding a measure on each metric, the code of
+`metrics.py`'s two measures and `retro.py`'s map read, the skills' text read, and the tests
+`specs.py coverage --spec 109` lists, all passing. metrics.py wasn't run against a live
+repository; its forge is scripted in the tests.
+
+- S-109-1: `test_s109_1_*` reads the JSON `measures` list with Decided work credited and Decided work written as the decider right after Agent share, each in `ratio` with `value`, `decided`, `credited`, `written_as_decider`, `merges`, and `people`, and "no data" with a null value and the detail `no decided PR merged in the window` with no merge and with only undecided merges; `measures()` lists `decided_credited` and `decided_written` right after `agent_share`, holds
+- S-109-2: `test_s109_2_*` scripts a forge of twelve merges, one per spec 049 source and its edge cases (a later CHANGES_REQUESTED, a later COMMENTED, an answer on a comments' second page, a parent's author, a parent's `planned`, a reader's `planned`, the App's `planned` on a `Decision by` relay), and reads the deciders each names, holds
+- S-109-3: `test_s109_3_*` reads no decider from a Bot, a `[bot]` login, a `--bot` login, an untrusted account, the pull request's author, and a marked record, a bot's `Decision by` relay still naming its login and a mid-line marker not counting as one; a merge with only those counts in `merges` and not in `decided`, holds
+- S-109-4: `test_s109_4_*` reads 2 of 4 decided merges credited: logins compared without case, a trailer GitHub doesn't resolve and a decider not named leave a merge uncredited, holds
+- S-109-5: `test_s109_5_*` reads 1 of 5 decided merges written as the decider: a person's own merge, an App-authored merge naming the decider, a person co-author, and a non-decider's git author don't count, holds
+- S-109-6: `test_s109_6_*` reads one `people` entry per decider login, sorted, with its own counts, and no login in the table or the markdown, holds
+- S-109-7: `test_s109_7_*` reads that the forge is asked for the deciders' records of the pull requests merged in the window only, and none when trends.py's read measures neither; the test that `proves: S-109-7` reads one `subprocess.run`, `gh api graphql`, in metrics.py, holds
+- S-109-8: `shipmill product check` on a direction with `measure: decided_credited >= 90%` and `measure: decided_written_as_decider >= 50%` under two `Held:` goals printed it well formed, and `product show --json` gave each unit `ratio` and target 0.9 and 0.5; with `decided_written_as_decider >= 2d` it exited 1 naming `docs/product.md:16` and the `<n>%` form; `test_s109_8_*` covers both metrics with `%` targets and `12h`, `2d`, and `5/week` refused, holds
+- S-109-9: `METRIC_MEASURES` maps `decided_credited` to (`Decided work credited`, `value`) and `decided_written_as_decider` to (`Decided work written as the decider`, `value`); `test_s109_9_*` reads a measure held on each as met, not met, and no data from metrics.py's JSON, holds
+- S-109-10: `skills/shipmill-setup/SKILL.md` lists `decided_credited` and `decided_written_as_decider` among the `<n>%` metrics of the registry it offers, and `skills/github-ship-watch/SKILL.md` names Decided work credited and Decided work written as the decider in its list of metrics.py's measures and in a bullet of their own; `test_s109_10_*` reads both, holds
