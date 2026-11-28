@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.194.1] - 2026-11-28
+
+### Fixed
+
+- Projects: `intake_state.py --projects` gives an open head whose check issue closed the holder `agent`, matching `status --item`, and docs/flow.md names both cases of closing (#1851)
+
 ## [0.194.0] - 2026-11-28
 
 ### Changed
@@ -3394,7 +3400,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.194.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.194.1...HEAD
+[0.194.1]: https://github.com/shipmill/shipmill/compare/v0.194.0...v0.194.1
 [0.194.0]: https://github.com/shipmill/shipmill/compare/v0.193.6...v0.194.0
 [0.193.6]: https://github.com/shipmill/shipmill/compare/v0.193.5...v0.193.6
 [0.193.5]: https://github.com/shipmill/shipmill/compare/v0.193.4...v0.193.5
