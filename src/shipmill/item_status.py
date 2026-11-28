@@ -436,7 +436,7 @@ PLAN_PART = re.compile(
 )
 HEAD_PART = re.compile(
     r"#(?P<number>[1-9]\d*) (?P<state>PROJECT_[A-Z_]+) holder=(?P<holder>[a-z]+)"
-    r"(?: check=#(?P<check>[1-9]\d*))?(?: held=(?P<held>label|check))?"
+    r"(?: check=#(?P<check>[1-9]\d*))?(?: held=(?P<held>label|check))?(?P<checked> checked)?"
 )
 ACTIVE_PART = re.compile(r"active (?P<active>\d+) of (?P<limit>[1-9]\d*)")
 OVERDUE_PART = re.compile(r"overdue (?P<ref>[\w.-]+/[\w.-]+#[1-9]\d*)")
@@ -462,6 +462,7 @@ class HeadState:
     state: str
     check: int | None
     held: str | None  # a held head's reason: "label" (labelled held) or "check" (no check issue)
+    checked: bool = False  # a closing head whose check issue is closed: the check ran
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,7 +521,9 @@ def projects(facts: Facts) -> Projects:
     for part in parts_of(facts, PROJECT_STATE):
         if (head := HEAD_PART.fullmatch(part)) is not None:
             check = int(head["check"]) if head["check"] else None
-            heads[int(head["number"])] = HeadState(int(head["number"]), head["state"], check, head["held"])
+            heads[int(head["number"])] = HeadState(
+                int(head["number"]), head["state"], check, head["held"], head["checked"] is not None
+            )
         elif (count := ACTIVE_PART.fullmatch(part)) is not None:
             active = (int(count["active"]), int(count["limit"]))
         elif (late := OVERDUE_PART.fullmatch(part)) is not None:
@@ -654,6 +657,12 @@ def head_condition(facts: Facts, head: HeadState, product: Projects) -> Conditio
             "a project in focus: your steps on it come first",
             Who.MAINTAINER,
             f"your steps on its parts, then someone other than the builder runs {check}",
+        )
+    if head.state == "PROJECT_CLOSING" and head.checked:
+        return Condition(
+            f"closing: {check} ran and is closed, and the head waits on a session to close it",
+            Who.AGENT,
+            f"a gate session closes the head with a comment linking {check}, or you close it",
         )
     if head.state == "PROJECT_CLOSING":
         return Condition(
