@@ -16,7 +16,10 @@ from types import ModuleType
 import pytest
 
 from shipmill import item_status
-from shipmill.status import parse_rows
+from shipmill.status import Issue, Pull, parse_rows
+from shipmill.status_summary import Split, split
+from tests.test_status_item import NONE
+from tests.test_status_picture import facts
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills" / "github-ship-watch" / "scripts" / "watch_state.py"
@@ -276,6 +279,66 @@ def test_1469_item_reads_no_pull_request_the_trusted_only_report_leaves_unread(w
     assert item.stdout.splitlines() == [line for line in full.stdout.splitlines() if read_by_status(line, 4)]
     assert not any(c[:2] == ["pr", "list"] for c in full_calls)
     assert not any(c[:2] == ["pr", "list"] for c in item_calls)
+
+
+# #1855: the fixture's open issues and pull requests, which shipmill status --summary explains each of
+OPEN_ITEMS = (3, 4, 5, 6, 12, 20, 30, 40)
+
+
+def test_1855_open_items_prints_the_full_reports_rows_every_open_item_reads(host: Host, full: list[str]) -> None:
+    proc, _ = host.watch("--open-items")
+    assert proc.returncode in (0, 1), proc.stderr
+    shown = proc.stdout.splitlines()
+    assert shown and [line for line in full if line in shown] == shown  # the full report's, in its order
+    for number in OPEN_ITEMS:
+        assert [line for line in shown if read_by_status(line, number)] == [
+            line for line in full if read_by_status(line, number)
+        ], number
+
+
+def summary_split(lines: list[str], hold: bool) -> object:
+    """status --summary's split of the fixture's open items, from these rows, with or without
+    the hold, under which every item is the maintainer's"""
+    rows = [r for r in parse_rows("".join(f"{line}\n" for line in lines)) if hold or r.state != "HOLD"]
+    issues = [Issue(12, "NEW"), Issue(20, "NEEDS_DECISION"), Issue(30, "NEW"), Issue(40, "NEW")]
+    pulls = [Pull(n, n == 6, "CLEAN", "main") for n in (3, 4, 5, 6)]
+    return split(facts(*rows, issues=issues, pulls=pulls), lambda _: NONE, None)
+
+
+@pytest.mark.parametrize("hold", [True, False])
+def test_1855_the_summary_places_the_open_items_as_from_the_full_report(
+    host: Host, full: list[str], hold: bool
+) -> None:
+    proc, _ = host.watch("--open-items")
+    found = summary_split(proc.stdout.splitlines(), hold)
+    assert found == summary_split(full, hold)
+    assert isinstance(found, Split)
+    holders = {h for h, ns in (*found.issues.items(), *found.pulls.items()) if ns}
+    assert len(holders) == (1 if hold else 3), holders  # without the hold, the rows place them apart
+
+
+def test_1855_open_items_skips_the_reads_no_row_the_summary_reads_comes_from(host: Host) -> None:
+    _, full_calls = host.watch()
+    proc, open_calls = host.watch("--open-items")
+    assert proc.returncode in (0, 1) and proc.stdout, proc.stderr
+    shown = [" ".join(c) for c in open_calls]
+    skipped = (
+        "/deployments",
+        "Ready to",
+        "run list",
+        "--label opportunity --label planned",
+        "--state closed --label incident",
+    )
+    for read in skipped:
+        assert any(read in " ".join(c) for c in full_calls), read
+        assert not any(read in c for c in shown), read
+    assert len(open_calls) < len(full_calls)
+
+
+@pytest.mark.parametrize("flags", [["--item", "12"], ["--tier", "3"], ["--sweep"], ["--host", "sessions"]])
+def test_1855_open_items_goes_without_item_tier_sweep_and_host(flags: list[str]) -> None:
+    proc = subprocess.run([sys.executable, str(SCRIPT), "o/r", "--open-items", *flags], capture_output=True, text=True)
+    assert proc.returncode == 2 and "--open-items reads the full report's rows" in proc.stderr
 
 
 @pytest.mark.parametrize("flags", [["--tier", "3"], ["--sweep"], ["--host", "sessions"]])
