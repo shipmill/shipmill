@@ -57,6 +57,19 @@ before it):
                      footer, or a commit a "Co-Authored-By: Claude" or "Claude-Session:"
                      trailer (AGENT_MARKS, case-insensitive). Of those, how many a person
                      approved in a GitHub review: the human gate
+  Decided work       of the PRs merged in the window that name a decider (spec 049: an
+  credited           approver whose latest review is APPROVED, a trusted needs-decision
+                     answerer or the login a bot's "Decision by @<login>" relay names, the
+                     trusted author of an issue it closes or of its parent, the person with
+                     write, maintain or admin permission who added planned to an opportunity
+                     it closes or to its parent; never a Bot, "[bot]" or --bot account, the
+                     PR's author, or a record carrying the agent marker as a line of its
+                     own), those whose every decider's login is among the accounts GitHub
+                     credits the merge commit to (its authors)
+  Decided work       of those decided PRs, the ones whose merge commit's git author resolves
+  written as the     to a decider and whose message has a Co-authored-by trailer for an
+  decider            App's bot ("[bot]@users.noreply.github.com"). Both carry, in --json only,
+                     a "people" list counting the PRs each decider login decided
 
 The agent quality measures (spec 078), over the PRs Agent share counts as an agent's. A
 verdict is a review whose body's first line is a review record (`<!-- shipmill:review merge
@@ -277,9 +290,84 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: In
 }
 """
 )
+# What spec 109 reads of a PR merged in the window, and of each issue it closes and its parent
+FILED = (
+    "number repository { nameWithOwner } authorAssociation body author { __typename login }"
+    " labels(first: 100) { pageInfo { hasNextPage } nodes { name } }"
+)
+COMMENT_FIELDS = " nodes { body authorAssociation author { __typename login } }"
+COMMENTS = " comments(first: $size) { " + PAGE_INFO + COMMENT_FIELDS + " }"
+# DECIDED reads BATCH PRs at once, as p0, p1, ... for the numbers $n0, $n1, ...: one read per
+# PR took a run over a busy month past ten minutes
+BATCH = 10
+DECIDED = (
+    "query($owner: String!, $name: String!, $size: Int!, "
+    + ", ".join(f"$n{k}: Int!" for k in range(BATCH))
+    + ") {\n  repository(owner: $owner, name: $name) {\n"
+    + "".join(f"    p{k}: pullRequest(number: $n{k}) {{ ...decided }}\n" for k in range(BATCH))
+    + """  }
+}
+fragment decided on PullRequest {
+  author { __typename login }
+  mergeCommit {
+    message
+    author { user { login } }
+    authors(first: 100) { pageInfo { hasNextPage } nodes { user { login } } }
+  }
+ """
+    + COMMENTS
+    + """
+  closingIssuesReferences(first: 20) { pageInfo { hasNextPage } nodes { ...filed parent { ...filed } } }
+}
+fragment filed on Issue { """
+    + FILED
+    + COMMENTS
+    + " }\n"
+)
+THREAD_COMMENTS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    thread: issueOrPullRequest(number: $number) {
+      ... on Issue { comments(first: $size, after: $cursor) { """
+    + PAGE_INFO
+    + COMMENT_FIELDS
+    + """ } }
+      ... on PullRequest { comments(first: $size, after: $cursor) { """
+    + PAGE_INFO
+    + COMMENT_FIELDS
+    + """ } }
+    }
+  }
+}
+"""
+)
+LABELERS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      timelineItems(itemTypes: [LABELED_EVENT], first: $size, after: $cursor) { """
+    + PAGE_INFO
+    + """ nodes { ... on LabeledEvent { label { name } actor { __typename login } } } }
+    }
+  }
+}
+"""
+)
+PERMISSION = """
+query($owner: String!, $name: String!, $login: String!) {
+  repository(owner: $owner, name: $name) {
+    collaborators(login: $login, first: 1) { edges { permission } }
+  }
+}
+"""
 # Each query's first page size. Issues and pull requests carry nested connections, so they
 # start smaller; a rejected page halves (see sized), and the smaller size sticks
 SIZES = {
+    DECIDED: 50,
+    THREAD_COMMENTS: 100,
+    LABELERS: 100,
     RELEASES: 100,
     COMPARE: 100,
     PULLS: 50,
@@ -451,6 +539,40 @@ class Data:
     incidents: list[Node]
     blockers: list[Node]
     bots: frozenset[str] = field(default_factory=frozenset)
+    # spec 109: what names a decider, by PR number, for each PR merged in the window; a PR
+    # with no entry names none
+    decisions: dict[int, Decision] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Thread:
+    """An issue a PR merged in the window closes, or that issue's parent, with what spec 049
+    reads of it: its labels lowercased, its comments oldest first, and the actors of its
+    `labeled` events adding planned, oldest first (None for a deleted account), read only for
+    an opportunity labelled planned"""
+
+    number: int
+    author: Node | None
+    association: str
+    body: str
+    labels: frozenset[str]
+    comments: list[Node]
+    labelers: list[Node | None]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What spec 109 reads of a PR merged in the window: its author, its reviews and comments
+    oldest first, the issues of the repo it closes and their parents (each once), its merge
+    commit (message, git author, and the accounts GitHub credits it to), and the permission on
+    the repo of each person who accepted one of those issues, by lowercase login"""
+
+    author: Node | None
+    reviews: list[Node]
+    comments: list[Node]
+    issues: list[Thread]
+    merge: Node | None
+    permissions: dict[str, str]
 
 
 def stable_releases(nodes: list[Node]) -> list[Release]:
@@ -482,7 +604,11 @@ def fetch(
     blocker: str,
     run: Runner = gh_graphql,
     bots: frozenset[str] = frozenset(),
+    decided: bool = False,
 ) -> Data:
+    """What the measures read; decided adds spec 109's records of each PR merged in the
+    window, which only Decided work credited and written as the decider read (trends.py
+    leaves them out)"""
     owner, _, name = repo.partition("/")
     if not owner or not name or "/" in name:
         fail(f"repo must be owner/name, got {repo!r}")
@@ -516,11 +642,19 @@ def fetch(
     # shipped (a merge's commit date is its merge time; a day covers clock skew)
     cutoff = oldest - dt.timedelta(days=1)
     pulls = pages(run, PULLS, base, sizes, ["pullRequests"], "merged pull requests", lambda n: _older(n, cutoff))
+    todo: list[Node] = []  # the PRs merged in the window, whose deciders spec 109 reads
     for pr in pulls:
         pull_commits(run, base, sizes, pr, window)
-        if measured(pr, window):  # the agent quality measures read all its reviews and files
+        if not merged(pr, window):
+            continue
+        made = agent_made(pr)
+        if made or decided:  # the agent quality measures and spec 109's approvers read all its reviews
             extend(run, base, sizes, pr, "verdicts", PULL_VERDICTS, f"the reviews of PR #{pr['number']}")
+        if made:  # the agent quality measures read its files
             extend(run, base, sizes, pr, "files", PULL_FILES, f"the changed files of PR #{pr['number']}")
+        if decided:
+            todo.append(pr)
+    decisions = decisions_of(run, base, sizes, todo, bots)
 
     # Newest first, back to the window's start; with --environment, also back to a chosen
     # environment's deployment, so one deployed only before the window still counts as deployed
@@ -544,10 +678,123 @@ def fetch(
 
     incidents = labelled(run, base, sizes, incident, since)
     blockers = labelled(run, base, sizes, blocker, since)
-    data = Data(releases, shipped, hotfixes, pulls, deployed, in_window, incidents, blockers, bots)
+    data = Data(releases, shipped, hotfixes, pulls, deployed, in_window, incidents, blockers, bots, decisions)
     for closed in closed_issues(data, window):
         issue_comments(run, sizes, closed, bots)
     return data
+
+
+def decisions_of(
+    run: Runner, base: Variables, sizes: Sizes, pulls: Sequence[Node], bots: frozenset[str]
+) -> dict[int, Decision]:
+    """Spec 109: each PR's records, read BATCH PRs to a DECIDED query; a batch short of BATCH
+    asks its last PR again in the free places"""
+    decisions: dict[int, Decision] = {}
+    threads: dict[int, Thread] = {}
+    permissions: dict[str, str] = {}
+    for start in range(0, len(pulls), BATCH):
+        batch = pulls[start : start + BATCH]
+        numbers = [pr["number"] for pr in batch]
+        padded = numbers + [numbers[-1]] * (BATCH - len(numbers))
+        variables: Variables = {**base, **{f"n{k}": n for k, n in enumerate(padded)}}
+        what = f"the deciders of PRs {', '.join(f'#{n}' for n in numbers)}"
+        found = sized(run, DECIDED, variables, sizes, what)
+        for k, pr in enumerate(batch):
+            node = dig(found, [f"p{k}"], f"the deciders of PR #{pr['number']}")
+            decisions[pr["number"]] = decision(run, base, sizes, pr, node, threads, permissions, bots)
+    return decisions
+
+
+def decision(
+    run: Runner,
+    base: Variables,
+    sizes: Sizes,
+    pr: Node,
+    found: Node,
+    threads: dict[int, Thread],
+    permissions: dict[str, str],
+    bots: frozenset[str],
+) -> Decision:
+    """Spec 109: the records that name a PR's deciders (spec 049) and its merge commit's
+    credit, from its DECIDED node. threads and permissions are shared across PRs, so an issue
+    or a person is read once"""
+    number = pr["number"]
+    merge = found["mergeCommit"]
+    if merge is not None and merge["authors"]["pageInfo"]["hasNextPage"]:
+        fail(f"the merge commit of PR #{number} has over 100 authors")
+    closes = found["closingIssuesReferences"]
+    if closes["pageInfo"]["hasNextPage"]:
+        fail(f"PR #{number} closes over 20 issues")
+    repo = f"{base['owner']}/{base['name']}".lower()
+    issues: list[Thread] = []
+    for node in closes["nodes"]:
+        if home(node) != repo:
+            continue  # an issue of another repo: its records are that repo's
+        parent = node["parent"]
+        for one in (node, parent if parent is not None and home(parent) == repo else None):
+            if one is None or any(i.number == one["number"] for i in issues):
+                continue
+            if one["number"] not in threads:
+                threads[one["number"]] = thread(run, base, sizes, one)
+            issues.append(threads[one["number"]])
+    held: dict[str, str] = {}
+    for issue in issues:
+        who = accepter(issue, bots)
+        if who is not None:
+            key = who["login"].lower()
+            if key not in permissions:
+                permissions[key] = permission(run, base, who["login"])
+            held[key] = permissions[key]
+    comments = thread_comments(run, base, sizes, number, found["comments"])
+    return Decision(found["author"], list(pr["verdicts"]["nodes"]), comments, issues, merge, held)
+
+
+def home(node: Node) -> str:
+    """The repo an issue is of, lowercased"""
+    return str(dig(node, ["repository"], f"issue #{node['number']}")["nameWithOwner"]).lower()
+
+
+def thread(run: Runner, base: Variables, sizes: Sizes, node: Node) -> Thread:
+    """An issue as FILED gives it, with the rest of its comments, and for an opportunity
+    labelled planned the actors of its `labeled` events adding planned"""
+    number = node["number"]
+    if node["labels"]["pageInfo"]["hasNextPage"]:
+        fail(f"issue #{number} has over 100 labels")
+    labels = frozenset(str(label["name"]).lower() for label in node["labels"]["nodes"])
+    labelers: list[Node | None] = []
+    if {OPPORTUNITY, PLANNED} <= labels:
+        what = f"the label events of #{number}"
+        events = pages(run, LABELERS, {**base, "number": number}, sizes, ["issue", "timelineItems"], what)
+        labelers = [e["actor"] for e in events if str(e["label"]["name"]).lower() == PLANNED]
+    comments = thread_comments(run, base, sizes, number, node["comments"])
+    return Thread(
+        number, node["author"], str(node["authorAssociation"]), node["body"] or "", labels, comments, labelers
+    )
+
+
+def thread_comments(run: Runner, base: Variables, sizes: Sizes, number: int, first: Node) -> list[Node]:
+    """Every comment on the issue or PR number, oldest first, from its first page to its last"""
+    what = f"the comments on #{number}"
+    path = ["thread", "comments"]
+    connection = first
+    nodes: list[Node] = list(connection["nodes"])
+    seen: set[str] = set()
+    while connection["pageInfo"]["hasNextPage"]:
+        cursor = advance(connection["pageInfo"]["endCursor"], seen, what)
+        variables: Variables = {**base, "number": number, "cursor": cursor}
+        connection = dig(sized(run, THREAD_COMMENTS, variables, sizes, what), path, what)
+        nodes += connection["nodes"]
+    return nodes
+
+
+def permission(run: Runner, base: Variables, login: str) -> str:
+    """The person's permission on the repo, lowercased (admin, maintain, write, triage, read),
+    or none when they aren't a collaborator"""
+    collaborators = repository(run, PERMISSION, {**base, "login": login}).get("collaborators")
+    if collaborators is None:
+        fail(f"GitHub returned no collaborators for {login}'s permission")
+    edges = collaborators["edges"]
+    return str(edges[0]["permission"]).lower() if edges else "none"
 
 
 def issue_comments(run: Runner, sizes: Sizes, closed: Closed, bots: frozenset[str]) -> None:
@@ -1139,6 +1386,207 @@ def plan_match(data: Data, window: Window) -> Measure:
     return Measure(name, rate, f"{rate:.0%}", detail, "ratio", extra)
 
 
+# -- spec 109: how much of the work a person decided GitHub credits to them ---------------------
+
+# spec 049's reading of who decided a merged PR, as src/shipmill/credit.py reads it, the App
+# being any Bot, "[bot]" or --bot account, since metrics.py knows no App login
+NEEDS_DECISION = "<!-- shipmill:needs-decision -->"  # a needs-decision question's first line
+LOGIN_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+DECISION_BY = re.compile(
+    r"Decision by (?:@(" + LOGIN_PATTERN + r")(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(" + LOGIN_PATTERN + r")`(?![\w`-]))"
+)
+WRITERS = frozenset({"admin", "maintain", "write"})  # the permissions a label event is trusted by
+OPPORTUNITY = "opportunity"
+PLANNED = "planned"
+NO_STATE = frozenset({"COMMENTED", "PENDING"})  # reviews that leave a person's state as it was
+TRAILER_EMAIL = re.compile(r"^co-authored-by:.*<([^<>\s]+)>\s*$", re.IGNORECASE | re.MULTILINE)
+AGENT_EMAIL = "[bot]@users.noreply.github.com"  # an App's bot, the co-author spec 051 writes
+NO_DECIDED = "no decided PR merged in the window"
+Named = tuple[Node, bool]  # an account a record names, and whether its own rule trusts it
+
+
+def first_line(body: str | None) -> str:
+    """A body's first line, past any leading blank lines"""
+    return (body or "").lstrip().split("\n", 1)[0].strip()
+
+
+def relay(line: str) -> Node | None:
+    """The person a `Decision by @<login>` line names (D-68)"""
+    found = DECISION_BY.match(line)
+    return None if found is None else {"__typename": "User", "login": found[1] or found[2]}
+
+
+def approvals(reviews: Sequence[Node]) -> list[Named]:
+    """S-049-3: each person whose latest review that changes state is APPROVED, trusted by its
+    author association; an approval whose body carries the agent marker names no one"""
+    latest: dict[str, Node] = {}
+    for review in reviews:
+        if review["author"] is not None and review["state"] not in NO_STATE:
+            latest[review["author"]["login"].lower()] = review
+    return [
+        (r["author"], r["authorAssociation"] in TRUSTED)
+        for r in latest.values()
+        if r["state"] == "APPROVED" and not marked(r["body"])
+    ]
+
+
+def answers(comments: Sequence[Node], bots: frozenset[str]) -> list[Named]:
+    """S-049-4: a question is a comment whose first line is the needs-decision marker, by a bot
+    or a trusted person; a reply is a later comment by a person, without the marker first or
+    the agent marker in it, trusted by its author association. A bot's comment whose first line
+    is `Decision by @<login>` relays that person's answer, whatever agent marker it carries"""
+    found: list[Named] = []
+    asked = False
+    for comment in comments:
+        who = comment["author"]
+        if who is None:
+            continue
+        line = first_line(comment["body"])
+        bot = bot_author(who, bots)
+        if line == NEEDS_DECISION:
+            asked = asked or bot or comment["authorAssociation"] in TRUSTED
+        elif bot:
+            relayed = relay(line)
+            if relayed is not None:
+                found.append((relayed, True))
+        elif asked and not marked(comment["body"]):
+            found.append((who, comment["authorAssociation"] in TRUSTED))
+    return found
+
+
+def relayed_accepter(comments: Sequence[Node], bots: frozenset[str]) -> Node | None:
+    """S-108-10, D-115: the person a bot's newest relay of an accept names, its first line
+    `Decision by @<login>` and its next line starting `accept`"""
+    for comment in reversed(comments):
+        if not bot_author(comment["author"], bots):
+            continue
+        lines = [line.strip() for line in (comment["body"] or "").splitlines() if line.strip()]
+        relayed = relay(lines[0]) if len(lines) > 1 else None
+        if relayed is not None and lines[1].split()[0] == "accept":
+            return relayed
+    return None
+
+
+def accepter(issue: Thread, bots: frozenset[str]) -> Node | None:
+    """S-049-6: for an opportunity labelled planned, who added planned last, or when a bot did,
+    the person its relay of the accept names; None for none"""
+    if not {OPPORTUNITY, PLANNED} <= issue.labels or not issue.labelers:
+        return None
+    last = issue.labelers[-1]
+    if last is None:
+        return None
+    return relayed_accepter(issue.comments, bots) if bot_author(last, bots) else last
+
+
+def deciders(decision: Decision, bots: frozenset[str]) -> list[str]:
+    """S-049-7: the logins of the trusted people spec 049's sources name, in its order, each
+    once: approvers; answerers on the PR, then on each issue it closes and their parents; those
+    issues' authors (when the body carries no agent marker); and their accepters, trusted by a
+    write, maintain, or admin permission. Never a bot, a --bot login, or the PR's author"""
+    named = approvals(decision.reviews) + answers(decision.comments, bots)
+    for issue in decision.issues:
+        named += answers(issue.comments, bots)
+    named += [(i.author, i.association in TRUSTED) for i in decision.issues if i.author and not marked(i.body)]
+    for issue in decision.issues:
+        who = accepter(issue, bots)
+        if who is not None:
+            named.append((who, decision.permissions[who["login"].lower()] in WRITERS))
+    author = (decision.author or {}).get("login", "").lower()
+    found: dict[str, str] = {}
+    for who, trusted in named:
+        key = who["login"].lower()
+        if trusted and not bot_author(who, bots) and key != author and key not in found:
+            found[key] = who["login"]
+    return list(found.values())
+
+
+def credited(decision: Decision, people: Sequence[str]) -> bool:
+    """Every decider's login is among the accounts GitHub credits the merge commit to"""
+    merge = decision.merge
+    if merge is None:
+        return False
+    accounts = {n["user"]["login"].lower() for n in merge["authors"]["nodes"] if n["user"] is not None}
+    return all(p.lower() in accounts for p in people)
+
+
+def written_as_decider(decision: Decision, people: Sequence[str]) -> bool:
+    """The merge commit's git author resolves to a decider, and a Co-authored-by trailer names
+    an App's bot (spec 051)"""
+    merge = decision.merge
+    user = None if merge is None or merge["author"] is None else merge["author"]["user"]
+    if user is None or user["login"].lower() not in {p.lower() for p in people}:
+        return False
+    return any(email.lower().endswith(AGENT_EMAIL) for email in TRAILER_EMAIL.findall(merge["message"] or ""))
+
+
+@dataclass(frozen=True)
+class Decided:
+    """A decided PR merged in the window: its deciders, and how its merge commit credits them"""
+
+    number: int
+    people: list[str]
+    credited: bool
+    written: bool
+
+
+def decided_merges(data: Data, window: Window) -> tuple[int, list[Decided]]:
+    """The PRs merged in the window, and the decided ones among them"""
+    merged = merged_in(data, window)
+    found = []
+    for pr in merged:
+        decision = data.decisions.get(pr["number"])
+        people = [] if decision is None else deciders(decision, data.bots)
+        if decision is not None and people:
+            found.append(
+                Decided(pr["number"], people, credited(decision, people), written_as_decider(decision, people))
+            )
+    return len(merged), found
+
+
+def decided_extra(merges: int, found: Sequence[Decided]) -> dict[str, Any]:
+    """The counts both measures carry, and per decider login, sorted, the PRs they decided"""
+    people: dict[str, dict[str, Any]] = {}
+    for d in found:
+        for login in d.people:
+            entry = people.setdefault(
+                login.lower(), {"login": login, "decided": 0, "credited": 0, "written_as_decider": 0}
+            )
+            entry["decided"] += 1
+            entry["credited"] += d.credited
+            entry["written_as_decider"] += d.written
+    return {
+        "merges": merges,
+        "decided": len(found),
+        "credited": sum(d.credited for d in found),
+        "written_as_decider": sum(d.written for d in found),
+        "people": [people[key] for key in sorted(people)],
+    }
+
+
+def decided_measure(name: str, data: Data, window: Window, part: str) -> Measure:
+    merges, found = decided_merges(data, window)
+    extra = decided_extra(merges, found)
+    if not found:
+        return Measure(name, None, NO_DATA, NO_DECIDED, "ratio", extra)
+    rate = extra[part] / len(found)
+    if part == "credited":
+        detail = (
+            f"{extra['credited']} of {len(found)} decided merges credited to every decider;"
+            f" {merges} merged, {merges - len(found)} with no decider"
+        )
+    else:
+        detail = f"{extra[part]} of {len(found)} decided merges written as the decider with the agent as co-author"
+    return Measure(name, rate, f"{rate:.0%}", detail, "ratio", extra)
+
+
+def decided_credited(data: Data, window: Window) -> Measure:
+    return decided_measure("Decided work credited", data, window, "credited")
+
+
+def decided_written(data: Data, window: Window) -> Measure:
+    return decided_measure("Decided work written as the decider", data, window, "written_as_decider")
+
+
 def measures(data: Data, window: Window) -> list[Measure]:
     return [
         f(data, window)
@@ -1156,6 +1604,8 @@ def measures(data: Data, window: Window) -> list[Measure]:
             merge_to_release,
             human_touch,
             agent_share,
+            decided_credited,
+            decided_written,
             rework_cycles,
             first_pass_merge_rate,
             review_time,
@@ -1225,7 +1675,8 @@ def main() -> int:
     end = now if args.until is None else until(args.until, now)
     window = Window(end - dt.timedelta(days=args.days), end)
     bots = frozenset(args.bot)
-    data = fetch(args.repo, window, frozenset(args.environment), args.incident_label, args.blocker_label, bots=bots)
+    environments = frozenset(args.environment)
+    data = fetch(args.repo, window, environments, args.incident_label, args.blocker_label, bots=bots, decided=True)
     form_name = "json" if args.json else "markdown" if args.markdown else "table"
     print(render(args.repo, args.days, window, measures(data, window), form_name))
     return 0
