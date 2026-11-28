@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.196.2] - 2026-11-28
+
+### Fixed
+
+- A person's item whose steps merged pull requests already did no longer waits on its people: `triage_state.py` reads it STALE_HANDOFF, an action, where it would read WITH_PERSON, once a pull request linking it (a closing keyword or `Part of #N`, not reverted per spec 079) merged after its newest hand-off, its note `#M merged after the hand-off`; a session posts the done report naming those pull requests, so it reads VERIFY_DUE and its `## Check` runs, or the still-waits comment naming the steps left, which ends the state until a newer such merge. A STALE_HANDOFF line no longer fails the script's sort, which lacked the state (#1871)
+- A session landing or triaging PRs messages about a pull request only the session that owns its branch, the one in the worktree that has it checked out or the agent it dispatched to open it, naming the branch and the commit; when no session matches, it writes the note in the PR's status comment instead of messaging every session listed, so an offer to hold a PR or a note about a late push no longer reaches a session that never touched it (#1872)
+
 ## [0.196.1] - 2026-11-28
 
 ### Fixed
@@ -3427,7 +3434,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.196.2...HEAD
+[0.196.2]: https://github.com/shipmill/shipmill/compare/v0.196.1...v0.196.2
 [0.196.1]: https://github.com/shipmill/shipmill/compare/v0.196.0...v0.196.1
 [0.196.0]: https://github.com/shipmill/shipmill/compare/v0.195.0...v0.196.0
 [0.195.0]: https://github.com/shipmill/shipmill/compare/v0.194.1...v0.195.0
