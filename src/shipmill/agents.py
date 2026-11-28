@@ -4,6 +4,7 @@ green" or not), so it is a reviewed, committed decision like [autonomy]. Where t
 runs (which machine, which scheduler) is not here: that belongs to the host"""
 
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -362,7 +363,9 @@ class AgentsConfig:
     refused: tuple[catalogue.Refusal, ...] = ()
 
     @classmethod
-    def parse(cls, table: Table) -> AgentsConfig:
+    def parse(cls, table: Table, platform: str = sys.platform) -> AgentsConfig:
+        """platform is the gate's host's: off macOS, [agents.sandbox]'s local_ports and tunnels
+        are dropped with a refusal each (S-087-26)"""
         # a refused key, whatever its value, is dropped before the unknown-keys check (S-052-3)
         table, refusals = catalogue.drop(table, "[agents]")
         table.allow(
@@ -393,6 +396,7 @@ class AgentsConfig:
         sandbox, malformed = (
             SandboxConfig.parse(table.raw["sandbox"], table.where) if "sandbox" in table.raw else (SandboxConfig(), ())
         )
+        sandbox, off_host = sandbox.on_host(platform)
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
         if not prompt:
@@ -441,7 +445,7 @@ class AgentsConfig:
             verify=verify_of(table),
             merge=merge_method_of(table),
             sandbox=sandbox,
-            refused=(*refusals, *malformed),
+            refused=(*refusals, *malformed, *off_host),
         )
 
     @property
@@ -455,9 +459,10 @@ class AgentsConfig:
         return self.merge or MergeMethod.SQUASH
 
     @classmethod
-    def load(cls, root: Path, repo: str | None = None) -> AgentsConfig:
+    def load(cls, root: Path, repo: str | None = None, platform: str = sys.platform) -> AgentsConfig:
         """The [agents] section alone: a repo may use the gate without the release keys. repo,
-        the gate's, must not be named in its own [product] (S-038-3)"""
+        the gate's, must not be named in its own [product] (S-038-3); platform, the host's, as
+        parse reads it"""
         if not (root / CONFIG_PATH).is_file():
             raise ReleaseError(f"no {CONFIG_PATH} in {root}; add an [agents] section with a prompt to use the gate")
         path = config_path(root)
@@ -465,7 +470,7 @@ class AgentsConfig:
         if "agents" not in raw:
             raise ReleaseError(f"{path} has no [agents] section; add one with a prompt to use the gate")
         top = Table(raw, path.name)
-        agents = cls.parse(top.table("agents"))
+        agents = cls.parse(top.table("agents"), platform)
         catalogue.report(agents.refused)
         product = ProductConfig.read(top, agents.app_id)  # the gate refuses a bad [product] too
         if product is not None:

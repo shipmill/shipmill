@@ -489,6 +489,14 @@ def test_s087_8_a_malformed_key_at_origin_is_dropped(checkout: Git) -> None:
     assert trusted_sandbox(checkout) == SandboxConfig()
 
 
+def test_s087_26_origins_local_ports_and_tunnels_open_on_macos_and_drop_on_linux(checkout: Git) -> None:
+    tunnel = '\n[[agents.sandbox.grant.tunnels]]\nssh = "db.example.com"\nlocal = 15432\nremote = "db:5432"\n'
+    commit_config(checkout, TRUSTED + "local_ports = true\n\n[agents.sandbox.grant]\nlocal_ports = true\n" + tunnel)
+    on_mac, on_linux = trusted_sandbox(checkout, "darwin"), trusted_sandbox(checkout, "linux")
+    assert on_mac.local_ports and on_mac.grant is not None and on_mac.grant.local_ports and on_mac.grant.tunnels
+    assert on_linux == SandboxConfig(domains=(Domain("registry.npmjs.org"),), grant=SandboxConfig())
+
+
 # S-087-12
 
 

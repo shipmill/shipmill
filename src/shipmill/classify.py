@@ -56,7 +56,8 @@ from shipmill.gitrepo import Git
 from shipmill.policy import Policy
 from shipmill.review import REVIEW, Protected
 from shipmill.review import parse as parse_review
-from shipmill.sandbox import SandboxConfig
+from shipmill.sandbox import GRANT as GRANT_KEY
+from shipmill.sandbox import GRANT_TABLE, LOCAL_PORTS, SandboxConfig
 from shipmill.workflows import WORKFLOWS_DIR, Job, has_environment, is_workflow, jobs
 
 DIRECTION = "docs/product.md"
@@ -486,11 +487,14 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
 
 
 def sandbox_added(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
-    """Each entry [agents.sandbox] holds at the head and not at the merge base, as `<key>
-    <entry>`, compared raw, so an entry a malformed key would drop still counts, as does a key
-    shipmill doesn't know; a sandbox that isn't a table is one entry of its own. The merge base
-    holds only the entries its sessions ran with: none of a key it refused, so fixing a malformed
-    key widens, nor any when its table fails the load"""
+    """Each entry [agents.sandbox] or its grant holds at the head and not at the merge base, as
+    `<key> <entry>` (`grant.<key> <entry>` for the grant's), compared raw, so an entry a malformed
+    key would drop still counts, as does a key shipmill doesn't know; a sandbox or a grant that
+    isn't a table is one entry of its own. `local_ports = false` is no entry: it opens nothing,
+    so only setting it true widens (S-087-11). The merge base holds only the entries its
+    sessions ran with: none of a key it refused, so fixing a malformed key widens, nor any when
+    its table fails the load. A key dropped only off macOS (S-087-26) still counts as held, as
+    the merge base's sessions on a macOS gate ran with it"""
     was, now = _sandbox_held(before), _sandbox_entries(after)
     return [f"{key} {entry!r}" for key, entries in now.items() for entry in entries if entry not in was.get(key, [])]
 
@@ -505,8 +509,16 @@ def _sandbox_held(raw: Mapping[str, Any]) -> dict[str, list[object]]:
         _, refused = SandboxConfig.parse(sandbox, f"[{AGENTS_TABLE}]")
     except ReleaseError:  # a key shipmill doesn't know fails the load (D-63): no session ran with any
         return {}
-    dropped = {r.key for r in refused}
-    return {key: entries for key, entries in _sandbox_entries(raw).items() if key not in dropped}
+    dropped = {_held_key(r.table, r.key) for r in refused}
+    entries = _sandbox_entries(raw)
+    if GRANT_KEY in dropped:  # a grant that isn't a table: none of its entries was ever granted
+        dropped |= {key for key in entries if key.startswith(f"{GRANT_KEY}.")}
+    return {key: found for key, found in entries.items() if key not in dropped}
+
+
+def _held_key(table: str, key: str) -> str:
+    """A refusal's key as _sandbox_entries names it: a grant's as grant.<key>"""
+    return f"{GRANT_KEY}.{key}" if table == GRANT_TABLE else key
 
 
 def _sandbox_entries(raw: Mapping[str, Any]) -> dict[str, list[object]]:
@@ -516,7 +528,22 @@ def _sandbox_entries(raw: Mapping[str, Any]) -> dict[str, list[object]]:
         return {}
     if not isinstance(sandbox, Mapping):
         return {SANDBOX: [sandbox]}
-    return {str(key): list(value) if isinstance(value, list) else [value] for key, value in sandbox.items()}
+    found = _table_entries(sandbox, "")
+    grant = sandbox.get(GRANT_KEY)
+    if isinstance(grant, Mapping):
+        found.pop(GRANT_KEY)
+        found |= _table_entries(grant, f"{GRANT_KEY}.")
+    return found
+
+
+def _table_entries(table: Mapping[str, Any], prefix: str) -> dict[str, list[object]]:
+    """Each key's entries, raw: a list's items, or the value as one; local_ports = false none"""
+    found: dict[str, list[object]] = {}
+    for key, value in table.items():
+        if key == LOCAL_PORTS and value is False:
+            continue
+        found[f"{prefix}{key}"] = list(value) if isinstance(value, list) else [value]
+    return found
 
 
 def _raise(found: _Found, change: PullChange, before: Mapping[str, Any], after: Mapping[str, Any]) -> None:

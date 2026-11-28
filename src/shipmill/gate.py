@@ -2198,11 +2198,12 @@ STATE_FILES = (
 Sandboxer = Callable[[Mapping[str, str] | None], Sandbox]  # the session's env -> its sandbox, read at the launch
 
 
-def trusted_sandbox(git: Git) -> SandboxConfig:
+def trusted_sandbox(git: Git, platform: str = sys.platform) -> SandboxConfig:
     """S-087-8: [agents.sandbox] as the config at origin's default branch has it, fetched first
     and read from git at that ref, never from the working tree, which a session may have
     changed (D-16); empty without the config, an [agents] table, or the table. A malformed key
-    is dropped, so the session runs narrower (D-64)"""
+    is dropped, so the session runs narrower (D-64), and so are local_ports and the tunnels off
+    macOS (S-087-26); the tick names both from its own read of the config"""
     branch = git.default_branch()
     ref = f"refs/remotes/origin/{branch}"
     git.run("fetch", "-q", "origin", f"+refs/heads/{branch}:{ref}")  # the branch only inside a refspec (#889)
@@ -2214,7 +2215,8 @@ def trusted_sandbox(git: Git) -> SandboxConfig:
     if not isinstance(agents, dict) or "sandbox" not in agents:
         return SandboxConfig()
     declared, _ = SandboxConfig.parse(agents["sandbox"], f"{where} [agents]")
-    return declared
+    opened, _ = declared.on_host(platform)
+    return opened
 
 
 def sandbox_for(
