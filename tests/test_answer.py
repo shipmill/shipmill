@@ -163,6 +163,30 @@ def test_s107_3_an_answer_no_question_counts_is_refused(found: Item, req: Reques
     assert hub.written == []
 
 
+GOAL_PLAN_HINT = " goal-plan answer 7 accept|decline|hold|send-back --by amy`"
+
+
+@pytest.mark.parametrize(
+    ("found", "hint"),
+    [
+        (item(["goal-plan"], body=PLAN), True),  # #1850: the refusal names the command that answers a plan
+        (item(["goal-plan", "needs-decision"], body=PLAN), True),
+        (item(["needs-decision"]), False),
+        (item(["project"]), False),
+        (item(["opportunity", "planned"]), False),
+    ],
+)
+def test_s107_3_decision_answer_with_no_question_names_goal_plan_answer_on_a_plan(found: Item, hint: bool) -> None:
+    hub = FakeHub(found)
+    with pytest.raises(ReleaseError) as refused:
+        answer.run(decision(None, own="accept"), hub, MAINTAINERS, lambda: frozenset(), print)
+    said = str(refused.value)
+    assert said.startswith("#7 carries no open needs-decision question, so `decision answer` answers nothing")
+    assert (GOAL_PLAN_HINT in said) is hint
+    assert said.endswith(GOAL_PLAN_HINT if hint else "answers nothing")
+    assert hub.written == []
+
+
 def plan_read(body: str) -> tuple[object, ...]:
     """How intake_state.py reads the plan after the comment: its answer's kind and what it holds"""
     intake = answer._intake()
