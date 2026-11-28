@@ -283,6 +283,38 @@ def test_s091_9_summary_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFix
     assert not any(Path(c[0]).name == "shipmill" or c[1:2] == ["gh"] for c in fake.seen)  # no shipmill gh
 
 
+def test_1855_summary_prints_the_same_lines_on_a_fixed_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = configured(repo_with_release(tmp_path / "repo"))
+    code, out, _ = run_summary(root, capsys)
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0] == f"{REPO}: 1 open issue, 1 pull request"
+    # the gate line's times are the clock's: no tick, no session, no result, and #8 landed
+    assert lines[1].startswith(
+        "  gate             no tick recorded; no session runs; no session has ended with a result yet; last landed #8 "
+    )
+    assert lines[2:] == [
+        "  waits on you     1 issue",
+        "  agent takes it   1 pull request",
+        "  needs attention  none",
+        "  waits on nobody  none",
+    ]
+
+
+def test_1855_summary_reads_only_the_watch_rows_its_lines_come_from(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1855: one watch_state.py run, of the open items' rows alone, as the picture's host
+    sections are left out; never the full report, nor one item's"""
+    root = configured(repo_with_release(tmp_path / "repo"))
+    _, _, fake = run_summary(root, capsys)
+    watch = [c for c in fake.seen if c[1].endswith("watch_state.py")]
+    assert len(watch) == 1
+    assert "--open-items" in watch[0] and "--no-host" in watch[0] and "--item" not in watch[0]
+
+
 def test_s091_1_a_gate_without_agents_reads_none(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = repo_with_release(tmp_path / "repo")
     _, out, _ = run_summary(root, capsys)

@@ -4494,10 +4494,13 @@ def _status_summary(
     """Spec 091: the summary of the checkout's repo, as text or one JSON object: the open items'
     readings, the default branch's last landed pull request beside them, then the gate's state
     files, each failing on its own part (D-55). None of the host's other checks is read: they
-    are shipmill factory's"""
+    are shipmill factory's, and watch_state.py reads only the sections the open items' rows
+    come from (#1855): its lines are those items' placings and the gate's state files"""
     with ThreadPoolExecutor(max_workers=1) as side:
         landed = side.submit(status_summary.read_landed, slug, run)
-        read = _read_open(top, slug, run, resolved, autonomy, environments, home, platform, when, bot_login)
+        read = _read_open(
+            top, slug, run, resolved, autonomy, environments, home, platform, when, bot_login, open_items=True
+        )
         found = status_summary.split(read.facts, read.detail, read.window)
         state = status_summary.read_gate_state(state_dir(Git(top)), read.facts.gate.agents is not None, landed.result())
     summary = status_summary.summarize(read.facts, state, found)
@@ -4531,11 +4534,13 @@ def _read_open(
     platform: str,
     when: dt.datetime,
     bot_login: Callable[[int, Path], str | None],
+    open_items: bool = False,
 ) -> _Open:
     """Specs 091 and 094: the readings --item makes, for every open item at once, beside each
     other: the bot's login, the open pull requests, their checks, reviews, and labels in one
     read (no read per item, S-094-10), the upgrades, the landing branch, triage_state.py's
-    states, and watch_state.py's rows"""
+    states, and watch_state.py's rows, with open_items only those of the sections an open
+    item's rows come from (#1855)"""
     pool = ThreadPoolExecutor(max_workers=8)
     try:
         login = pool.submit(status.read_login, slug, top, home, platform, bot_login)
@@ -4547,7 +4552,7 @@ def _read_open(
         bot = login.result()
         issues = pool.submit(status.read_issues, slug, run, bot, resolved)
         read = StateRead(bot_login=bot, roles=resolved)
-        proc = run(watch_command(slug, top, read, json=True, host=False))
+        proc = run(watch_command(slug, top, read, json=True, host=False, open_items=open_items))
         sys.stderr.write(proc.stderr)  # S-008-10, as the picture writes it
         if state_failed(proc):  # S-094-12: its own error, so a fleet read sees a rate limit in it
             said = [line for line in proc.stderr.splitlines() if line.strip()]
