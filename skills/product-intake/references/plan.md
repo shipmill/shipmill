@@ -121,6 +121,13 @@ A goal reads proposed, written, planned, met, or dropped; a plan PLAN_OPEN with 
 
 A head's check issue is filed and linked with `shipmill project check <head> --title "<what will be true>" --check-file <file>`, and an opportunity the maintainer turns down is closed with `shipmill opportunity decline <n> --by <login> --reason "<why>"`, the relay first (spec 108, D-115).
 
+The check issue's `## Check` is one a person other than its builder can run, and it runs by reading alone (spec 042, D-116):
+
+- **Read what already shows it:** existing issues and pull requests that show the behaviour, or the result of the released package's test that reproduces the project's repro, read where it ran
+- **Never a write:** a check never opens an issue, adds a label, opens a pull request, or deploys to see the behaviour happen, so a `## Cleanup` never has to undo the check itself
+- **A check whose only form is a write** says so in its `## Check`, and the session asks the maintainer on the check issue at once through the [needs-decision protocol](../../github-issue-triage/references/needs-decision.md): "leave it open: I check it and close it by hand" or "close it unchecked"
+- **Never closed at `decided`:** a check that didn't run is closed only on the maintainer's "close it unchecked" answer, whatever the zone's level, never at a `decided` comment
+
 | Marker | Where | Written on |
 |---|---|---|
 | `<!-- shipmill:goal-overdue G-<n> by=<horizon> -->` | the first line of the `goal-review` issue, by the App | GOAL_OVERDUE |
