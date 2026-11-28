@@ -282,3 +282,17 @@ def test_ship_watch_description_tells_an_agent_how_to_run_the_cli() -> None:
     assert "isn't on PATH" not in description and "headless" in description
     assert ": " not in description, "a colon and a space would break the plain YAML scalar"
     assert len(description) <= 1024, len(description)
+
+
+def test_ship_watch_description_routes_a_status_question_to_shipmill_status() -> None:
+    """#1854: an agent asked "what's the status" sees only the description, so it names the triggers and the command"""
+    skill = (ROOT / "skills" / "github-ship-watch" / "SKILL.md").read_text(encoding="utf-8")
+    front = skill.split("---\n", 2)[1]
+    (line,) = [x for x in front.splitlines() if x.startswith("description: ")]
+    description = line.removeprefix("description: ")
+    for trigger in ('"what\'s the status"', '"what\'s open"', '"who holds what"', '"why is an issue not moving"'):
+        assert trigger in description, trigger
+    assert " #" not in description, "a space and a hash start a YAML comment, which cuts the plain scalar short"
+    assert "`shipmill status` (`--summary`, `--item N`)" in description
+    for kept in ('"watch the repo"', '"babysit releases"', '"watch the fleet"', "Not for triaging a backlog"):
+        assert kept in description, kept
