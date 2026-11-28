@@ -519,6 +519,7 @@ STAGES = [
     "Merged to release",
 ]
 QUALITY = ["Rework cycles", "First-pass merge rate", "Review time", "Plan match"]  # spec 078
+DECIDED = ["Decided work credited", "Decided work written as the decider"]  # spec 109
 BEFORE = ["Deploy frequency", "Lead time for changes", "Change failure rate", "Time to restore", "Issue to release"]
 
 
@@ -541,7 +542,7 @@ def staged(mx: ModuleType) -> Any:
 def test_s066_1_the_stages_follow_issue_to_release_in_the_json(mx: ModuleType) -> None:
     w = window(mx)
     found = json.loads(mx.render("o/r", 30, w, mx.measures(staged(mx), w), "json"))["measures"]
-    assert [m["measure"] for m in found] == [*BEFORE, *STAGES, "Human touch", "Agent share", *QUALITY]
+    assert [m["measure"] for m in found] == [*BEFORE, *STAGES, "Human touch", "Agent share", *DECIDED, *QUALITY]
     for m in found[len(BEFORE) : len(BEFORE) + len(STAGES)]:
         assert m["unit"] == "hours", m["measure"]
         assert set(m) >= {"value", "p90", "count", "text"}, m["measure"]
@@ -691,10 +692,10 @@ def test_s078_1_the_quality_measures_follow_agent_share_over_its_agent_prs(mx: M
     w = window(mx)
     found = json.loads(mx.render("o/r", 30, w, mx.measures(data(mx, pulls=pulls), w), "json"))["measures"]
     names = [m["measure"] for m in found]
-    share = names.index("Agent share")
+    share = names.index("Agent share") + len(DECIDED)  # spec 109's two measures come between
     assert names[share + 1 :] == QUALITY
     quality = {m["measure"]: m for m in found[share + 1 :]}
-    assert quality["Rework cycles"]["count"] == found[share]["agent_made"] == 2
+    assert quality["Rework cycles"]["count"] == found[names.index("Agent share")]["agent_made"] == 2
     assert quality["Rework cycles"]["unit"] == "count"
     assert (quality["First-pass merge rate"]["unit"], quality["Plan match"]["unit"]) == ("ratio", "ratio")
     timed = quality["Review time"]
@@ -852,3 +853,338 @@ def test_s078_6_plan_match_reads_the_files_line_of_the_one_plan(mx: ModuleType) 
     assert m.detail == "3 of 4 planned agent PRs changed only files their plan names; 5 with no plan left out"
     m = by_name(mx, data(mx, pulls=pulls[4:]))["Plan match"]
     assert (m.value, m.detail) == (None, "no plan naming its files on any of 5 agent PRs, all left out")
+
+
+# -- spec 109: decided work credited, and written as the decider -----------------------------------
+
+APP = ("Bot", "shipmill-app")
+QUESTION = "<!-- shipmill:needs-decision -->\n@amy Decision needed: which one?"
+BOT_TRAILER = "Co-authored-by: shipmill-app[bot] <123+shipmill-app[bot]@users.noreply.github.com>"
+
+
+def actor(who: tuple[str, str]) -> dict[str, Any]:
+    return {"__typename": who[0], "login": who[1]}
+
+
+def note(body: str, who: tuple[str, str] = PERSON, association: str = "MEMBER") -> dict[str, Any]:
+    """A comment as DECIDED and THREAD_COMMENTS read it"""
+    return {"body": body, "authorAssociation": association, "author": actor(who)}
+
+
+def merge_commit(author: str | None = None, *authors: str | None, message: str = "Merge") -> dict[str, Any]:
+    """A merge commit: the account its git author resolves to (None: none), and the accounts
+    GitHub credits it to (None: a trailer it doesn't resolve)"""
+    return {
+        "message": message,
+        "author": {"user": None if author is None else {"login": author}},
+        "authors": {
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [{"user": None if a is None else {"login": a}} for a in authors],
+        },
+    }
+
+
+def filed(
+    number: int,
+    author: tuple[str, str] = PERSON,
+    association: str = "MEMBER",
+    body: str = "",
+    labels: tuple[str, ...] = (),
+    parent: dict[str, Any] | None = None,
+    repo: str = "o/r",
+) -> dict[str, Any]:
+    """An issue as DECIDED's FILED fragment reads it"""
+    return {
+        "number": number,
+        "repository": {"nameWithOwner": repo},
+        "authorAssociation": association,
+        "body": body,
+        "author": actor(author),
+        "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
+        "parent": parent,
+    }
+
+
+def decided_node(
+    author: tuple[str, str] = APP,
+    comments: tuple[dict[str, Any], ...] = (),
+    closes: tuple[dict[str, Any], ...] = (),
+    merge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A PR as DECIDED reads it"""
+    return {
+        "author": actor(author),
+        "mergeCommit": merge or merge_commit(),
+        "comments": page(list(comments)),
+        "closingIssuesReferences": {"pageInfo": {"hasNextPage": False}, "nodes": list(closes)},
+    }
+
+
+def thread(
+    mx: ModuleType,
+    number: int,
+    author: tuple[str, str] = PERSON,
+    association: str = "MEMBER",
+    body: str = "",
+    labels: tuple[str, ...] = (),
+    comments: tuple[dict[str, Any], ...] = (),
+    labelers: tuple[tuple[str, str], ...] = (),
+) -> Any:
+    return mx.Thread(
+        number, actor(author), association, body, frozenset(labels), list(comments), [actor(w) for w in labelers]
+    )
+
+
+def decision(
+    mx: ModuleType,
+    reviews: tuple[dict[str, Any], ...] = (),
+    comments: tuple[dict[str, Any], ...] = (),
+    issues: tuple[Any, ...] = (),
+    merge: dict[str, Any] | None = None,
+    author: tuple[str, str] = APP,
+    permissions: dict[str, str] | None = None,
+) -> Any:
+    return mx.Decision(actor(author), list(reviews), list(comments), list(issues), merge, dict(permissions or {}))
+
+
+def approved(login: str, association: str = "MEMBER", body: str = "") -> dict[str, Any]:
+    return review("APPROVED", day(2), author=("User", login), association=association, body=body)
+
+
+def decided_data(mx: ModuleType, *decisions: Any, bots: frozenset[str] = frozenset()) -> Any:
+    """One PR merged in the window per decision, numbered from 1"""
+    pulls = [pull(n, day(1)) for n in range(1, len(decisions) + 1)]
+    return data(mx, pulls=pulls, decisions=dict(enumerate(decisions, start=1)), bots=bots)
+
+
+class DecidedForge(FakeGitHub):
+    """Twelve PRs merged in the window, each named by one of spec 049's sources or by none, and
+    #13, merged before it, whose records must not be read"""
+
+    SOURCES: dict[int, dict[str, Any]] = {
+        1: {"reviews": (approved("bob"),)},  # bob approved
+        2: {"reviews": (approved("bob"), review("CHANGES_REQUESTED", day(1.5), author=("User", "bob")))},
+        3: {"reviews": (approved("bob"), review("COMMENTED", day(1.5), author=("User", "bob")))},  # still approved
+        4: {"comments": (note(QUESTION, APP, "NONE"), note("Option A", ("User", "amy"), "COLLABORATOR"))},
+        5: {"comments": (note(f"Decision by `@amy`\n\napply\n\n{MARKER}", APP, "NONE"),)},  # the App's relay
+        6: {"closes": (filed(20, ("User", "carol"), "OWNER"),)},
+        7: {"closes": (filed(21, ("User", "zed"), "NONE", parent=filed(22, ("User", "dave"))),)},  # the parent's author
+        8: {"closes": (filed(23, body=MARKER, labels=("opportunity", "Planned")),)},  # erin added planned
+        9: {"closes": (filed(24, body=MARKER, parent=filed(25, body=MARKER, labels=("opportunity", "planned"))),)},
+        10: {"closes": (filed(26, body=MARKER, labels=("opportunity", "planned")),)},  # gina can only read
+        11: {"closes": (filed(27, body=MARKER),)},  # hank answered on the issue
+        12: {"closes": (filed(28, body=MARKER, labels=("opportunity", "planned")),)},  # the App, on ivy's accept
+    }
+    ISSUE_COMMENTS: dict[int, list[dict[str, Any]]] = {
+        27: [note(QUESTION, ("User", "olga"), "OWNER"), note("Option B", ("User", "hank"))],
+        28: [note(f"Decision by @ivy, relayed by Claude Code\n\naccept G-2\n\n{MARKER}", APP, "NONE")],
+    }
+    LABELED: dict[int, list[tuple[str, tuple[str, str]]]] = {
+        23: [("planned", ("User", "zoe")), ("planned", ("User", "erin")), ("opportunity", ("User", "zoe"))],
+        25: [("planned", ("User", "frank"))],
+        26: [("planned", ("User", "gina"))],
+        28: [("planned", APP)],
+    }
+    PERMISSIONS = {"erin": "WRITE", "frank": "ADMIN", "gina": "READ", "ivy": "MAINTAIN"}
+
+    def __init__(self, mx: ModuleType) -> None:
+        super().__init__(mx)
+        self.answers[mx.DECIDED] = self.decided
+        self.answers[mx.THREAD_COMMENTS] = self.thread_comments
+        self.answers[mx.LABELERS] = self.labelers
+        self.answers[mx.PERMISSION] = self.permission
+
+    def pulls(self, v: dict[str, Any]) -> dict[str, Any]:
+        nodes = [pull(n, day(1), reviews=s.get("reviews", ())) for n, s in self.SOURCES.items()]
+        nodes.append(pull(13, day(40), reviews=(approved("bob"),), more_reviews="x"))
+        return ok({"pullRequests": page(nodes)})
+
+    def decided(self, v: dict[str, Any]) -> dict[str, Any]:
+        source = self.SOURCES[v["number"]]
+        return ok({"pullRequest": decided_node(comments=source.get("comments", ()), closes=source.get("closes", ()))})
+
+    def thread_comments(self, v: dict[str, Any]) -> dict[str, Any]:
+        return ok({"thread": {"comments": page(self.ISSUE_COMMENTS.get(v["number"], []))}})
+
+    def labelers(self, v: dict[str, Any]) -> dict[str, Any]:
+        events = [{"label": {"name": name}, "actor": actor(who)} for name, who in self.LABELED[v["number"]]]
+        return ok({"issue": {"timelineItems": page(events)}})
+
+    def permission(self, v: dict[str, Any]) -> dict[str, Any]:
+        return ok({"collaborators": {"edges": [{"permission": self.PERMISSIONS[v["login"]]}]}})
+
+
+def test_s109_1_the_two_measures_follow_agent_share_in_the_json(mx: ModuleType) -> None:
+    w = window(mx)
+    one = decided_data(mx, decision(mx, reviews=(approved("bob"),)))
+    keys = {"decided", "credited", "written_as_decider", "merges", "people"}
+    for d, value in ((one, 0.0), (data(mx), None), (decided_data(mx, decision(mx)), None)):
+        found = json.loads(mx.render("o/r", 30, w, mx.measures(d, w), "json"))["measures"]
+        names = [m["measure"] for m in found]
+        share = names.index("Agent share")
+        assert names[share + 1 : share + 3] == DECIDED
+        for m in found[share + 1 : share + 3]:
+            assert m["unit"] == "ratio", m["measure"]
+            assert set(m) >= keys | {"value"}, m["measure"]
+            assert m["value"] == value, m["measure"]
+            if value is None:
+                assert m["text"] == "no data"
+                assert by_name(mx, d)[m["measure"]].detail == "no decided PR merged in the window"
+
+
+def test_s109_2_a_merge_is_decided_exactly_when_spec_049_names_a_decider(mx: ModuleType) -> None:
+    d = mx.fetch("o/r", window(mx), frozenset(), "incident", "release-blocker", run=DecidedForge(mx), decided=True)
+    merges, found = mx.decided_merges(d, window(mx))
+    assert merges == 12
+    assert {f.number: f.people for f in found} == {
+        1: ["bob"],  # an approver whose latest review is APPROVED
+        3: ["bob"],  # a later comment leaves the approval standing
+        4: ["amy"],  # a trusted reply to a needs-decision question
+        5: ["amy"],  # a bot's Decision by relay, its agent marker notwithstanding
+        6: ["carol"],  # the trusted author of an issue it closes
+        7: ["dave"],  # the trusted author of that issue's parent
+        8: ["erin"],  # who added planned last, with write permission
+        9: ["frank"],  # the same on the parent, with admin
+        11: ["hank"],  # an answer on the issue it closes
+        12: ["ivy"],  # the App added planned on ivy's relayed accept (D-115), ivy can maintain
+    }
+    m = by_name(mx, d)["Decided work credited"]
+    assert (m.extra["merges"], m.extra["decided"]) == (12, 10)
+    assert m.detail == "0 of 10 decided merges credited to every decider; 12 merged, 2 with no decider"
+
+
+def test_s109_3_bots_outsiders_the_author_and_marked_records_name_no_decider(mx: ModuleType) -> None:
+    bots = frozenset({"release-robot"})
+    alone = [
+        decision(mx, reviews=(review("APPROVED", day(2), author=("Bot", "copilot")),)),  # a Bot
+        decision(mx, reviews=(approved("renovate[bot]"),)),  # a [bot] login
+        decision(mx, reviews=(approved("release-robot"),)),  # a --bot login
+        decision(mx, reviews=(approved("zed", "CONTRIBUTOR"),)),  # an outsider (D-16)
+        decision(mx, reviews=(approved("alice"),), author=PERSON),  # the PR's author
+        decision(mx, reviews=(approved("bob", body=f"LGTM\n\n{MARKER}"),)),  # an agent's approval
+        decision(mx, issues=(thread(mx, 20, ("User", "carol"), "OWNER", body=f"Filed\n\n{MARKER}"),)),
+        decision(mx, issues=(thread(mx, 21, ("Bot", "shipmill-app")),)),  # a Bot filed it
+        decision(mx, issues=(thread(mx, 22, ("User", "zed"), "NONE"),)),  # an outsider filed it
+        decision(mx, comments=(note(QUESTION, APP, "NONE"), note(f"Option A\n\n{MARKER}", ("User", "amy")))),
+        decision(mx, comments=(note(QUESTION, APP, "NONE"), note("Option A", ("User", "zed"), "NONE"))),
+        decision(mx, comments=(note("Option A", ("User", "amy")),)),  # no question asked
+        decision(mx, comments=(note("Decision by @amy", ("User", "olga"), "OWNER"),)),  # a person's line, no relay
+        decision(mx, comments=(note("Decision by @alice", APP, "NONE"),), author=PERSON),  # relays the author
+        decision(mx, comments=(note("Decision by @release-robot", APP, "NONE"),)),  # relays a --bot login
+        decision(
+            mx,
+            issues=(thread(mx, 23, body=MARKER, labels=("opportunity", "planned"), labelers=(APP,)),),
+        ),  # the App added planned with no relay of an accept
+    ]
+    for one in alone:
+        assert mx.deciders(one, bots) == [], one
+    d = decided_data(mx, *alone, bots=bots)
+    merges, found = mx.decided_merges(d, window(mx))
+    assert (merges, found) == (len(alone), [])
+    m = by_name(mx, d)["Decided work credited"]
+    assert (m.value, m.extra["merges"], m.extra["decided"]) == (None, len(alone), 0)
+    # the marker mid-line is a person's quote: carol's filing still decides
+    quoted = decision(mx, issues=(thread(mx, 24, ("User", "carol"), "OWNER", body=f"quoting {MARKER} mid-line"),))
+    assert mx.deciders(quoted, bots) == ["carol"]
+
+
+def test_s109_4_credited_only_when_every_decider_is_among_the_merge_commits_authors(mx: ModuleType) -> None:
+    bob, carol = (approved("bob"),), (thread(mx, 20, ("User", "carol"), "OWNER"),)
+    d = decided_data(
+        mx,
+        decision(mx, bob, issues=carol, merge=merge_commit("alice", "alice", "bob", "carol")),  # credited
+        decision(mx, bob, issues=carol, merge=merge_commit("alice", "Bob", "CAROL")),  # logins read without case
+        decision(mx, bob, issues=carol, merge=merge_commit("alice", "alice", "bob", None)),  # carol's: no account
+        decision(mx, bob, merge=merge_commit("alice", "alice")),  # bob not named at all
+        decision(mx),  # no decider
+    )
+    m = by_name(mx, d)["Decided work credited"]
+    assert (m.value, m.text) == (pytest.approx(0.5), "50%")
+    assert (m.extra["credited"], m.extra["decided"], m.extra["merges"]) == (2, 4, 5)
+    assert m.detail == "2 of 4 decided merges credited to every decider; 5 merged, 1 with no decider"
+
+
+def test_s109_5_written_as_the_decider_needs_their_git_author_and_an_agent_co_author(mx: ModuleType) -> None:
+    bob = (approved("bob"),)
+    person = "Co-authored-by: Bob <1+bob@users.noreply.github.com>"
+    d = decided_data(
+        mx,
+        decision(mx, bob, merge=merge_commit("bob", "bob", message=f"Fix\n\n{BOT_TRAILER}")),  # written
+        decision(mx, bob, merge=merge_commit("bob", "bob", message="Fix")),  # bob's own merge
+        decision(mx, bob, merge=merge_commit(None, "bob", message=f"Fix\n\n{person}")),  # the App's, bob co-author
+        decision(mx, bob, merge=merge_commit("bob", "bob", message=f"Fix\n\n{person}")),  # a person co-author
+        decision(mx, bob, merge=merge_commit("dave", "dave", message=f"Fix\n\n{BOT_TRAILER}")),  # not a decider
+    )
+    m = by_name(mx, d)["Decided work written as the decider"]
+    assert (m.value, m.text) == (pytest.approx(0.2), "20%")
+    assert (m.extra["written_as_decider"], m.extra["decided"]) == (1, 5)
+    assert m.detail == "1 of 5 decided merges written as the decider with the agent as co-author"
+
+
+def test_s109_6_people_counts_each_deciders_prs_and_only_the_json_names_them(mx: ModuleType) -> None:
+    both = merge_commit("bob-q", "bob-q", "amy-k", message=f"Fix\n\n{BOT_TRAILER}")
+    d = decided_data(
+        mx,
+        decision(mx, reviews=(approved("bob-q"), approved("amy-k")), merge=both),
+        decision(mx, reviews=(approved("bob-q"),), merge=merge_commit("alice", "alice")),
+        decision(mx, issues=(thread(mx, 20, ("User", "Carol-z"), "OWNER"),)),
+    )
+    w = window(mx)
+    found = mx.measures(d, w)
+    for m in (by_name(mx, d)[name] for name in DECIDED):
+        assert m.extra["people"] == [
+            {"login": "amy-k", "decided": 1, "credited": 1, "written_as_decider": 1},
+            {"login": "bob-q", "decided": 2, "credited": 1, "written_as_decider": 1},
+            {"login": "Carol-z", "decided": 1, "credited": 0, "written_as_decider": 0},
+        ]
+    for form in ("table", "markdown"):
+        text = mx.render("o/r", 30, w, found, form)
+        for login in ("amy-k", "bob-q", "Carol-z"):
+            assert login not in text, (form, login)
+    assert "Carol-z" in mx.render("o/r", 30, w, found, "json")
+
+
+def test_s109_7_the_records_are_read_only_for_prs_merged_in_the_window(mx: ModuleType) -> None:
+    gh = DecidedForge(mx)
+    mx.fetch("o/r", window(mx), frozenset(), "incident", "release-blocker", run=gh, decided=True)
+
+    def read(query: str, key: str = "number") -> list[Any]:
+        return [v[key] for name, v in gh.calls if name == query]
+
+    assert read("DECIDED") == list(range(1, 13))  # not #13, merged before the window
+    assert read("PULL_VERDICTS") == []  # #13's further reviews aren't read
+    assert sorted(read("THREAD_COMMENTS")) == list(range(20, 29))  # each issue once; the PRs' first pages held all
+    assert read("LABELERS") == [23, 25, 26, 28]  # only the opportunities labelled planned
+    assert read("PERMISSION", "login") == ["erin", "frank", "gina", "ivy"]
+    # trends.py's read, which measures neither, reads none of them
+    quiet = DecidedForge(mx)
+    d = mx.fetch("o/r", window(mx), frozenset(), "incident", "release-blocker", run=quiet)
+    assert not {"DECIDED", "THREAD_COMMENTS", "LABELERS", "PERMISSION"} & {name for name, _ in quiet.calls}
+    assert d.decisions == {}
+
+
+# proves: S-109-7
+def test_metrics_reads_github_only_through_gh_and_its_run_reads_the_deciders(mx: ModuleType) -> None:
+    source = SCRIPT.read_text()
+    assert source.count("subprocess.run(") == 1
+    assert 'cmd = ["gh", "api", "graphql"' in source
+    assert source.count("decided=True)") == 1  # main's fetch
+
+
+def test_spec_109_reads_deciders_as_credit_and_triage_state_do(mx: ModuleType) -> None:
+    from shipmill import agent_marker, credit
+
+    path = SCRIPT.parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
+    spec = importlib.util.spec_from_file_location("triage_state_for_metrics", path)
+    assert spec is not None and spec.loader is not None
+    triage = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = triage
+    spec.loader.exec_module(triage)
+    assert mx.DECISION_BY.pattern == triage.DECISION_BY.pattern
+    assert mx.NEEDS_DECISION == credit.MARKER
+    assert mx.TRUSTED == credit.TRUSTED
+    assert mx.WRITERS == credit.WRITERS
+    assert (mx.OPPORTUNITY, mx.PLANNED) == (credit.OPPORTUNITY, credit.PLANNED)
+    assert mx.NO_STATE == credit._NO_STATE
+    assert mx.TRAILER_EMAIL.pattern == credit._TRAILER_EMAIL.pattern
+    assert mx.AGENT_MARKER.pattern == agent_marker._LINE.pattern
