@@ -967,3 +967,11 @@ entry that supersedes it, never by editing an old one.
 - Why: A session that heard the maintainer's accept left the label to them, or labelled with no record of who decided, and a relayed decline read its header as the reason (#1789). Decided by `@romamo` in a session on 2026-11-27
 - Applies to: src/shipmill/moves.py, src/shipmill/credit.py, skills/product-intake/scripts/intake_state.py, skills/product-intake/SKILL.md, docs/specs/107-relayed-answer.md, docs/specs/108-lifecycle-moves.md
 - Enforced by: review, until spec 108's tests
+
+## D-116: A project's check runs by reading alone, and a check that didn't run is never closed at decided
+
+- Decided: 2026-11-28, in shipmill/shipmill#1852
+- Rule: Refines spec 042's check rules for a project's check issue (spec 106): its ## Check is written so it runs by reading alone, on existing issues and pull requests that already show the behaviour, or by reading the result of the released package's test that reproduces the project's repro. A check whose only form is a write (an issue, a label, a pull request, a deploy) says so in its issue and goes to the maintainer through the needs-decision protocol at once, with the options leave it open and close it unchecked. A session never closes a check that didn't run at a decided comment, whatever the zone's level; it closes one only on the maintainer's close it unchecked answer
+- Why: Two project checks (#1796, #1797) were filed with a ## Check that starts with a write, which spec 042 says a check never does, and their sessions closed them at a decided comment instead of asking. Zone rule-departure, decided by `@romamo`'s answer on #1852 (option 1, relayed 2026-11-28)
+- Applies to: skills/product-intake/SKILL.md, skills/product-intake/references/plan.md, skills/github-issue-triage/references/triage-rubric.md, skills/github-issue-triage/references/needs-decision.md, docs/specs/042-parent-check.md, docs/specs/106-goal-plan-project-states.md
+- Enforced by: review, and tests/test_read_only_checks_docs.py for the instructions
