@@ -569,6 +569,17 @@ def test_s087_19_gate_sandbox_turns_the_sandbox_on(checkout: Git, home: Path) ->
     assert sandbox is not None and sandbox.settings["sandbox"]["enabled"] is True  # type: ignore[index]
 
 
+def test_s087_14_a_sandboxed_launch_is_recorded_sandboxed(checkout: Git, home: Path) -> None:
+    # the first tick after it ended reads its log for the sandbox's refusals; an unsandboxed one's never
+    tick(checkout, headless(), FakeClaude(), sandboxer(checkout, home))
+    assert json.loads((state_dir(checkout) / RECORD).read_text(encoding="utf-8"))["sandboxed"] is True
+
+
+def test_s087_14_a_launch_without_the_sandbox_records_no_sandboxed(checkout: Git) -> None:
+    tick(checkout, headless(), FakeClaude(), None)
+    assert "sandboxed" not in json.loads((state_dir(checkout) / RECORD).read_text(encoding="utf-8"))
+
+
 def test_s087_19_launchd_sandbox_writes_the_flag_into_the_job(tmp_path: Path) -> None:
     path = str(tools(tmp_path / "bin", "claude", "uvx", "gh", "git"))
     job = build(REPO, tmp_path / "gate", 15, "shipmill@latest", [], tmp_path, path, nothing, sandbox=True)

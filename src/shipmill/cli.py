@@ -385,6 +385,7 @@ from shipmill.gate import (
     TICK,
     ClaudeCli,
     Decision,
+    Sandboxer,
     StateRead,
     StateRunner,
     Upgrader,
@@ -1931,15 +1932,22 @@ def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[
 
 
 def _verify(
-    root: Path, git: Git, claude_args: Sequence[str], environ: Mapping[str, str], home: Path
+    root: Path,
+    git: Git,
+    claude_args: Sequence[str],
+    environ: Mapping[str, str],
+    home: Path,
+    sandbox: Sandboxer | None = None,
 ) -> verifying.Planner:
     """Spec 064's check of [agents] verify as a headless session in root meets it: the gate's
-    --claude-arg flags and environment, origin's default branch, and the plugin a session loads"""
+    --claude-arg flags and environment, origin's default branch, and the plugin a session loads;
+    with sandbox (`--sandbox`, S-087-16), in the sandbox a session gets"""
     session = verifying.Headless.of(claude_args, environ, home)
     plugin = partial(verifying.plugin_root, root, run_command, home)
+    confine = None if sandbox is None else partial(sandbox, None)
 
     def planned(commands: tuple[str, ...]) -> verifying.Planned:
-        return verifying.plan(commands, root, session, git.default_branch, git.show, plugin, run_command)
+        return verifying.plan(commands, root, session, git.default_branch, git.show, plugin, run_command, confine)
 
     return planned
 
@@ -1989,6 +1997,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         return GhCli(root, env=as_app(os.environ, token))
 
     now = dt.datetime.now(dt.UTC)
+    confine = sandbox_for(git, args.slug, Path.home()) if args.sandbox else None  # spec 087
     decision, launched, waiting, pruned = gate(
         git,
         args.slug,
@@ -2031,12 +2040,12 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         stop=stop_group,
         catch_up=lambda: AgentsConfig.load(root, args.slug).catch_up,
         upgrades=Upgrader(lambda: head_config(git), upgrades_as_app, lambda: github),
-        verify=_verify(root, git, args.claude_arg, os.environ, Path.home()),
+        verify=_verify(root, git, args.claude_arg, os.environ, Path.home(), confine),
         # spec 060: the installation read with the notice's own token, written with the gate's
         permissions=Seams(api_reads(args.slug, Openssl(), UrllibApi()), upgrades_as_app),
         pauses=pauses_dir(os.environ, Path.home()),  # spec 089: shared by every gate on the host
         usage=usage_probe(os.environ, shutil.which("claude", path=os.environ.get("PATH", ""))),
-        sandbox=sandbox_for(git, args.slug, Path.home()) if args.sandbox else None,  # spec 087
+        sandbox=confine,
         # spec 095: a GitHub limit or a full disk pauses every gate on the host
         host_seams=HostSeams(
             host_dir(os.environ, Path.home()),

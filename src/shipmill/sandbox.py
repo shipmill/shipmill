@@ -16,15 +16,16 @@ command that loads the config name it. A key shipmill never knew fails the load 
 
 `launch` builds what a sandboxed headless launch (`shipmill gate --sandbox`) adds to its one
 `--settings` JSON: the sandbox, the permission rules that make the file tools see what Bash
-sees, and the env's uv cache and gh config folders (#1531)."""
+sees, and the env's uv cache and gh config folders (#1531). `violations` reads the text the
+sandbox writes when it refuses a host, for the tick and the check of [agents] verify (#1535)."""
 
 import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from shipmill.config import Table
+from shipmill.config import CONFIG_PATH, Table
 from shipmill.errors import ReleaseError
 from shipmill.refused import Refusal
 
@@ -424,11 +425,17 @@ def _rule(tool: str, path: Path) -> str:
 @dataclass(frozen=True, slots=True)
 class Sandbox:
     """What a sandboxed headless launch adds: its env's UV_CACHE_DIR and GH_CONFIG_DIR, the
-    settings' sandbox and permissions, and the folders its Edit and Write tools may reach"""
+    settings' sandbox and permissions, and the folders its Edit and Write tools may reach.
+    rules is its filesystem and network rules as the sandbox runtime (`srt --settings`) reads
+    them, for the check of [agents] verify (S-087-16); pinned, the same rules without the
+    folders of ~/.claude/projects, which every new worktree adds to, for that check's
+    fingerprint"""
 
     env: Mapping[str, str]
     settings: Mapping[str, object]
     editable: tuple[Path, ...]
+    rules: Mapping[str, object] = field(default_factory=dict)
+    pinned: Mapping[str, object] = field(default_factory=dict)
 
     def tools(self, allowed: str) -> str:
         """allowed with each bare Edit and Write in it narrowed to one rule per editable
@@ -459,21 +466,117 @@ def launch(where: Where, declared: SandboxConfig, app_key: Path | None, state_fi
         shutil.rmtree(gh)
     gh.mkdir(parents=True)
     where.uv_cache.mkdir(parents=True, exist_ok=True)
+    filesystem = {
+        "denyRead": [str(p) for p in deny],
+        "allowWrite": [str(p) for p in scope],
+        "denyWrite": [str(p) for p in denied_writes(where, state_files)],
+    }
+    domains = [*DEFAULT_DOMAINS, *(str(d) for d in declared.domains)]
     sandbox = {
         "enabled": True,
         "allowUnsandboxedCommands": False,
         "failIfUnavailable": True,
-        "filesystem": {
-            "denyRead": [str(p) for p in deny],
-            "allowWrite": [str(p) for p in scope],
-            "denyWrite": [str(p) for p in denied_writes(where, state_files)],
-        },
-        "network": {"allowedDomains": [*DEFAULT_DOMAINS, *(str(d) for d in declared.domains)]},
+        "filesystem": filesystem,
+        "network": {"allowedDomains": domains},
     }
     rules = [_rule(tool, q) for p in deny for tool in ("Read", "Edit") for q in (p, p / "**")]
     memory = tuple(where.home / PROJECTS / name / MEMORY for name in where.projects)
+    network = {"allowedDomains": domains, "deniedDomains": []}
+    projects = where.home / PROJECTS
+    steady = [str(p) for p in deny if p.parent != projects]
     return Sandbox(
         env={UV_CACHE_DIR: str(where.uv_cache), GH_CONFIG_DIR: str(where.gh_config)},
         settings={"sandbox": sandbox, "permissions": {"deny": rules}},
         editable=(*scope, *memory),
+        rules={"filesystem": filesystem, "network": network},
+        pinned={"filesystem": filesystem | {"denyRead": steady}, "network": network},
     )
+
+
+# What the sandbox says when it refuses (#1524, #1588, docs/design/agent-modes.md): a refused
+# host leaves a <sandbox_violations> block of `deny <operation> <target> (<why>)` lines in the
+# tool result, and the proxy's own answer reads BLOCKED. A refused path leaves only the
+# program's own error (EPERM on macOS; ENOENT or EROFS on Linux), with no block
+VIOLATIONS = "<sandbox_violations>"
+BLOCKED = "Connection blocked by network allowlist"
+_BLOCK = re.compile(rf"{VIOLATIONS}[ \t]*\r?\n((?:[ \t]*deny [^\n]*(?:\n|$))+)")
+_DENY = re.compile(r"[ \t]*deny (?P<operation>[\w*-]+) (?P<target>\S+)(?: \([^)]*\))?[ \t]*\r?")
+_SAID = {DOMAINS: "a connection to", READ: "reading", WRITE: "writing"}
+_REFUSED = "the sandbox refused "  # the start of a refused command's detail in the verify check
+
+
+@dataclass(frozen=True, slots=True)
+class Violation:
+    """One `deny <operation> <target>` line of a <sandbox_violations> block"""
+
+    operation: str  # such as network-outbound, file-read-data, file-write-create
+    target: str  # host:port for a connection, a path for a file
+
+    @property
+    def key(self) -> str | None:
+        """The [agents.sandbox] key that would allow it; None for an operation no key opens"""
+        if self.operation.startswith("network"):
+            return DOMAINS
+        if self.operation.startswith("file-read"):
+            return READ
+        if self.operation.startswith("file-write"):
+            return WRITE
+        return None
+
+    @property
+    def named(self) -> str:
+        """The host without its port, for a connection; the path, for a file"""
+        if self.key != DOMAINS:
+            return self.target
+        host, colon, port = self.target.rpartition(":")
+        return host if colon and port.isdigit() else self.target
+
+    @property
+    def said(self) -> str:
+        """What it refused, as a detail says it: `a connection to example.com`"""
+        key = self.key
+        return f"{self.operation} {self.target}" if key is None else f"{_SAID[key]} {self.named}"
+
+    def fix(self) -> str:
+        return entry_fix(self.key, self.named)
+
+
+def entry_fix(key: str | None, named: str) -> str:
+    """S-087-14, S-087-16: the [agents.sandbox] entry that allows what the sandbox refused,
+    reviewed as any widening is; never an allowlist change or a --claude-arg"""
+    where = f"in {CONFIG_PATH.as_posix()}, in a pull request the maintainer approves"
+    if key is None:
+        return f"declare what it needs in {TABLE} {where}"
+    return f'add "{named}" to {TABLE} {key} {where}'
+
+
+def violations(text: str) -> tuple[Violation, ...]:
+    """Each `deny` line of each <sandbox_violations> block in text, in order; none in a text
+    that only quotes the tag, as a document about it does"""
+    found: list[Violation] = []
+    for block in _BLOCK.finditer(text):
+        for line in block.group(1).splitlines():
+            if (m := _DENY.fullmatch(line)) is not None:
+                found.append(Violation(m["operation"], m["target"]))
+    return tuple(found)
+
+
+def refused_detail(text: str) -> str | None:
+    """The verify check's detail for a command whose output says the sandbox refused it
+    (S-087-16): the first violation, naming the host or path, else the proxy's refusal; None
+    when the output says neither"""
+    found = violations(text)
+    if found:
+        return f"{_REFUSED}{found[0].said}"
+    if BLOCKED in text:
+        return f"the sandbox's proxy refused a host outside the allowed domains: {BLOCKED}"
+    return None
+
+
+def detail_fix(detail: str) -> str:
+    """The fix for a refused_detail: the [agents.sandbox] entry its host or path needs"""
+    said = detail.removeprefix(_REFUSED)
+    for key, verb in _SAID.items():
+        if detail.startswith(_REFUSED) and said.startswith(f"{verb} "):
+            return entry_fix(key, said.removeprefix(f"{verb} "))
+    return entry_fix(DOMAINS if BLOCKED in detail else None, "<host>")

@@ -14,7 +14,9 @@ result; a command that fails step 1 or 2 is not run:
 2. The delivery hook a gate session loads judges each part, with SHIPMILL_GATE=1 (D-82), in the
    directory a `cd` before it set
 3. The run: `$SHELL -c` in the worktree, in a headless session's environment, for at most 30
-   minutes; exit 127 names the program the PATH lacks
+   minutes; exit 127 names the program the PATH lacks. With `shipmill gate --sandbox` (spec 087,
+   S-087-16) it runs through srt with the session's filesystem and network rules, a refusal reads
+   `refused by sandbox`, and without srt on the gate's PATH the command reads `not checked`
 
 The gate runs it on a real headless LAUNCH tick (gate.verified) when verify.json holds no result
 for the fingerprint of its inputs, or holds a failing one retry_hours old (S-064-6, S-064-7).
@@ -45,6 +47,7 @@ from typing import Protocol
 from shipmill.errors import ReleaseError
 from shipmill.hooks import SETTINGS, HookRunner, pre_command, run_hook
 from shipmill.plugin import PLUGIN, effective, listed_installs, session_project
+from shipmill.sandbox import Sandbox, detail_fix, refused_detail
 from shipmill.walk import malformed, write
 
 TIMEOUT = 30 * 60.0  # seconds a command may run before the check stops it
@@ -59,6 +62,9 @@ NOT_FOUND = 127  # the shell's exit when it can't find a command's program
 BUILTINS = frozenset({".", ":", "[", "cd", "echo", "eval", "exec", "exit", "export", "set", "source", "test", "unset"})
 _RULE = re.compile(r"[^\s,()]+(?:\([^)]*\))?")  # one rule of a tool list: a name, with its (specifier) if any
 _REFUSAL = re.compile(r"^shipmill hook (?P<rule>[A-Za-z0-9_-]+): ")  # the hook's first stderr line
+SRT = "srt"  # Anthropic's sandbox runtime, which Claude Code's sandbox is built on (spec 087)
+SRT_INSTALL = "npm install -g @anthropic-ai/sandbox-runtime"
+NO_SRT = "srt is not on the gate's PATH"  # a sandboxed check's detail when step 3 can't run (S-087-16)
 
 Git = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout; ReleaseError when it fails
 
@@ -72,6 +78,8 @@ class Result(StrEnum):
     NOT_FOUND = "not found"  # step 3: exit 127
     FAILED = "failed"  # step 3: another nonzero exit
     TIMED_OUT = "timed out"  # step 3: stopped past the limit
+    SANDBOX_REFUSED = "refused by sandbox"  # step 3, sandboxed: the sandbox refused a host or path (S-087-16)
+    NOT_CHECKED = "not checked"  # step 3, sandboxed: srt isn't on the gate's PATH, so step 3 didn't run
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +360,10 @@ def fix(entry: Entry) -> str:
             )
         case Result.FAILED | Result.TIMED_OUT:
             return f"run it in a worktree under {WORKTREES.as_posix()} to see why"
+        case Result.SANDBOX_REFUSED:  # S-087-16: never an allowlist change
+            return detail_fix(entry.detail)
+        case Result.NOT_CHECKED:
+            return f"install the sandbox runtime into a folder of the gate's PATH: {SRT_INSTALL}"
         case Result.OK:
             raise ValueError(f"{entry.command} passed and needs no fix")
 
@@ -552,6 +564,38 @@ def last_line(text: str) -> str:
     return lines[-1].strip()[:300] if lines else "no stderr"
 
 
+@dataclass(frozen=True, slots=True)
+class Confined:
+    """Spec 087's sandbox for step 3 (S-087-16): srt as the gate's PATH finds it (None: not
+    there, so step 3 doesn't run), and the sandbox a session gets, whose filesystem and network
+    rules srt reads and whose env the command runs with"""
+
+    srt: str | None
+    sandbox: Sandbox
+
+    @classmethod
+    def of(cls, sandbox: Sandbox, path: str) -> Confined:
+        return cls(shutil.which(SRT, path=path), sandbox)
+
+    def key(self) -> dict[str, object]:
+        """What the check's fingerprint holds of it: srt's path, the rules but the listing of
+        ~/.claude/projects, which grows with each worktree, and the env it adds"""
+        return {"srt": self.srt, "rules": dict(self.sandbox.pinned), "env": dict(self.sandbox.env)}
+
+
+@contextmanager
+def srt_settings(confined: Confined | None) -> Iterator[Path | None]:
+    """srt's settings file, the session's rules, outside the worktree and gone when the block
+    ends; None without the sandbox or without srt"""
+    if confined is None or confined.srt is None:
+        yield None
+        return
+    with tempfile.TemporaryDirectory(prefix="shipmill-srt-") as folder:
+        settings = Path(folder) / "settings.json"
+        settings.write_text(json.dumps(confined.sandbox.rules, indent=2) + "\n", encoding="utf-8")
+        yield settings
+
+
 # --- The check -----------------------------------------------------------------------------------
 
 
@@ -577,11 +621,22 @@ def every_part(command: str, where: Path, hook: Hook) -> list[Part]:
 
 
 def judge(
-    command: str, where: Path, allowlist: Allowlist, session: Headless, hook: Hook, shell: Shell, timeout: float
+    command: str,
+    where: Path,
+    allowlist: Allowlist,
+    session: Headless,
+    hook: Hook,
+    shell: Shell,
+    timeout: float,
+    confined: Confined | None = None,
+    settings: Path | None = None,
 ) -> Entry:
     """One command through the three steps; the first that fails names its result. The
     allowlist judges the commands of its substitutions as parts too, as Claude Code does; the
-    hook gets the parts its own splitter finds, as it gets the line in a session"""
+    hook gets the parts its own splitter finds, as it gets the line in a session. With the
+    sandbox on (spec 087, S-087-16), step 3 runs the command through srt with the session's
+    rules (settings) and env, a nonzero exit whose output carries the sandbox's refusal reads
+    refused by sandbox, and without srt step 3 doesn't run and the command reads not checked"""
     parts = hook.parts(command, where)
     try:
         inner = [p for body in substitutions(command) for p in every_part(body, where, hook)]
@@ -596,11 +651,19 @@ def judge(
     for part in parts:
         if (refused := hook.refusal(part, where, session.env)) is not None:
             return Entry(command, Result.REFUSED, refused.detail(part.text))
-    ran = shell([session.env.get("SHELL") or "/bin/sh", "-c", command], where, session.env, timeout)
+    if confined is None:
+        ran = shell([session.env.get("SHELL") or "/bin/sh", "-c", command], where, session.env, timeout)
+    elif confined.srt is None or settings is None:
+        return Entry(command, Result.NOT_CHECKED, NO_SRT)
+    else:
+        env = {**session.env, **confined.sandbox.env}
+        ran = shell([confined.srt, "--settings", str(settings), command], where, env, timeout)
     if ran.code is None:
         return Entry(command, Result.TIMED_OUT, f"stopped after {timeout / 60:g} minutes")
     if ran.code == 0:
         return Entry(command, Result.OK, "")
+    if confined is not None and (refusal := refused_detail(ran.stderr)) is not None:
+        return Entry(command, Result.SANDBOX_REFUSED, refusal)
     if ran.code == NOT_FOUND:
         path = session.env.get("PATH", "")
         if (program := missing(parts, where, path)) is not None:
@@ -618,12 +681,15 @@ def check(
     git: Git,
     shell: Shell = run_shell,
     timeout: float = TIMEOUT,
+    confined: Confined | None = None,
 ) -> list[Entry]:
     """Each command's entry, in the list's order, from one worktree at origin/<default>, which
-    is gone when this returns or raises"""
-    with worktree(checkout, default, git) as where:
+    is gone when this returns or raises; with confined, each runs in the session's sandbox"""
+    with worktree(checkout, default, git) as where, srt_settings(confined) as settings:
         allowlist = session.allowlist(where, checkout)
-        return [judge(command, where, allowlist, session, hook, shell, timeout) for command in commands]
+        return [
+            judge(command, where, allowlist, session, hook, shell, timeout, confined, settings) for command in commands
+        ]
 
 
 # --- When the gate checks (S-064-6 to S-064-8) ---------------------------------------------------
@@ -634,11 +700,13 @@ def fingerprint(
     session: Headless,
     settings: Sequence[str | None],
     plugin: str,
+    confined: Confined | None = None,
 ) -> str:
     """What a result holds for: the list, the session's tool flags, the settings files' text
-    (None for a file that doesn't exist), the gate's PATH, and the version of the plugin whose
-    hook step 2 runs. A change to any of them checks again"""
-    inputs = {
+    (None for a file that doesn't exist), the gate's PATH, the version of the plugin whose
+    hook step 2 runs, and with the sandbox on, its rules and srt (S-087-16). A change to any of
+    them checks again; without the sandbox the fingerprint is the one before spec 087"""
+    inputs: dict[str, object] = {
         "commands": list(commands),
         "allowed": list(session.allowed),
         "disallowed": list(session.disallowed),
@@ -646,6 +714,8 @@ def fingerprint(
         "path": session.env.get("PATH", ""),
         "plugin": plugin,
     }
+    if confined is not None:
+        inputs["sandbox"] = confined.key()
     return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
 
 
@@ -774,10 +844,13 @@ def plan(
     show: Callable[[str, str], str | None],
     plugin: Callable[[], tuple[Path, str]],
     git: Git,
+    sandbox: Callable[[], Sandbox] | None = None,
 ) -> Planned:
     """The gate's check of the list: its fingerprint, read from the user's settings, the
     project's at origin/<default>, which the check's worktree holds, and the checkout's local
-    ones; and the check, with the hook of the plugin install a session loads"""
+    ones; and the check, with the hook of the plugin install a session loads. sandbox, with
+    `shipmill gate --sandbox` (spec 087), builds the session's sandbox, which step 3 runs in
+    through srt as the gate's PATH finds it"""
     branch = default()
     project, local = SETTINGS
     user = session.home / ".claude" / "settings.json"
@@ -787,6 +860,10 @@ def plan(
         _settings_text(str(checkout / local), lambda: _read(checkout / local)),
     )
     root, version = plugin()
-    shell = shutil.which("sh", path=session.env.get("PATH", "")) or "/bin/sh"
-    found = fingerprint(commands, session, texts, version)
-    return Planned(found, lambda: check(commands, checkout, branch, session, DeliveryHook(root, shell), git))
+    path = session.env.get("PATH", "")
+    shell = shutil.which("sh", path=path) or "/bin/sh"
+    confined = None if sandbox is None else Confined.of(sandbox(), path)
+    found = fingerprint(commands, session, texts, version, confined)
+    return Planned(
+        found, lambda: check(commands, checkout, branch, session, DeliveryHook(root, shell), git, confined=confined)
+    )
