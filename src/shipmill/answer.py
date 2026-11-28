@@ -329,6 +329,12 @@ def compose(
         if question is None:
             raise ReleaseError(
                 f"#{item.number} carries no open needs-decision question, so `decision answer` answers nothing"
+                + (
+                    f"; it is labelled `{PLAN_LABEL}`, so answer its plan with `{cli_command()} goal-plan answer "
+                    f"{item.number} {'|'.join(VERBS[Kind.PLAN])} --by {request.by}`"
+                    if PLAN_LABEL in item.labels
+                    else ""
+                )
             )
         if request.own is not None:
             if request.answer is not None:

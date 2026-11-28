@@ -40,6 +40,13 @@ def test_s040_16_init_writes_an_uncommented_autonomy_with_release_at_its_default
     assert "\n[autonomy]\n" in text and "# [autonomy]" not in text
     assert autonomy(repo) == {"release": DEFAULTS.release.value}
     assert re.search(r'^release = "act" +# observe \| propose \| act: ', text, re.MULTILINE)
+    # #1850: the comment over [autonomy] says what intake's propose leaves to a person, and that it never acts
+    above = text.split("\n[autonomy]\n")[0].splitlines()
+    start = max(i for i, line in enumerate(above) if not line.startswith("#")) + 1
+    comment = " ".join(line.removeprefix("#").strip() for line in above[start:])
+    assert "intake is observe or propose, never act" in comment
+    assert "under propose it still groups the requests and files the opportunities" in comment
+    assert "the maintainer's accept or decline is the one step left to a person" in comment
     # the agent stages stay unset, so the legacy reading and AUTONOMY_IMPLICIT still apply (S-040-6, S-040-13)
     policy = Policy.load(config_path(repo.root))
     assert policy.autonomy == DEFAULTS

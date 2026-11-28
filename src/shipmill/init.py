@@ -221,7 +221,9 @@ github_release = true
 
 # How far shipmill goes by itself at each stage: observe (report only), propose (open an issue
 # saying what it would do; a person does it), or act. An open issue labelled shipmill-hold
-# turns every act into propose until it is closed.
+# turns every act into propose until it is closed. intake is observe or propose, never act:
+# under propose it still groups the requests and files the opportunities, and the
+# maintainer's accept or decline is the one step left to a person.
 [autonomy]
 {_level_line("release", _DEFAULTS.release, "cut the release a lane is due")}
 
