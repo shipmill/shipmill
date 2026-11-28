@@ -320,7 +320,7 @@ NATIVE_SHOW = ("blockedBy", "subIssues", "blocking", "parent")
 # a sub-issue's title and body tell a project's check issue (S-106-29), and a parent's state
 # and labels a started project's head, which no walk reads as held on its check issue
 SUB = "pageInfo { hasNextPage } nodes { number state stateReason title body repository { nameWithOwner } }"
-PARENT = (
+PARENT_FIELDS = (
     "number state repository { nameWithOwner } "
     f"labels(first: {LINKS}) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}"
 )
@@ -328,7 +328,7 @@ NATIVE_ITEM = f"""
         blockedBy(first: {LINKS}) {{ {HELD} }}
         subIssues(first: {LINKS}) {{ {SUB} }}
         blocking(first: {LINKS}) {{ {LINKED} }}
-        parent {{ {PARENT} }}"""
+        parent {{ {PARENT_FIELDS} }}"""
 NATIVE_NAMED = re.compile(r"\b(?:" + "|".join(NATIVE_SHOW) + r")\b")
 CLOSERS = "closedByPullRequestsReferences"  # the pull requests that close an issue (spec 086)
 CLOSING = "pageInfo { hasNextPage } nodes { state updatedAt }"

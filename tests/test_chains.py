@@ -1,5 +1,6 @@
 """chains.py link: a dependency written as GitHub's native relation and as a Depends on line"""
 
+import ast
 import importlib.util
 import json
 import subprocess
@@ -1052,3 +1053,24 @@ def test_s038_4_without_a_product_table_link_reads_no_origin_and_links_any_repo(
     assert all(cmd[0] != "git" for cmd in git.ran)  # no [product]: the origin is never asked
     top = str((tmp_path / "repo").resolve())
     assert git.writes() == [[*UVX, "--repo", top, "gh"]] * 2
+
+
+def test_no_module_level_name_is_assigned_twice() -> None:
+    """#1836: a second PARENT replaced the child link's query with a field list, which the
+    fake forge, matching queries by their constant, answered as if it were the query"""
+    tree = ast.parse((SCRIPTS / "chains.py").read_text(encoding="utf-8"))
+    seen: dict[str, int] = {}
+    twice = []
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else []
+        for target in targets:
+            if isinstance(target, ast.Name):
+                if target.id in seen:
+                    twice.append(f"{target.id} (lines {seen[target.id]} and {node.lineno})")
+                seen[target.id] = node.lineno
+    assert twice == []
+
+
+def test_the_child_links_queries_are_graphql_operations(ch: ModuleType) -> None:
+    for query in (ch.RESOLVE, ch.BLOCKED_BY, ch.PARENT, ch.ADD_BLOCKED_BY, ch.ADD_SUB_ISSUE):
+        assert query.lstrip().startswith(("query", "mutation")), query
